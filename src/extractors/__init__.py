@@ -1,0 +1,1 @@
+"""Extractors de dados."""
