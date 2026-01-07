@@ -1,6 +1,5 @@
 """Script individual para extração de jogos."""
 import sys
-import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -13,36 +12,19 @@ logger = setup_logger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extrair jogos da NBA")
-    parser.add_argument(
-        "--season",
-        type=int,
-        default=SEASON,
-        help=f"Ano da temporada (default: {SEASON})",
-    )
-    parser.add_argument(
-        "--team-ids",
-        type=int,
-        nargs="+",
-        help="IDs dos times (opcional)",
-    )
-    parser.add_argument(
-        "--dates",
-        type=str,
-        nargs="+",
-        help="Datas no formato YYYY-MM-DD (opcional)",
-    )
-    
-    args = parser.parse_args()
-    
     try:
-        logger.info(f"Iniciando extração de jogos para temporada {args.season}")
-        extractor = GamesExtractor(season=args.season)
-        gcs_path = extractor.extract_and_save(
-            team_ids=args.team_ids,
-            dates=args.dates,
-        )
-        logger.info(f"✓ Extração concluída: {gcs_path}")
+        logger.info(f"Iniciando extração de jogos para temporada {SEASON}")
+        extractor = GamesExtractor(season=SEASON)
+        
+        gcs_paths = extractor.extract_and_save()
+        
+        if gcs_paths:
+            logger.info(f"✓ Extração concluída: {len(gcs_paths)} arquivo(s) salvo(s)")
+            for path in gcs_paths:
+                logger.info(f"  → {path}")
+        else:
+            logger.warning("Nenhum arquivo foi salvo.")
+        
         return 0
     except Exception as e:
         logger.error(f"✗ Erro na extração: {str(e)}", exc_info=True)

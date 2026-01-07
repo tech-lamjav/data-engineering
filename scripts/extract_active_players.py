@@ -1,6 +1,5 @@
 """Script individual para extração de jogadores ativos."""
 import sys
-import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -13,19 +12,9 @@ logger = setup_logger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extrair jogadores ativos da NBA")
-    parser.add_argument(
-        "--season",
-        type=int,
-        default=SEASON,
-        help=f"Ano da temporada (default: {SEASON})",
-    )
-    
-    args = parser.parse_args()
-    
     try:
-        logger.info(f"Iniciando extração de jogadores ativos para temporada {args.season}")
-        extractor = ActivePlayersExtractor(season=args.season)
+        logger.info(f"Iniciando extração de jogadores ativos para temporada {SEASON}")
+        extractor = ActivePlayersExtractor(season=SEASON)
         gcs_path = extractor.extract_and_save()
         logger.info(f"✓ Extração concluída: {gcs_path}")
         return 0

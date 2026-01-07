@@ -1,6 +1,5 @@
 """Script individual para extração de lesões de jogadores."""
 import sys
-import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -13,19 +12,9 @@ logger = setup_logger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extrair lesões de jogadores")
-    parser.add_argument(
-        "--season",
-        type=int,
-        default=SEASON,
-        help=f"Ano da temporada (default: {SEASON})",
-    )
-    
-    args = parser.parse_args()
-    
     try:
-        logger.info(f"Iniciando extração de lesões para temporada {args.season}")
-        extractor = PlayerInjuriesExtractor(season=args.season)
+        logger.info(f"Iniciando extração de lesões para temporada {SEASON}")
+        extractor = PlayerInjuriesExtractor(season=SEASON)
         gcs_path = extractor.extract_and_save()
         logger.info(f"✓ Extração concluída: {gcs_path}")
         return 0

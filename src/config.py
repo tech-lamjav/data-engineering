@@ -9,6 +9,7 @@ load_dotenv(dotenv_path=env_path)
 
 # API Configuration
 API_BASE_URL = "https://api.balldontlie.io/v1"
+API_BASE_URL_V2 = "https://api.balldontlie.io/v2"  # Para endpoints v2
 API_KEY = os.getenv("BALLDONTLIE_KEY")
 API_TIMEOUT = 60
 
@@ -57,7 +58,15 @@ ENDPOINT_CONFIGS = {
 }
 
 # GCS Path Structure
-def get_gcs_path(endpoint: str, season: int, date: str = None) -> str:
+def get_gcs_path(
+    endpoint: str, 
+    season: int, 
+    date: str = None, 
+    market: str = None, 
+    game_id: int = None,
+    category: str = None,
+    type: str = None,
+) -> str:
     """
     Gera o caminho no GCS seguindo a estrutura definida.
     
@@ -65,15 +74,29 @@ def get_gcs_path(endpoint: str, season: int, date: str = None) -> str:
         endpoint: Nome do endpoint (ex: 'games', 'active_players')
         season: Ano da temporada (ex: 2025)
         date: Data no formato YYYY-MM-DD (opcional)
+        market: Market para player_props (opcional)
+        game_id: Game ID para player_props (opcional)
+        category: Categoria para season_averages (opcional)
+        type: Tipo para season_averages (opcional)
     
     Returns:
         Caminho completo no formato: nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}.json
         ou nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{date}.json
+        ou nba/{endpoint}/{season}/{market}/raw_nba_{endpoint}_{season}-{game_id}.json (para player_props)
+        ou nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{category}-{type}.json (para season_averages)
     """
-    if date:
+    if market and game_id:
+        # Estrutura especial para player_props: nba/player_props/{season}/{market}/raw_nba_player_props_{season}-{game_id}.json
+        filename = f"raw_nba_{endpoint}_{season}-{game_id}.json"
+        return f"nba/{endpoint}/{season}/{market}/{filename}"
+    elif category and type:
+        # Estrutura para season_averages: nba/season_averages/{season}/raw_nba_season_averages_{season}-{category}-{type}.json
+        filename = f"raw_nba_{endpoint}_{season}-{category}-{type}.json"
+        return f"nba/{endpoint}/{season}/{filename}"
+    elif date:
         filename = f"raw_nba_{endpoint}_{season}-{date}.json"
+        return f"nba/{endpoint}/{season}/{filename}"
     else:
         filename = f"raw_nba_{endpoint}_{season}.json"
-    
-    return f"nba/{endpoint}/{season}/{filename}"
+        return f"nba/{endpoint}/{season}/{filename}"
 

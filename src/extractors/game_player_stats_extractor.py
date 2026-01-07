@@ -70,7 +70,7 @@ class GamePlayerStatsExtractor(BaseExtractor):
         """
         # Temporada NBA vai de outubro do mesmo ano até a data atual
         # Ex: temporada 2025 = outubro 2025 até hoje
-        start_date = datetime(self.season, 10, 1)  # Outubro do mesmo ano
+        start_date = datetime(self.season, 10, 21)  # Outubro do mesmo ano
         end_date = datetime.now()  # Data de hoje
         
         dates = []

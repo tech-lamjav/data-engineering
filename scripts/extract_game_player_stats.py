@@ -1,6 +1,5 @@
 """Script individual para extração de estatísticas de jogadores por jogo."""
 import sys
-import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -13,36 +12,11 @@ logger = setup_logger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extrair estatísticas de jogadores por jogo")
-    parser.add_argument(
-        "--season",
-        type=int,
-        default=SEASON,
-        help=f"Ano da temporada (default: {SEASON})",
-    )
-    parser.add_argument(
-        "--game-ids",
-        type=int,
-        nargs="+",
-        help="IDs dos jogos (opcional)",
-    )
-    parser.add_argument(
-        "--player-ids",
-        type=int,
-        nargs="+",
-        help="IDs dos jogadores (opcional)",
-    )
-    
-    args = parser.parse_args()
-    
     try:
-        logger.info(f"Iniciando extração de estatísticas para temporada {args.season}")
-        extractor = GamePlayerStatsExtractor(season=args.season)
+        logger.info(f"Iniciando extração de estatísticas para temporada {SEASON}")
+        extractor = GamePlayerStatsExtractor(season=SEASON)
         
-        gcs_paths = extractor.extract_and_save(
-            game_ids=args.game_ids,
-            player_ids=args.player_ids,
-        )
+        gcs_paths = extractor.extract_and_save()
         
         if gcs_paths:
             logger.info(f"✓ Extração concluída: {len(gcs_paths)} arquivo(s) salvo(s)")

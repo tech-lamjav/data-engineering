@@ -1,6 +1,6 @@
 """Gerenciamento de uploads no Google Cloud Storage."""
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from google.cloud import storage
 from google.api_core import exceptions
 from src.config import GCS_BUCKET_NAME, GCP_PROJECT_ID, GCS_USE_ADC, get_gcs_path
@@ -62,6 +62,10 @@ class GCSStorage:
         endpoint: str,
         season: int,
         date: Optional[str] = None,
+        market: Optional[str] = None,
+        game_id: Optional[int] = None,
+        category: Optional[str] = None,
+        type: Optional[str] = None,
     ) -> str:
         """
         Faz upload de um JSON para o GCS.
@@ -71,12 +75,19 @@ class GCSStorage:
             endpoint: Nome do endpoint
             season: Ano da temporada
             date: Data no formato YYYY-MM-DD (opcional)
+            market: Market para player_props (opcional)
+            game_id: Game ID para player_props (opcional)
+            category: Categoria para season_averages (opcional)
+            type: Tipo para season_averages (opcional)
         
         Returns:
             Caminho completo do arquivo no GCS
         """
         # Gera o caminho no GCS
-        blob_path = get_gcs_path(endpoint, season, date)
+        blob_path = get_gcs_path(
+            endpoint, season, date=date, market=market, game_id=game_id, 
+            category=category, type=type
+        )
         logger.info(f"Fazendo upload para: gs://{self.bucket_name}/{blob_path}")
         
         # Converte dados para JSON
@@ -155,4 +166,54 @@ class GCSStorage:
         blob_path = get_gcs_path(endpoint, season, date)
         blob = self.bucket.blob(blob_path)
         return blob.exists()
+    
+    def get_game_ids_from_storage(self, season: int) -> List[int]:
+        """
+        Busca todos os game_ids dos arquivos de games salvos no GCS.
+        Lista todos os arquivos na pasta nba/games/{season}/ e extrai game_ids.
+        
+        Args:
+            season: Ano da temporada
+        
+        Returns:
+            Lista de game_ids únicos
+        """
+        import json
+        
+        game_ids = set()
+        
+        # Prefixo da pasta de games para esta season
+        prefix = f"nba/games/{season}/"
+        
+        logger.info(f"Listando arquivos em gs://{self.bucket_name}/{prefix}...")
+        
+        # Lista todos os blobs (arquivos) com este prefixo
+        blobs = self.bucket.list_blobs(prefix=prefix)
+        
+        files_processed = 0
+        
+        for blob in blobs:
+            # Ignora se não for arquivo JSON
+            if not blob.name.endswith('.json'):
+                continue
+            
+            try:
+                # Baixa e lê o arquivo
+                content = blob.download_as_text()
+                data = json.loads(content)
+                games = data.get("games", [])
+                
+                for game in games:
+                    game_id = game.get("id")
+                    if game_id:
+                        game_ids.add(game_id)
+                
+                files_processed += 1
+                logger.debug(f"Processado {blob.name}: {len(games)} jogos")
+            except Exception as e:
+                logger.warning(f"Erro ao processar arquivo {blob.name}: {str(e)}")
+                continue
+        
+        logger.info(f"Total de {files_processed} arquivos processados, {len(game_ids)} game_ids únicos encontrados")
+        return sorted(list(game_ids))
 

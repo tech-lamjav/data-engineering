@@ -83,6 +83,9 @@ class BallDontLieClient(BaseClient):
     def get_season_averages(
         self,
         season: int,
+        category: str,
+        type: str,
+        season_type: str = "regular",
         player_ids: Optional[List[int]] = None,
         per_page: int = 100,
     ) -> List[Dict[str, Any]]:
@@ -91,18 +94,26 @@ class BallDontLieClient(BaseClient):
         
         Args:
             season: Ano da temporada
+            category: Categoria (general, clutch, defense, shooting)
+            type: Tipo de estatística (base, advanced, usage, scoring, defense, misc, etc.)
+            season_type: Tipo de temporada (regular, playoffs, ist, playin)
             player_ids: Lista de IDs de jogadores (opcional)
             per_page: Itens por página
         
         Returns:
             Lista de médias
         """
-        params = {"season": season}
+        params = {
+            "season": season,
+            "season_type": season_type,
+            "type": type,
+        }
         
         if player_ids:
             params["player_ids[]"] = player_ids
         
-        return self.get_paginated("season_averages", params=params, per_page=per_page)
+        endpoint = f"season_averages/{category}"
+        return self.get_paginated(endpoint, params=params, per_page=per_page)
     
     def get_active_players(
         self,
@@ -134,7 +145,7 @@ class BallDontLieClient(BaseClient):
         Returns:
             Lista de lesões
         """
-        return self.get_paginated("injuries", params={}, per_page=per_page)
+        return self.get_paginated("player_injuries", params={}, per_page=per_page)
     
     def get_team_standings(
         self,
@@ -156,58 +167,53 @@ class BallDontLieClient(BaseClient):
     
     def get_player_props(
         self,
-        market: str = "draftkings",
-        prop_types: Optional[List[str]] = None,
-        dates: Optional[List[str]] = None,
-        per_page: int = 100,
+        game_id: int,
+        player_id: Optional[int] = None,
+        prop_type: Optional[str] = None,
+        vendors: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Busca props de jogadores.
+        Busca props de jogadores para um jogo específico.
         
         Args:
-            market: Mercado (default: draftkings)
-            prop_types: Lista de tipos de props (opcional, busca todas se None)
-            dates: Lista de datas no formato YYYY-MM-DD (opcional)
-            per_page: Itens por página
+            game_id: ID do jogo (obrigatório)
+            player_id: ID do jogador (opcional)
+            prop_type: Tipo de prop (opcional)
+            vendors: Lista de vendors (opcional, ex: ["draftkings", "betway"])
         
         Returns:
             Lista de props
         """
-        params = {"market": market}
+        from src.config import API_BASE_URL_V2
         
-        if prop_types:
-            params["prop_types[]"] = prop_types
+        params = {"game_id": game_id}
         
-        if dates:
-            params["dates[]"] = dates
+        if player_id:
+            params["player_id"] = player_id
         
-        return self.get_paginated("player_props", params=params, per_page=per_page)
-    
-    def get_player_prop_types(
-        self,
-        market: str = "draftkings",
-    ) -> List[str]:
-        """
-        Busca todos os tipos de props disponíveis para um mercado.
+        if prop_type:
+            params["prop_type"] = prop_type
         
-        Args:
-            market: Mercado (default: draftkings)
+        if vendors:
+            params["vendors[]"] = vendors
         
-        Returns:
-            Lista de tipos de props únicos
-        """
-        # Busca uma amostra para identificar os tipos disponíveis
-        params = {"market": market, "per_page": 100}
-        response = self.get("player_props", params=params)
+        # Endpoint v2 - usa URL base diferente
+        from src.config import API_TIMEOUT
+        url = f"{API_BASE_URL_V2}/odds/player_props"
+        response = self.session.request(
+            method="GET",
+            url=url,
+            params=params,
+            timeout=API_TIMEOUT,
+        )
+        response.raise_for_status()
         data = response.json()
         
-        items = data.get("data", [])
-        prop_types = set()
-        
-        for item in items:
-            prop_type = item.get("prop_type")
-            if prop_type:
-                prop_types.add(prop_type)
-        
-        return sorted(list(prop_types))
+        # A API v2 retorna diretamente uma lista ou um objeto com 'data'
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            return data.get("data", [])
+        else:
+            return []
 
