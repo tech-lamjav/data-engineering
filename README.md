@@ -29,7 +29,29 @@ data-engineering/
 │   └── utils/                   # Utilitários
 │       ├── logger.py            # Configuração de logging
 │       └── helpers.py           # Funções auxiliares
-├── cloud_functions/             # Cloud Functions
+├── cloud_run/                   # Cloud Run Services
+│   ├── extract_games/
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   ├── extract_game_player_stats/
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   ├── extract_season_averages/
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   ├── extract_active_players/
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   ├── extract_player_injuries/
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   ├── extract_team_standings/
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   └── extract_player_props/
+│       ├── main.py
+│       └── requirements.txt
+├── cloud_functions/             # Cloud Functions (Legado)
 │   ├── extract_games/
 │   ├── extract_game_player_stats/
 │   ├── extract_season_averages/
@@ -100,19 +122,21 @@ Cada extractor é responsável por extrair dados de um endpoint específico:
   - Validação de estruturas JSON
   - Funções utilitárias gerais
 
-### `cloud_functions/` - Cloud Functions
+### `cloud_run/` - Cloud Run Services
 
-Cada diretório representa uma Cloud Function independente para deploy no GCP:
+Cada diretório representa um serviço Cloud Run independente para deploy no GCP:
 
-- **Estrutura de cada função**:
-  - `main.py`: Handler HTTP da função
-  - `requirements.txt`: Dependências específicas da função
+- **Estrutura de cada serviço**:
+  - `main.py`: Handler HTTP do serviço usando `functions_framework`
+  - `requirements.txt`: Dependências específicas do serviço (inclui `functions-framework`)
+  - `src/`: Diretório `src/` do projeto raiz (deve ser copiado manualmente ou via interface GCP)
   
 - **Características**:
-  - Cada função é independente e pode ser deployada separadamente
-  - Importa módulos do `src/` (que deve ser copiado durante deploy)
-  - Aceita parâmetros via JSON no body da requisição
-  - Retorna status da execução e caminho do arquivo no GCS
+  - Cada serviço é independente e pode ser deployado separadamente
+  - Usa `functions_framework` para compatibilidade com Cloud Run
+  - Retorna JSON com status da execução e caminho(s) do(s) arquivo(s) no GCS
+  - Suporta timeout configurável e escalabilidade automática
+  - Estrutura simplificada seguindo padrão de funções wrapper
 
 ### `scripts/` - Scripts de Execução
 
@@ -161,7 +185,7 @@ Google Cloud Storage
 - **Reutilização**: Lógica comum em classes base
 - **Extensibilidade**: Fácil adicionar novos endpoints
 - **Separação de Concerns**: Clientes, extractors e storage são independentes
-- **Cloud-Ready**: Estrutura otimizada para Cloud Functions
+- **Cloud-Ready**: Estrutura otimizada para Cloud Run e Cloud Functions
 
 ## Endpoints Implementados
 
@@ -277,11 +301,213 @@ gcs_path = extractor.extract_and_save()
 print(f"Dados salvos em: {gcs_path}")
 ```
 
-### Cloud Functions
+### Cloud Run Services
 
-**Importante**: Para deploy das Cloud Functions, você precisa copiar o diretório `src/` para dentro de cada função, ou usar uma estrutura de empacotamento. 
+**Importante**: Para deploy dos serviços Cloud Run, você precisa incluir o diretório `src/` junto com os arquivos de cada serviço. O `main.py` está configurado para encontrar o `src/` no diretório raiz do projeto.
 
-#### Opção 1: Copiar src/ para cada função (recomendado para deploy)
+#### Preparação dos Arquivos
+
+Cada serviço precisa ter:
+- `main.py`: Handler HTTP do serviço
+- `requirements.txt`: Dependências do serviço
+- `src/`: Diretório completo `src/` do projeto (copie manualmente ou via interface GCP)
+
+**Opção 1 - Via Interface GCP**: Ao fazer upload dos arquivos na interface do Cloud Run, inclua:
+- O arquivo `main.py` do serviço
+- O arquivo `requirements.txt` do serviço
+- Todo o diretório `src/` do projeto raiz
+
+**Opção 2 - Via CLI**: Copie o `src/` para cada serviço antes do deploy:
+
+```bash
+# Para cada serviço, copie o src/
+cp -r src cloud_run/extract_active_players/
+cp -r src cloud_run/extract_games/
+# ... e assim por diante
+```
+
+#### Deploy Individual de um Serviço
+
+Para fazer deploy de um serviço específico:
+
+```bash
+# Navegue até o diretório do serviço
+cd cloud_run/extract_active_players
+
+# Deploy usando gcloud
+gcloud run deploy extract-active-players \
+  --source . \
+  --region us-central1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --set-env-vars BALLDONTLIE_KEY=your_key,GCS_BUCKET_NAME=smartbetting-landing,GCP_PROJECT_ID=your-project-id,SEASON=2025 \
+  --timeout 540 \
+  --memory 512Mi \
+  --max-instances 10
+```
+
+**Parâmetros importantes**:
+- `--source .`: Usa o diretório atual como fonte
+- `--region`: Escolha a região mais próxima (ex: `us-central1`, `us-east1`, `southamerica-east1`)
+- `--timeout 540`: Timeout de 9 minutos (540 segundos) - ajuste conforme necessário
+- `--memory 512Mi`: Memória alocada - aumente se necessário
+- `--max-instances 10`: Limite de instâncias simultâneas
+
+#### Deploy de Todos os Serviços
+
+Você pode criar um script para fazer deploy de todos os serviços:
+
+```bash
+#!/bin/bash
+# deploy_all.sh
+
+REGION="us-central1"
+PROJECT_ID="your-project-id"
+
+SERVICES=(
+    "extract-active-players"
+    "extract-games"
+    "extract-game-player-stats"
+    "extract-season-averages"
+    "extract-player-injuries"
+    "extract-team-standings"
+    "extract-player-props"
+)
+
+for service in "${SERVICES[@]}"; do
+    service_dir=$(echo $service | sed 's/-/_/g')
+    echo "Deploying $service..."
+    
+    cd "cloud_run/$service_dir"
+    
+    gcloud run deploy "$service" \
+      --source . \
+      --region "$REGION" \
+      --platform managed \
+      --allow-unauthenticated \
+      --set-env-vars BALLDONTLIE_KEY=$BALLDONTLIE_KEY,GCS_BUCKET_NAME=smartbetting-landing,GCP_PROJECT_ID=$PROJECT_ID,SEASON=2025 \
+      --timeout 540 \
+      --memory 512Mi \
+      --max-instances 10
+    
+    cd ../..
+done
+```
+
+#### Estrutura de um Serviço Cloud Run
+
+Cada serviço Cloud Run:
+- Recebe requisições HTTP (POST ou GET)
+- Executa a extração do endpoint correspondente usando a configuração padrão (SEASON do config)
+- Faz upload dos dados para o GCS
+- Retorna JSON com status da execução e caminho(s) do(s) arquivo(s)
+
+**Nota**: Os serviços atuais usam a configuração padrão (variável de ambiente `SEASON`). Para adicionar suporte a parâmetros via request, você pode modificar a função `main()` em cada `main.py`.
+
+#### Exemplos de Requisições
+
+Os serviços atuais usam a configuração padrão (variável de ambiente `SEASON`). Qualquer requisição HTTP aciona a extração:
+
+```bash
+# Jogadores ativos
+curl -X POST https://extract-active-players-xxx.run.app
+
+# Jogos
+curl -X POST https://extract-games-xxx.run.app
+
+# Estatísticas de jogadores
+curl -X POST https://extract-game-player-stats-xxx.run.app
+
+# Médias da temporada
+curl -X POST https://extract-season-averages-xxx.run.app
+
+# Lesões de jogadores
+curl -X POST https://extract-player-injuries-xxx.run.app
+
+# Classificação de times
+curl -X POST https://extract-team-standings-xxx.run.app
+
+# Props de jogadores
+curl -X POST https://extract-player-props-xxx.run.app
+```
+
+**Nota**: Para adicionar suporte a parâmetros customizados (season, dates, etc.), modifique a função `main()` em cada `main.py` para ler do objeto `request`.
+
+#### Resposta dos Serviços
+
+Todos os serviços retornam JSON no seguinte formato:
+
+**Sucesso**:
+```json
+{
+  "status": "success",
+  "message": "Extração concluída com sucesso",
+  "season": 2025,
+  "gcs_path": "nba/active_players/2025/raw_nba_active_players_2025.json"
+}
+```
+
+**Múltiplos arquivos**:
+```json
+{
+  "status": "success",
+  "message": "Extração concluída com sucesso",
+  "season": 2025,
+  "files_count": 3,
+  "gcs_paths": [
+    "nba/games/2025/raw_nba_games_2025-2025-10-21.json",
+    "nba/games/2025/raw_nba_games_2025-2025-10-22.json",
+    "nba/games/2025/raw_nba_games_2025-2025-10-23.json"
+  ]
+}
+```
+
+**Erro**:
+```json
+{
+  "status": "error",
+  "message": "Descrição do erro",
+  "error_type": "Exception"
+}
+```
+
+#### Configuração de Variáveis de Ambiente
+
+Configure as variáveis de ambiente no Cloud Run através do console ou CLI:
+
+```bash
+gcloud run services update extract-active-players \
+  --region us-central1 \
+  --update-env-vars BALLDONTLIE_KEY=your_key,GCS_BUCKET_NAME=smartbetting-landing,SEASON=2025
+```
+
+#### Agendamento com Cloud Scheduler
+
+Você pode agendar execuções periódicas usando Cloud Scheduler:
+
+```bash
+# Cria um job do Cloud Scheduler para executar diariamente
+gcloud scheduler jobs create http extract-active-players-daily \
+  --location=us-central1 \
+  --schedule="0 2 * * *" \
+  --uri="https://extract-active-players-xxx.run.app" \
+  --http-method=POST \
+  --headers="Content-Type=application/json" \
+  --message-body='{"season": 2025}' \
+  --time-zone="America/Sao_Paulo"
+```
+
+#### Monitoramento e Logs
+
+- **Logs**: Acesse os logs no Cloud Logging do GCP
+- **Métricas**: Monitore requisições, latência e erros no Cloud Run console
+- **Alertas**: Configure alertas para falhas ou alta latência
+
+### Cloud Functions (Legado)
+
+**Nota**: Esta seção descreve o deploy usando Cloud Functions (1ª geração). Para novos deploys, recomenda-se usar Cloud Run (seção acima).
+
+Para deploy das Cloud Functions, você precisa copiar o diretório `src/` para dentro de cada função:
 
 ```bash
 # Script helper para preparar deploy
@@ -290,10 +516,9 @@ for func_dir in cloud_functions/extract_*; do
 done
 ```
 
-#### Opção 2: Deploy individual
+Deploy individual:
 
 ```bash
-# Deploy de uma função específica
 gcloud functions deploy extract_active_players \
   --runtime python311 \
   --trigger-http \
@@ -301,27 +526,6 @@ gcloud functions deploy extract_active_players \
   --source cloud_functions/extract_active_players \
   --set-env-vars BALLDONTLIE_KEY=your_key,GCS_BUCKET_NAME=smartbetting-landing,GCP_PROJECT_ID=your-project-id,SEASON=2025 \
   --allow-unauthenticated
-```
-
-#### Opção 3: Usar Cloud Build
-
-Crie um `cloudbuild.yaml` para automatizar o deploy de todas as funções.
-
-#### Estrutura de uma Cloud Function
-
-Cada Cloud Function:
-- Recebe requisições HTTP (POST ou GET)
-- Aceita parâmetros opcionais via JSON body
-- Executa a extração do endpoint correspondente
-- Faz upload dos dados para o GCS
-- Retorna status da execução
-
-Exemplo de requisição:
-
-```bash
-curl -X POST https://your-region-your-project.cloudfunctions.net/extract_active_players \
-  -H "Content-Type: application/json" \
-  -d '{"season": 2025}'
 ```
 
 ## Características Técnicas
@@ -356,8 +560,13 @@ O código é organizado de forma modular para facilitar:
 1. Adicione configuração em `src/config.py` (ENDPOINT_CONFIGS)
 2. Crie método no `BallDontLieClient` (`src/clients/balldontlie_client.py`)
 3. Crie extractor em `src/extractors/` herdando de `BaseExtractor`
-4. Crie Cloud Function em `cloud_functions/`
-5. Adicione ao script `full_load.py` se necessário
+4. Crie script em `scripts/` para execução local
+5. Crie serviço Cloud Run em `cloud_run/`:
+   - Crie diretório `cloud_run/extract_novo_endpoint/`
+   - Crie `main.py` seguindo o padrão dos outros serviços
+   - Crie `requirements.txt` copiando de outro serviço
+   - Execute `prepare_services.sh` para copiar `src/`
+6. Adicione ao script `full_load.py` se necessário
 
 ## Troubleshooting
 
