@@ -127,16 +127,17 @@ Cada extractor é responsável por extrair dados de um endpoint específico:
 Cada diretório representa um serviço Cloud Run independente para deploy no GCP:
 
 - **Estrutura de cada serviço**:
-  - `main.py`: Handler HTTP do serviço usando `functions_framework`
+  - `main.py`: Handler HTTP do serviço usando `functions_framework` que importa e executa o script correspondente de `scripts/`
   - `requirements.txt`: Dependências específicas do serviço (inclui `functions-framework`)
   - `src/`: Diretório `src/` do projeto raiz (deve ser copiado manualmente ou via interface GCP)
+  - `scripts/`: Diretório `scripts/` do projeto raiz (deve ser copiado manualmente ou via interface GCP)
   
 - **Características**:
   - Cada serviço é independente e pode ser deployado separadamente
   - Usa `functions_framework` para compatibilidade com Cloud Run
-  - Retorna JSON com status da execução e caminho(s) do(s) arquivo(s) no GCS
+  - **Modularidade**: Os `main.py` importam e reutilizam os scripts originais de `scripts/`, evitando duplicação de código
+  - Retorna JSON com status da execução
   - Suporta timeout configurável e escalabilidade automática
-  - Estrutura simplificada seguindo padrão de funções wrapper
 
 ### `scripts/` - Scripts de Execução
 
@@ -303,106 +304,178 @@ print(f"Dados salvos em: {gcs_path}")
 
 ### Cloud Run Services
 
-**Importante**: Para deploy dos serviços Cloud Run, você precisa incluir o diretório `src/` junto com os arquivos de cada serviço. O `main.py` está configurado para encontrar o `src/` no diretório raiz do projeto.
+#### Pré-requisitos
 
-#### Preparação dos Arquivos
+Antes de fazer o deploy, certifique-se de ter:
 
-Cada serviço precisa ter:
-- `main.py`: Handler HTTP do serviço
-- `requirements.txt`: Dependências do serviço
-- `src/`: Diretório completo `src/` do projeto (copie manualmente ou via interface GCP)
+1. **gcloud CLI instalado e configurado**:
+   ```bash
+   # Verificar instalação
+   gcloud --version
+   
+   # Autenticar
+   gcloud auth login
+   
+   # Configurar projeto padrão (opcional)
+   gcloud config set project YOUR_PROJECT_ID
+   ```
 
-**Opção 1 - Via Interface GCP**: Ao fazer upload dos arquivos na interface do Cloud Run, inclua:
-- O arquivo `main.py` do serviço
-- O arquivo `requirements.txt` do serviço
-- Todo o diretório `src/` do projeto raiz
+2. **Application Default Credentials configuradas**:
+   ```bash
+   gcloud auth application-default login
+   ```
 
-**Opção 2 - Via CLI**: Copie o `src/` para cada serviço antes do deploy:
+3. **Arquivo `.env` configurado** na raiz do projeto com as variáveis necessárias:
+   ```bash
+   BALLDONTLIE_KEY=your_api_key_here
+   GCS_BUCKET_NAME=smartbetting-landing
+   GCP_PROJECT_ID=your-gcp-project-id
+   SEASON=2025
+   LOG_LEVEL=INFO
+   ```
 
+#### Deploy usando o Script Automatizado
+
+O script `scripts/deploy_cloud_run.sh` automatiza o deploy de todos os serviços ou de um serviço específico.
+
+**Deploy de todos os serviços**:
 ```bash
-# Para cada serviço, copie o src/
-cp -r src cloud_run/extract_active_players/
-cp -r src cloud_run/extract_games/
-# ... e assim por diante
+./scripts/deploy_cloud_run.sh
 ```
 
-#### Deploy Individual de um Serviço
+**Deploy de um serviço específico**:
+```bash
+./scripts/deploy_cloud_run.sh extract-active-players
+```
 
-Para fazer deploy de um serviço específico:
+O script:
+- Lê automaticamente as variáveis de ambiente do arquivo `.env`
+- Prepara os diretórios necessários (copia `src/` e `scripts/` automaticamente)
+- Faz deploy de cada serviço com as configurações padrão:
+  - Região: `us-east1`
+  - Memória: `512Mi`
+  - CPU: `1`
+  - Timeout: `3600s` (60 minutos - máximo permitido pelo Cloud Run)
+  - Autenticação: Requerida (não permite acesso não autenticado)
+- Exibe o status e URL de cada serviço após o deploy
+
+**Serviços disponíveis**:
+- `extract-active-players`
+- `extract-games`
+- `extract-game-player-stats`
+- `extract-season-averages`
+- `extract-player-injuries`
+- `extract-team-standings`
+- `extract-player-props`
+
+#### Deploy Manual de um Serviço
+
+Se preferir fazer deploy manualmente:
 
 ```bash
 # Navegue até o diretório do serviço
 cd cloud_run/extract_active_players
 
+# Copie src/ e scripts/ se necessário
+cp -r ../../src .
+cp -r ../../scripts .
+
 # Deploy usando gcloud
 gcloud run deploy extract-active-players \
   --source . \
-  --region us-central1 \
+  --region us-east1 \
   --platform managed \
-  --allow-unauthenticated \
-  --set-env-vars BALLDONTLIE_KEY=your_key,GCS_BUCKET_NAME=smartbetting-landing,GCP_PROJECT_ID=your-project-id,SEASON=2025 \
-  --timeout 540 \
+  --no-allow-unauthenticated \
   --memory 512Mi \
-  --max-instances 10
+  --cpu 1 \
+  --timeout 3600 \
+  --set-env-vars BALLDONTLIE_KEY=your_key,GCS_BUCKET_NAME=smartbetting-landing,GCP_PROJECT_ID=your-project-id,SEASON=2025,LOG_LEVEL=INFO \
+  --project your-project-id
 ```
 
-**Parâmetros importantes**:
-- `--source .`: Usa o diretório atual como fonte
-- `--region`: Escolha a região mais próxima (ex: `us-central1`, `us-east1`, `southamerica-east1`)
-- `--timeout 540`: Timeout de 9 minutos (540 segundos) - ajuste conforme necessário
-- `--memory 512Mi`: Memória alocada - aumente se necessário
-- `--max-instances 10`: Limite de instâncias simultâneas
+#### Verificar Status dos Serviços
 
-#### Deploy de Todos os Serviços
+**Listar todos os serviços**:
+```bash
+gcloud run services list --region us-east1 --project YOUR_PROJECT_ID
+```
 
-Você pode criar um script para fazer deploy de todos os serviços:
+**Ver detalhes de um serviço específico**:
+```bash
+gcloud run services describe extract-active-players \
+  --region us-east1 \
+  --project YOUR_PROJECT_ID
+```
+
+**Ver logs de um serviço**:
+```bash
+gcloud run services logs read extract-active-players \
+  --region us-east1 \
+  --project YOUR_PROJECT_ID
+```
+
+#### Testar os Serviços
+
+Após o deploy, você pode testar os serviços. Como a autenticação é requerida, você precisa obter um token de autenticação:
 
 ```bash
-#!/bin/bash
-# deploy_all.sh
+# Obter token de autenticação
+TOKEN=$(gcloud auth print-identity-token)
 
-REGION="us-central1"
-PROJECT_ID="your-project-id"
+# Obter URL do serviço
+SERVICE_URL=$(gcloud run services describe extract-active-players \
+  --region us-east1 \
+  --project YOUR_PROJECT_ID \
+  --format="value(status.url)")
 
-SERVICES=(
-    "extract-active-players"
-    "extract-games"
-    "extract-game-player-stats"
-    "extract-season-averages"
-    "extract-player-injuries"
-    "extract-team-standings"
-    "extract-player-props"
-)
-
-for service in "${SERVICES[@]}"; do
-    service_dir=$(echo $service | sed 's/-/_/g')
-    echo "Deploying $service..."
-    
-    cd "cloud_run/$service_dir"
-    
-    gcloud run deploy "$service" \
-      --source . \
-      --region "$REGION" \
-      --platform managed \
-      --allow-unauthenticated \
-      --set-env-vars BALLDONTLIE_KEY=$BALLDONTLIE_KEY,GCS_BUCKET_NAME=smartbetting-landing,GCP_PROJECT_ID=$PROJECT_ID,SEASON=2025 \
-      --timeout 540 \
-      --memory 512Mi \
-      --max-instances 10
-    
-    cd ../..
-done
+# Fazer requisição autenticada
+curl -X POST "$SERVICE_URL" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json"
 ```
+
+#### Atualizar Variáveis de Ambiente
+
+**Via UI do GCP**:
+
+1. Acesse o [Cloud Run Console](https://console.cloud.google.com/run)
+2. Selecione o serviço que deseja atualizar
+3. Clique em **"Edit & Deploy New Revision"**
+4. Vá para a aba **"Variables & Secrets"**
+5. Edite ou adicione variáveis de ambiente
+6. Clique em **"Deploy"**
+
+**Via CLI**:
+
+```bash
+# Atualizar uma ou mais variáveis
+gcloud run services update extract-active-players \
+  --region us-east1 \
+  --update-env-vars "SEASON=2026,LOG_LEVEL=DEBUG" \
+  --project YOUR_PROJECT_ID
+
+# Atualizar todas as variáveis do .env
+# (você precisaria construir o comando manualmente ou usar o script)
+```
+
+**Nota**: Atualizar variáveis de ambiente cria uma nova revisão do serviço, mas é mais rápido que um redeploy completo.
 
 #### Estrutura de um Serviço Cloud Run
 
 Cada serviço Cloud Run:
 - Recebe requisições HTTP (POST ou GET)
-- Executa a extração do endpoint correspondente usando a configuração padrão (SEASON do config)
+- Importa e executa a função `main()` do script correspondente em `scripts/`
+- O script original executa a extração usando a configuração padrão (SEASON do config)
 - Faz upload dos dados para o GCS
-- Retorna JSON com status da execução e caminho(s) do(s) arquivo(s)
+- Retorna JSON com status da execução
 
-**Nota**: Os serviços atuais usam a configuração padrão (variável de ambiente `SEASON`). Para adicionar suporte a parâmetros via request, você pode modificar a função `main()` em cada `main.py`.
+**Vantagens da abordagem modular**:
+- **Sem duplicação de código**: A lógica de extração fica apenas nos scripts originais
+- **Manutenção simplificada**: Alterações nos scripts são automaticamente refletidas no Cloud Run
+- **Consistência**: Mesma lógica para execução local e Cloud Run
+- **Mesmo arquivo `.env`**: Reutiliza o mesmo arquivo de configuração usado localmente
+
+**Nota**: Os serviços atuais usam a configuração padrão (variável de ambiente `SEASON`). Para adicionar suporte a parâmetros via request, você pode modificar a função `main()` nos scripts originais ou criar wrappers nos `main.py` do Cloud Run.
 
 #### Exemplos de Requisições
 
@@ -471,15 +544,132 @@ Todos os serviços retornam JSON no seguinte formato:
 }
 ```
 
-#### Configuração de Variáveis de Ambiente
+#### Troubleshooting
 
-Configure as variáveis de ambiente no Cloud Run através do console ou CLI:
+**Erro: "gcloud CLI não está instalado"**
+- Instale o gcloud CLI: https://cloud.google.com/sdk/docs/install
+
+**Erro: "Você não está autenticado no gcloud"**
+```bash
+gcloud auth login
+gcloud auth application-default login
+```
+
+**Erro: "Arquivo .env não encontrado"**
+- Certifique-se de que o arquivo `.env` existe na raiz do projeto
+- Verifique se contém todas as variáveis obrigatórias: `BALLDONTLIE_KEY`, `GCS_BUCKET_NAME`, `GCP_PROJECT_ID`
+
+**Erro: "Permission denied" ao executar o script**
+```bash
+chmod +x scripts/deploy_cloud_run.sh
+```
+
+**Erro: "Service account does not have permission"**
+- Verifique se a conta de serviço do Cloud Run tem permissões para:
+  - `storage.objects.create` (para upload no GCS)
+  - `storage.buckets.get` (para acessar o bucket)
+
+**Serviço não responde ou retorna erro 500**
+- Verifique os logs: `gcloud run services logs read SERVICE_NAME --region us-east1`
+- Verifique se as variáveis de ambiente estão configuradas corretamente
+- Verifique se o bucket do GCS existe e está acessível
+
+#### Configuração de Permissões IAM
+
+Durante o deploy e execução dos serviços Cloud Run, diferentes service accounts são usadas:
+
+**1. Builder (Build Time)** - Service accounts usadas durante o build/deploy:
+- **Default Compute Service** (`PROJECT_NUMBER-compute@developer.gserviceaccount.com`)
+- **Cloud Build Service Account** (`PROJECT_NUMBER@cloudbuild.gserviceaccount.com`)
+
+**2. Runtime (Execution Time)** - Service account usada quando o serviço está executando:
+- **ExtractScripts** (`ExtractScripts@PROJECT_ID.iam.gserviceaccount.com`)
+
+**Configurar todas as permissões necessárias:**
 
 ```bash
-gcloud run services update extract-active-players \
-  --region us-central1 \
-  --update-env-vars BALLDONTLIE_KEY=your_key,GCS_BUCKET_NAME=smartbetting-landing,SEASON=2025
+# Substitua YOUR_PROJECT_ID pelo seu project ID
+PROJECT_ID="YOUR_PROJECT_ID"
+
+# Obter project number
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+
+echo "Configurando permissões para Builder..."
+
+# 1. Default Compute Service (Builder)
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/storage.admin"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/cloudbuild.builds.editor"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/logging.logWriter"
+
+# 2. Cloud Build Service Account (também usada durante o build)
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --role="roles/storage.admin"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --role="roles/logging.logWriter"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --role="roles/artifactregistry.writer"
+
+echo "Configurando permissões para Runtime..."
+
+# 3. ExtractScripts (Runtime)
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:ExtractScripts@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+
+echo "✅ Todas as permissões configuradas!"
 ```
+
+**Verificar permissões configuradas:**
+
+```bash
+PROJECT_NUMBER=$(gcloud projects describe YOUR_PROJECT_ID --format="value(projectNumber)")
+
+# Verificar Default Compute Service
+gcloud projects get-iam-policy YOUR_PROJECT_ID \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --format="table(bindings.role)"
+
+# Verificar Cloud Build SA
+gcloud projects get-iam-policy YOUR_PROJECT_ID \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --format="table(bindings.role)"
+
+# Verificar ExtractScripts
+gcloud projects get-iam-policy YOUR_PROJECT_ID \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:serviceAccount:ExtractScripts@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --format="table(bindings.role)"
+```
+
+**Troubleshooting de Permissões:**
+
+- **Erro: "storage.objects.get access denied" durante build**
+  - Execute os comandos da seção "Builder" acima
+
+- **Erro: "Permission 'artifactregistry.repositories.downloadArtifacts' denied"**
+  - Adicione `roles/artifactregistry.writer` à Cloud Build SA (já incluído no script acima)
+
+- **Erro: "does not have permission to write logs to Cloud Logging"**
+  - Adicione `roles/logging.logWriter` às service accounts de build (já incluído no script acima)
+  - Aguarde 1-2 minutos para propagação das permissões
+
+- **Erro: "Permission denied" ao fazer upload no GCS durante runtime**
+  - Execute o comando da seção "Runtime" acima para adicionar `roles/storage.objectAdmin` à ExtractScripts
 
 #### Agendamento com Cloud Scheduler
 
