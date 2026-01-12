@@ -25,17 +25,14 @@ from extract_game_player_stats import main as extract_main
 
 
 @functions_framework.http
-def extract_game_player_stats(request, *args, **kwargs):
+def extract_game_player_stats(request):
     """NBA Game Player Stats Pipeline"""
     try:
         result_code = extract_main()
         if result_code == 0:
-            return {"status": "success", "message": "Pipeline executed successfully"}, 200
+            return {"status": "success", "message": "Pipeline executed successfully"}
         else:
             return {"status": "error", "message": "Pipeline execution failed"}, 500
     except Exception as e:
         return {"status": "error", "error": str(e)}, 500
 
-
-# Exportar como 'app' para o functions-framework
-app = extract_game_player_stats

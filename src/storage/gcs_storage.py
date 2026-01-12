@@ -5,6 +5,7 @@ from google.cloud import storage
 from google.api_core import exceptions
 from src.config import GCS_BUCKET_NAME, GCP_PROJECT_ID, GCS_USE_ADC, get_gcs_path
 from src.utils.logger import setup_logger
+from src.utils.helpers import normalize_dict_keys
 
 logger = setup_logger(__name__)
 
@@ -90,8 +91,13 @@ class GCSStorage:
         )
         logger.info(f"Fazendo upload para: gs://{self.bucket_name}/{blob_path}")
         
-        # Converte dados para JSON
-        json_data = json.dumps(data, indent=2, ensure_ascii=False)
+        # Normaliza nomes de colunas para compatibilidade com BigQuery
+        # Remove caracteres inválidos (parênteses, hífens, etc.)
+        data = normalize_dict_keys(data)
+        
+        # Converte dados para NEWLINE_DELIMITED_JSON (um objeto JSON por linha)
+        # Necessário para compatibilidade com BigQuery
+        json_data = self._convert_to_newline_delimited_json(data, endpoint)
         
         # Faz upload
         try:
@@ -116,6 +122,57 @@ class GCSStorage:
         except Exception as e:
             logger.error(f"Erro ao fazer upload para {blob_path}: {str(e)}")
             raise
+    
+    def _convert_to_newline_delimited_json(self, data: Dict[str, Any], endpoint: str) -> str:
+        """
+        Converte dados para formato NEWLINE_DELIMITED_JSON.
+        Se os dados contiverem um array, cada item do array será uma linha.
+        
+        Args:
+            data: Dados a serem convertidos
+            endpoint: Nome do endpoint (para lógica específica)
+        
+        Returns:
+            String JSON no formato NEWLINE_DELIMITED_JSON
+        """
+        # Para season_averages, expande o array 'averages' em linhas separadas
+        if endpoint == "season_averages" and "averages" in data:
+            lines = []
+            # Metadados que serão incluídos em cada linha
+            metadata = {
+                "season": data.get("season"),
+                "category": data.get("category"),
+                "type": data.get("type"),
+                "season_type": data.get("season_type"),
+            }
+            
+            # Cria uma linha para cada item do array, incluindo os metadados
+            for item in data["averages"]:
+                # Combina metadados com o item
+                combined = {**metadata, **item}
+                lines.append(json.dumps(combined, ensure_ascii=False))
+            
+            return "\n".join(lines)
+        
+        # Para outros endpoints, verifica se há arrays principais
+        # Se houver um array no nível raiz ou um array com nome comum (games, players, etc.)
+        array_keys = ["games", "players", "teams", "stats", "injuries", "standings", "props"]
+        for key in array_keys:
+            if key in data and isinstance(data[key], list):
+                lines = []
+                # Metadados (tudo exceto o array)
+                metadata = {k: v for k, v in data.items() if k != key}
+                
+                # Cria uma linha para cada item do array
+                for item in data[key]:
+                    # Combina metadados com o item
+                    combined = {**metadata, **item}
+                    lines.append(json.dumps(combined, ensure_ascii=False))
+                
+                return "\n".join(lines)
+        
+        # Se não houver array, salva como um único objeto JSON (uma linha)
+        return json.dumps(data, ensure_ascii=False)
     
     def upload_file(
         self,

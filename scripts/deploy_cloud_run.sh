@@ -222,17 +222,14 @@ deploy_service() {
     # Constrói env vars
     local ENV_VARS=$(build_env_vars)
     
-    # Obtém entry point (nome da função)
-    local ENTRY_POINT=$(get_entry_point "$SERVICE_NAME")
-    
     # Faz deploy
     print_info "Executando gcloud run deploy..."
     print_info "Service account (runtime): $SERVICE_ACCOUNT"
-    print_info "Entry point: $ENTRY_POINT"
     
     # Nota: O Cloud Build usa a service account padrão do Compute Engine durante o build
     # (PROJECT_NUMBER-compute@developer.gserviceaccount.com)
     # Essa service account também precisa ter permissões de Storage
+    # O entry point é definido no main.py usando functions_framework
     
     gcloud run deploy "$SERVICE_NAME" \
         --source "$TEMP_DIR" \
@@ -243,15 +240,17 @@ deploy_service() {
         --memory "$MEMORY" \
         --cpu "$CPU" \
         --timeout "$TIMEOUT" \
-        --entry-point "$ENTRY_POINT" \
         --set-env-vars "$ENV_VARS" \
-        --project "$GCP_PROJECT_ID" \
-        --quiet
+        --project "$GCP_PROJECT_ID"
     
     local DEPLOY_EXIT_CODE=$?
     
     if [ $DEPLOY_EXIT_CODE -eq 0 ]; then
         print_info "✓ Deploy de $SERVICE_NAME concluído com sucesso"
+        
+        # Aguarda um pouco para garantir que o serviço está totalmente pronto
+        print_info "Aguardando serviço ficar pronto..."
+        sleep 5
         
         # Obtém URL do serviço
         local SERVICE_URL=$(gcloud run services describe "$SERVICE_NAME" \
@@ -261,6 +260,18 @@ deploy_service() {
         
         if [ -n "$SERVICE_URL" ]; then
             print_info "URL do serviço: $SERVICE_URL"
+            
+            # Verifica se o serviço está realmente pronto
+            local READY_STATUS=$(gcloud run services describe "$SERVICE_NAME" \
+                --region "$REGION" \
+                --project "$GCP_PROJECT_ID" \
+                --format="value(status.conditions[0].status)" 2>/dev/null)
+            
+            if [ "$READY_STATUS" = "True" ]; then
+                print_info "✓ Serviço está pronto e ativo"
+            else
+                print_warning "Serviço pode ainda estar inicializando. Status: $READY_STATUS"
+            fi
         else
             print_warning "Não foi possível obter a URL do serviço, mas o deploy pode ter sido bem-sucedido"
         fi

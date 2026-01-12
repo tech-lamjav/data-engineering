@@ -1,0 +1,66 @@
+# Cursor Rules - Smart Betting Data Engineering
+
+## Princípios de Design
+
+### Modularização
+- **SEMPRE** seguir a estratégia de modularização do projeto
+- Lógica de negócio deve estar em módulos em `src/`
+- Scripts em `scripts/` devem ser simples e importar de `src/`
+- Criar classes/módulos especializados em `src/` ao invés de duplicar código
+
+### Estrutura de Módulos
+- `src/clients/` - Clientes de API
+- `src/extractors/` - Extractors de dados
+- `src/storage/` - Armazenamento (GCS)
+- `src/bigquery/` - BigQuery
+- `src/utils/` - Utilitários
+
+### Configuração
+- **SEMPRE** usar constantes de `src/config.py` ao invés de hardcode
+- Variáveis de ambiente devem ser carregadas via `src/config.py`
+- Não usar argumentos de linha de comando (argparse)
+
+### Scripts
+- Scripts devem ser simples e diretos
+- **NÃO usar `argparse` ou `ArgumentParser`**
+- Usar valores de `src/config.py` diretamente
+- Se precisar de customização, adicionar ao `src/config.py` ou criar módulo específico
+
+### Padrão de Scripts
+```python
+"""Script para [descrição]."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.[modulo] import [Classe]
+from src.config import [CONSTANTES]
+from src.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
+
+def main():
+    try:
+        # Usar constantes do config diretamente
+        # Lógica simples
+        return 0
+    except Exception as e:
+        logger.error(f"Erro: {str(e)}", exc_info=True)
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+### Exemplos do que NÃO fazer
+- ❌ Usar `argparse.ArgumentParser`
+- ❌ Hardcode de valores que deveriam estar no config
+- ❌ Duplicar lógica que já existe em `src/`
+- ❌ Scripts complexos com muita lógica de negócio
+
+### Exemplos do que fazer
+- ✅ Importar de `src/config.py`
+- ✅ Usar classes/módulos de `src/`
+- ✅ Scripts simples que orquestram módulos
+- ✅ Adicionar novas funcionalidades como módulos em `src/`

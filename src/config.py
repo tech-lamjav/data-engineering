@@ -18,6 +18,11 @@ GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "smartbetting-landing")
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 GCS_USE_ADC = True  # Application Default Credentials
 
+# BigQuery Configuration
+BIGQUERY_PROJECT_ID = "smartbetting-dados"
+BIGQUERY_DATASET = "nba"
+BIGQUERY_LOCATION = "us-east1"
+
 # Season Configuration
 SEASON = int(os.getenv("SEASON", "2025"))
 

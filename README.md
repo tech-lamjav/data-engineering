@@ -26,6 +26,8 @@ data-engineering/
 │   │   └── player_props_extractor.py
 │   ├── storage/                 # Armazenamento
 │   │   └── gcs_storage.py       # Gerenciamento de uploads no GCS
+│   ├── bigquery/                # BigQuery
+│   │   └── bigquery_client.py   # Cliente para gerenciar external tables
 │   └── utils/                   # Utilitários
 │       ├── logger.py            # Configuração de logging
 │       └── helpers.py           # Funções auxiliares
@@ -60,8 +62,17 @@ data-engineering/
 │   ├── extract_team_standings/
 │   └── extract_player_props/
 ├── scripts/                     # Scripts de execução
-│   ├── full_load.py            # Carga total inicial
-│   └── incremental_load.py     # Ingestão incremental (futuro)
+│   ├── extract_active_players.py
+│   ├── extract_games.py
+│   ├── extract_game_player_stats.py
+│   ├── extract_season_averages.py
+│   ├── extract_player_injuries.py
+│   ├── extract_team_standings.py
+│   ├── extract_player_props.py
+│   ├── create_bigquery_external_tables.py  # Criar external tables no BigQuery
+│   ├── deploy_cloud_run.sh                 # Script de deploy
+│   └── sql/                                # Scripts SQL
+│       └── create_external_tables.sql      # SQL para criar external tables
 └── tests/                       # Testes
 ```
 
@@ -112,6 +123,13 @@ Cada extractor é responsável por extrair dados de um endpoint específico:
   - Criação automática de estrutura de pastas
   - Suporte a Application Default Credentials (ADC)
 
+#### `src/bigquery/` - BigQuery
+- **`bigquery_client.py`**: Gerencia external tables no BigQuery:
+  - Criação de datasets
+  - Criação/atualização de external tables
+  - Geração de URIs do GCS
+  - Autodetect automático de schemas (sem definição manual)
+
 #### `src/utils/` - Utilitários
 - **`logger.py`**: Configuração centralizada de logging:
   - Formatação de logs estruturados
@@ -143,7 +161,7 @@ Cada diretório representa um serviço Cloud Run independente para deploy no GCP
 
 Scripts para execução local ou em ambientes automatizados:
 
-- **Scripts individuais** (um para cada extractor):
+- **Scripts individuais de extração** (um para cada extractor):
   - `extract_active_players.py`
   - `extract_games.py`
   - `extract_game_player_stats.py`
@@ -153,6 +171,13 @@ Scripts para execução local ou em ambientes automatizados:
   - `extract_player_props.py`
   
   Cada script aceita argumentos de linha de comando e pode ser executado independentemente.
+
+- **Scripts de BigQuery**:
+  - `create_bigquery_external_tables.py`: Cria external tables no BigQuery para ler dados do GCS
+  - `sql/create_external_tables.sql`: Script SQL alternativo para criar external tables
+
+- **Scripts de deploy**:
+  - `deploy_cloud_run.sh`: Script automatizado para deploy de serviços Cloud Run
 
 - **Scripts de carga**:
   - `incremental_load.py`: Preparado para implementação futura de ingestão incremental
@@ -717,6 +742,202 @@ gcloud functions deploy extract_active_players \
   --set-env-vars BALLDONTLIE_KEY=your_key,GCS_BUCKET_NAME=smartbetting-landing,GCP_PROJECT_ID=your-project-id,SEASON=2025 \
   --allow-unauthenticated
 ```
+
+## BigQuery External Tables
+
+Após a extração e armazenamento dos dados no GCS, você pode criar external tables no BigQuery para consultar os dados diretamente sem precisar carregá-los no BigQuery. As external tables leem os arquivos JSON do GCS em tempo real.
+
+### Visão Geral
+
+As external tables permitem:
+- **Consultar dados diretamente do GCS** sem duplicar dados no BigQuery
+- **Economia de custos** (não há armazenamento duplicado)
+- **Atualização automática** quando novos arquivos são adicionados ao GCS
+- **Query em tempo real** dos dados brutos
+
+### Estrutura das External Tables
+
+- **Projeto**: `smartbetting-dados`
+- **Dataset**: `nba` (criado automaticamente na região `us-east1`)
+- **Tabelas**: Uma tabela por endpoint e temporada
+  - Formato: `raw_{endpoint}_{season}`
+  - Exemplo: `raw_active_players_2025`, `raw_games_2025`
+
+### Endpoints e Estrutura
+
+**Endpoints sem data** (arquivo único):
+- `raw_active_players_{season}`
+- `raw_season_averages_{season}`
+- `raw_player_injuries_{season}`
+- `raw_team_standings_{season}`
+
+**Endpoints com data** (múltiplos arquivos com wildcard):
+- `raw_games_{season}` - Lê todos os arquivos `nba/games/{season}/*.json`
+- `raw_game_player_stats_{season}` - Lê todos os arquivos `nba/game_player_stats/{season}/*.json`
+- `raw_player_props_{season}` - Lê todos os arquivos `nba/player_props/{season}/*/*.json`
+
+### Pré-requisitos
+
+1. **Biblioteca do BigQuery instalada**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Autenticação no GCP**:
+   ```bash
+   gcloud auth application-default login
+   ```
+
+3. **Permissões no BigQuery**:
+   - A conta de serviço precisa de permissões para criar datasets e tabelas
+   - Permissão: `roles/bigquery.dataEditor` ou `roles/bigquery.admin`
+
+### Criar External Tables
+
+#### Opção 1: Script Python (Recomendado)
+
+Use o script Python para criar todas as external tables automaticamente:
+
+```bash
+# Criar todas as external tables para a temporada configurada no .env
+python scripts/create_bigquery_external_tables.py
+```
+
+O script:
+- Usa o módulo `src/bigquery/BigQueryClient` para encapsular a lógica
+- Cria o dataset `nba` no projeto `smartbetting-dados` (região `us-east1`) se não existir
+- Cria/atualiza todas as external tables configuradas
+- Usa autodetect do BigQuery para inferir schemas automaticamente (sem definição manual)
+- Suporta wildcards para endpoints com múltiplos arquivos
+- Usa a temporada definida em `SEASON` no arquivo `.env` (padrão: 2025)
+
+#### Opção 2: Script SQL
+
+Use o script SQL para criar as tabelas manualmente:
+
+1. Edite `scripts/sql/create_external_tables.sql` e substitua as variáveis:
+   - `${GCS_BUCKET_NAME}`: Nome do bucket (padrão: `smartbetting-landing`)
+   - `${SEASON}`: Temporada (ex: `2025`)
+
+2. Execute no BigQuery Console ou via CLI:
+   ```bash
+   bq query --use_legacy_sql=false < scripts/sql/create_external_tables.sql
+   ```
+
+**Nota**: O script SQL já está configurado com:
+- Projeto: `smartbetting-dados`
+- Dataset: `nba`
+- Região: `us-east1`
+
+### Consultar Dados
+
+Após criar as external tables, você pode consultar os dados normalmente no BigQuery:
+
+```sql
+-- Consultar jogadores ativos
+SELECT 
+  season,
+  total_players,
+  players
+FROM `smartbetting-dados.nba.raw_active_players_2025`;
+
+-- Consultar jogos (com dados aninhados)
+SELECT 
+  season,
+  date,
+  total_games,
+  game.id,
+  game.date as game_date,
+  game.home_team.full_name as home_team,
+  game.visitor_team.full_name as visitor_team,
+  game.home_team_score,
+  game.visitor_team_score
+FROM `smartbetting-dados.nba.raw_games_2025`,
+UNNEST(games) as game
+WHERE game.date = '2025-10-21'
+ORDER BY game.id;
+
+-- Consultar estatísticas de jogadores por jogo
+SELECT 
+  season,
+  date,
+  stat.player.first_name,
+  stat.player.last_name,
+  stat.pts,
+  stat.reb,
+  stat.ast
+FROM `smartbetting-dados.nba.raw_game_player_stats_2025`,
+UNNEST(game_player_stats) as stat
+WHERE date = '2025-10-21'
+ORDER BY stat.pts DESC
+LIMIT 10;
+```
+
+### Estrutura dos Dados
+
+Os dados JSON salvos no GCS têm a seguinte estrutura:
+
+**Endpoints sem data**:
+```json
+{
+  "season": 2025,
+  "total_players": 500,
+  "players": [...]
+}
+```
+
+**Endpoints com data**:
+```json
+{
+  "season": 2025,
+  "date": "2025-10-21",
+  "total_games": 10,
+  "games": [...]
+}
+```
+
+O BigQuery automaticamente detecta e estrutura esses dados em tabelas relacionais, permitindo consultas SQL normais.
+
+### Atualização Automática
+
+As external tables são atualizadas automaticamente quando:
+- Novos arquivos são adicionados ao GCS (para endpoints com wildcard)
+- Os arquivos existentes são modificados
+
+**Nota**: Para endpoints com wildcard (games, game_player_stats, player_props), novos arquivos adicionados ao GCS aparecem automaticamente nas consultas sem necessidade de atualizar a tabela.
+
+### Troubleshooting
+
+**Erro: "Access Denied" ao criar tabelas**
+- Verifique se a conta de serviço tem permissões `bigquery.datasets.create` e `bigquery.tables.create`
+- Execute: `gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:..." --role="roles/bigquery.dataEditor"`
+
+**Erro: "File not found" ao consultar**
+- Verifique se os arquivos existem no GCS no caminho especificado
+- Verifique se o bucket está acessível
+- Use: `gsutil ls gs://smartbetting-landing/nba/{endpoint}/{season}/`
+
+**Erro: "Invalid JSON"**
+- Verifique se os arquivos JSON no GCS são válidos
+- Use: `gsutil cat gs://smartbetting-landing/nba/{endpoint}/{season}/arquivo.json | python -m json.tool`
+
+**Tabela não mostra novos arquivos**
+- Para endpoints com wildcard, os novos arquivos devem aparecer automaticamente
+- Verifique se os novos arquivos seguem o padrão de nomenclatura esperado
+- Recrie a tabela se necessário: `python scripts/create_bigquery_external_tables.py`
+
+**Performance lenta em consultas**
+- External tables podem ser mais lentas que tabelas nativas do BigQuery
+- Considere criar tabelas materializadas para consultas frequentes
+- Use filtros apropriados para reduzir dados processados
+
+### Próximos Passos
+
+Após configurar as external tables, você pode:
+1. **Criar views** para simplificar consultas comuns
+2. **Criar tabelas materializadas** para melhor performance em consultas frequentes
+3. **Configurar transformações** para limpar e estruturar os dados
+4. **Criar dashboards** no Data Studio ou Looker usando os dados do BigQuery
 
 ## Características Técnicas
 
