@@ -99,6 +99,23 @@ class GCSStorage:
         # Necessário para compatibilidade com BigQuery
         json_data = self._convert_to_newline_delimited_json(data, endpoint)
         
+        # Valida que o JSON gerado é válido
+        if not json_data or not json_data.strip():
+            raise ValueError(f"JSON gerado está vazio para {blob_path}")
+        
+        # Valida que cada linha é um JSON válido (para NDJSON)
+        lines = json_data.strip().split('\n')
+        for line_num, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                json.loads(line)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"JSON inválido na linha {line_num} do arquivo {blob_path}: {str(e)}"
+                )
+        
         # Faz upload
         try:
             blob = self.bucket.blob(blob_path)
@@ -154,20 +171,75 @@ class GCSStorage:
             
             return "\n".join(lines)
         
+        # Para player_props, expande o array 'props' em linhas separadas
+        # Cada prop será uma linha com os metadados (season, game_id, vendor, etc.)
+        if endpoint == "player_props" and "props" in data:
+            lines = []
+            # Metadados que serão incluídos em cada linha
+            metadata = {
+                "season": data.get("season"),
+                "game_id": data.get("game_id"),
+                "vendor": data.get("vendor"),
+                "total_props": data.get("total_props"),
+            }
+            
+            # Remove campos None do metadata
+            metadata = {k: v for k, v in metadata.items() if v is not None}
+            
+            # Se não houver props, retorna um objeto vazio (evita arquivo vazio)
+            if not data.get("props") or len(data["props"]) == 0:
+                # Retorna um objeto com apenas os metadados para indicar que não há props
+                return json.dumps(metadata, ensure_ascii=False)
+            
+            # Cria uma linha para cada prop, incluindo os metadados
+            for item in data["props"]:
+                if isinstance(item, dict):
+                    # Combina metadados com o item da prop
+                    combined = {**metadata, **item}
+                    lines.append(json.dumps(combined, ensure_ascii=False))
+                else:
+                    # Se o item não for um dict, adiciona como está com metadados
+                    combined = {**metadata, "prop": item}
+                    lines.append(json.dumps(combined, ensure_ascii=False))
+            
+            # Se não gerou nenhuma linha válida, retorna objeto com metadados
+            if not lines:
+                return json.dumps(metadata, ensure_ascii=False)
+            
+            return "\n".join(lines)
+        
+        # Para games e game_player_stats, salva como um único objeto JSON (mantém o array intacto)
+        # Isso é necessário porque o BigQuery espera que cada linha seja um objeto completo com o array dentro
+        if endpoint in ["games", "game_player_stats"]:
+            return json.dumps(data, ensure_ascii=False)
+        
         # Para outros endpoints, verifica se há arrays principais
         # Se houver um array no nível raiz ou um array com nome comum (games, players, etc.)
-        array_keys = ["games", "players", "teams", "stats", "injuries", "standings", "props"]
+        array_keys = ["players", "teams", "injuries", "standings"]
         for key in array_keys:
             if key in data and isinstance(data[key], list):
                 lines = []
                 # Metadados (tudo exceto o array)
                 metadata = {k: v for k, v in data.items() if k != key}
                 
+                # Se o array estiver vazio, retorna objeto com metadados apenas
+                if not data[key]:
+                    return json.dumps(metadata, ensure_ascii=False)
+                
                 # Cria uma linha para cada item do array
                 for item in data[key]:
-                    # Combina metadados com o item
-                    combined = {**metadata, **item}
-                    lines.append(json.dumps(combined, ensure_ascii=False))
+                    if isinstance(item, dict):
+                        # Combina metadados com o item
+                        combined = {**metadata, **item}
+                        lines.append(json.dumps(combined, ensure_ascii=False))
+                    else:
+                        # Se não for dict, adiciona como está
+                        combined = {**metadata, key: item}
+                        lines.append(json.dumps(combined, ensure_ascii=False))
+                
+                # Se não gerou linhas válidas, retorna objeto com metadados
+                if not lines:
+                    return json.dumps(metadata, ensure_ascii=False)
                 
                 return "\n".join(lines)
         
@@ -257,18 +329,59 @@ class GCSStorage:
             try:
                 # Baixa e lê o arquivo
                 content = blob.download_as_text()
-                data = json.loads(content)
-                games = data.get("games", [])
                 
+                games = []
+                
+                # Tenta primeiro como JSON único (formato padrão para games)
+                # Formato esperado: {"season": 2025, "date": "...", "games": [...]}
+                try:
+                    data = json.loads(content)
+                    if isinstance(data, dict) and "games" in data:
+                        games = data.get("games", [])
+                    elif isinstance(data, list):
+                        # Se o JSON é um array direto de games
+                        games = data
+                    else:
+                        logger.warning(f"Formato JSON inesperado em {blob.name}: não contém 'games' nem é um array")
+                except json.JSONDecodeError as json_err:
+                    # Se falhar, tenta como NDJSON (newline-delimited JSON)
+                    # Cada linha é um objeto JSON separado
+                    logger.debug(f"Tentando ler {blob.name} como NDJSON (newline-delimited)...")
+                    lines = content.strip().split('\n')
+                    for line_num, line in enumerate(lines, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            line_data = json.loads(line)
+                            # Se a linha contém um array de games, extrai
+                            if isinstance(line_data, dict) and "games" in line_data:
+                                games.extend(line_data.get("games", []))
+                            # Se a linha é um jogo diretamente (tem campo "id" e outros campos de jogo), adiciona
+                            elif isinstance(line_data, dict) and "id" in line_data and "date" in line_data:
+                                games.append(line_data)
+                            # Se a linha é um array de games
+                            elif isinstance(line_data, list):
+                                games.extend(line_data)
+                        except json.JSONDecodeError as line_err:
+                            logger.warning(
+                                f"Erro ao processar linha {line_num} do arquivo {blob.name}: {str(line_err)}"
+                            )
+                            continue
+                
+                # Extrai game_ids dos jogos encontrados
+                games_found = 0
                 for game in games:
-                    game_id = game.get("id")
-                    if game_id:
-                        game_ids.add(game_id)
+                    if isinstance(game, dict):
+                        game_id = game.get("id")
+                        if game_id:
+                            game_ids.add(game_id)
+                            games_found += 1
                 
                 files_processed += 1
-                logger.debug(f"Processado {blob.name}: {len(games)} jogos")
+                logger.debug(f"Processado {blob.name}: {games_found} game_ids extraídos de {len(games)} jogos")
             except Exception as e:
-                logger.warning(f"Erro ao processar arquivo {blob.name}: {str(e)}")
+                logger.warning(f"Erro ao processar arquivo {blob.name}: {str(e)}", exc_info=True)
                 continue
         
         logger.info(f"Total de {files_processed} arquivos processados, {len(game_ids)} game_ids únicos encontrados")

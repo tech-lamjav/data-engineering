@@ -48,11 +48,22 @@ class GamesExtractor(BaseExtractor):
             per_page=self.config.get("per_page", 100),
         )
         
+        # Remove o campo status de cada jogo para evitar problemas de inferência de tipo no BigQuery
+        # Cria uma nova lista com cópias dos jogos sem o campo status
+        games_without_status = []
+        for game in games:
+            if isinstance(game, dict):
+                # Cria uma cópia do dicionário sem o campo status
+                game_copy = {k: v for k, v in game.items() if k != "status"}
+                games_without_status.append(game_copy)
+            else:
+                games_without_status.append(game)
+        
         return {
             "season": self.season,
             "date": date or datetime.now().strftime("%Y-%m-%d"),
-            "total_games": len(games),
-            "games": games,
+            "total_games": len(games_without_status),
+            "games": games_without_status,
         }
     
     def _get_season_date_range(self) -> List[str]:

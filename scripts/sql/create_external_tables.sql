@@ -30,12 +30,28 @@ OPTIONS(
   description="External table para dados brutos de jogadores ativos"
 );
 
--- Season Averages
-CREATE OR REPLACE EXTERNAL TABLE `smartbetting-dados.nba.raw_season_averages`
+-- Season Averages - General Base
+CREATE OR REPLACE EXTERNAL TABLE `smartbetting-dados.nba.raw_season_averages_general_base`
 OPTIONS(
   format="JSON",
-  uris=["gs://${GCS_BUCKET_NAME}/nba/season_averages/${SEASON}/raw_nba_season_averages_${SEASON}-*.json"],
-  description="External table para dados brutos de médias da temporada"
+  uris=["gs://${GCS_BUCKET_NAME}/nba/season_averages/${SEASON}/raw_nba_season_averages_${SEASON}-general-base.json"],
+  description="External table para dados brutos de médias da temporada (category=general, type=base)"
+);
+
+-- Season Averages - General Advanced
+CREATE OR REPLACE EXTERNAL TABLE `smartbetting-dados.nba.raw_season_averages_general_advanced`
+OPTIONS(
+  format="JSON",
+  uris=["gs://${GCS_BUCKET_NAME}/nba/season_averages/${SEASON}/raw_nba_season_averages_${SEASON}-general-advanced.json"],
+  description="External table para dados brutos de médias da temporada (category=general, type=advanced)"
+);
+
+-- Season Averages - Shooting By Zone
+CREATE OR REPLACE EXTERNAL TABLE `smartbetting-dados.nba.raw_season_averages_shooting_by_zone`
+OPTIONS(
+  format="JSON",
+  uris=["gs://${GCS_BUCKET_NAME}/nba/season_averages/${SEASON}/raw_nba_season_averages_${SEASON}-shooting-by_zone.json"],
+  description="External table para dados brutos de médias da temporada (category=shooting, type=by_zone)"
 );
 
 -- Player Injuries

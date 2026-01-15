@@ -35,7 +35,7 @@ class BigQueryClient:
         self.client = bigquery.Client(project=self.project_id)
         logger.info(f"Cliente BigQuery inicializado para projeto: {self.project_id}")
     
-    def get_external_table_uri(self, endpoint: str, season: int, has_date: bool = False) -> str:
+    def get_external_table_uri(self, endpoint: str, season: int, has_date: bool = False, category: str = None, type: str = None) -> str:
         """
         Gera o URI do GCS para a external table.
         
@@ -43,6 +43,8 @@ class BigQueryClient:
             endpoint: Nome do endpoint
             season: Temporada
             has_date: Se o endpoint tem data (usa wildcard)
+            category: Categoria para season_averages (opcional)
+            type: Tipo para season_averages (opcional)
         
         Returns:
             URI do GCS (gs://bucket/path)
@@ -51,10 +53,10 @@ class BigQueryClient:
         if has_date:
             # Para endpoints com data, usa wildcard para ler todos os arquivos
             uri = f"gs://{bucket}/nba/{endpoint}/{season}/*.json"
-        elif endpoint == "season_averages":
-            # Para season_averages, usa wildcard para pegar todos os arquivos com diferentes category/type
+        elif endpoint == "season_averages" and category and type:
+            # Para season_averages, cria URI específico para cada combinação category-type
             # Formato: raw_nba_season_averages_{season}-{category}-{type}.json
-            uri = f"gs://{bucket}/nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-*.json"
+            uri = f"gs://{bucket}/nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{category}-{type}.json"
         else:
             # Para endpoints sem data, lê um arquivo específico
             uri = f"gs://{bucket}/nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}.json"
@@ -159,6 +161,13 @@ class BigQueryClient:
         
         results = {}
         
+        # Combinações de season_averages
+        SEASON_AVERAGES_COMBINATIONS = [
+            {"category": "general", "type": "base"},
+            {"category": "general", "type": "advanced"},
+            {"category": "shooting", "type": "by_zone"},
+        ]
+        
         for endpoint in endpoints_to_process:
             if endpoint not in ENDPOINT_CONFIGS:
                 logger.warning(f"Endpoint {endpoint} não encontrado na configuração. Pulando...")
@@ -169,30 +178,69 @@ class BigQueryClient:
                 config = ENDPOINT_CONFIGS[endpoint]
                 has_date = config.get("has_date", False)
                 
-                # Gera URI do GCS
-                uri = self.get_external_table_uri(endpoint, season, has_date)
-                
-                # Nome da tabela (sem o ano)
-                table_id = f"raw_{endpoint}"
-                
-                # Descrição
-                description = f"External table para dados brutos do endpoint {endpoint}"
-                if has_date:
-                    description += " (inclui múltiplos arquivos por data)"
-                
-                # Cria a tabela
-                self.create_external_table(
-                    table_id=table_id,
-                    uri=uri,
-                    description=description,
-                )
-                
-                results[endpoint] = True
-                logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
-                logger.info(f"  URI: {uri}")
+                # Tratamento especial para season_averages: cria 3 external tables
+                if endpoint == "season_averages":
+                    for combo in SEASON_AVERAGES_COMBINATIONS:
+                        category = combo["category"]
+                        type_param = combo["type"]
+                        
+                        # Gera URI do GCS
+                        uri = self.get_external_table_uri(
+                            endpoint, 
+                            season, 
+                            has_date, 
+                            category=category, 
+                            type=type_param
+                        )
+                        
+                        # Nome da tabela específico para cada combinação
+                        table_id = f"raw_{endpoint}_{category}_{type_param}"
+                        
+                        # Descrição
+                        description = f"External table para dados brutos de season_averages (category={category}, type={type_param})"
+                        
+                        # Cria a tabela
+                        self.create_external_table(
+                            table_id=table_id,
+                            uri=uri,
+                            description=description,
+                        )
+                        
+                        result_key = f"{endpoint}_{category}_{type_param}"
+                        results[result_key] = True
+                        logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
+                        logger.info(f"  URI: {uri}")
+                else:
+                    # Gera URI do GCS
+                    uri = self.get_external_table_uri(endpoint, season, has_date)
+                    
+                    # Nome da tabela (sem o ano)
+                    table_id = f"raw_{endpoint}"
+                    
+                    # Descrição
+                    description = f"External table para dados brutos do endpoint {endpoint}"
+                    if has_date:
+                        description += " (inclui múltiplos arquivos por data)"
+                    
+                    # Cria a tabela
+                    self.create_external_table(
+                        table_id=table_id,
+                        uri=uri,
+                        description=description,
+                    )
+                    
+                    results[endpoint] = True
+                    logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
+                    logger.info(f"  URI: {uri}")
                 
             except Exception as e:
                 logger.error(f"✗ Erro ao criar external table para {endpoint}: {str(e)}", exc_info=True)
-                results[endpoint] = False
+                if endpoint == "season_averages":
+                    # Marca todas as combinações como falha
+                    for combo in SEASON_AVERAGES_COMBINATIONS:
+                        result_key = f"{endpoint}_{combo['category']}_{combo['type']}"
+                        results[result_key] = False
+                else:
+                    results[endpoint] = False
         
         return results
