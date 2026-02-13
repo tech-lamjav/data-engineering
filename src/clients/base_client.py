@@ -92,6 +92,7 @@ class BaseClient:
         params: Optional[Dict[str, Any]] = None,
         per_page: int = 100,
         max_items: Optional[int] = None,
+        base_url_override: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Faz requisições paginadas e retorna todos os resultados consolidados.
@@ -101,6 +102,7 @@ class BaseClient:
             params: Parâmetros da query string
             per_page: Itens por página
             max_items: Limite máximo de itens a coletar (opcional, para segurança)
+            base_url_override: URL base alternativa (opcional, ex: para endpoints nba/v1)
         
         Returns:
             Lista consolidada de todos os itens
@@ -109,6 +111,7 @@ class BaseClient:
         page = 1
         cursor = None
         use_cursor_pagination = False
+        base_url = (base_url_override or self.base_url).rstrip("/")
         
         params = params or {}
         params["per_page"] = per_page
@@ -126,7 +129,14 @@ class BaseClient:
                 params["page"] = page
                 logger.info(f"Buscando página {page} do endpoint {endpoint}...")
             
-            response = self.get(endpoint, params=params)
+            url = f"{base_url}/{endpoint.lstrip('/')}"
+            response = self.session.request(
+                method="GET",
+                url=url,
+                params=params,
+                timeout=API_TIMEOUT,
+            )
+            response.raise_for_status()
             data = response.json()
             
             # A API retorna dados em formato {'data': [...], 'meta': {...}}

@@ -1,7 +1,7 @@
 """Cliente específico para a API balldontlie.io."""
 from typing import Dict, Any, Optional, List
 from src.clients.base_client import BaseClient
-from src.config import API_BASE_URL, API_KEY
+from src.config import API_BASE_URL, API_BASE_URL_NBA, API_KEY
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -114,6 +114,46 @@ class BallDontLieClient(BaseClient):
         
         endpoint = f"season_averages/{category}"
         return self.get_paginated(endpoint, params=params, per_page=per_page)
+    
+    def get_team_season_averages(
+        self,
+        season: int,
+        category: str,
+        type: str,
+        season_type: str = "regular",
+        team_ids: Optional[List[int]] = None,
+        per_page: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca médias da temporada por time.
+        
+        Args:
+            season: Ano da temporada
+            category: Categoria (general, clutch, shooting, playtype, tracking, hustle, shotdashboard)
+            type: Tipo de estatística (base, advanced, scoring, misc, etc.)
+            season_type: Tipo de temporada (regular, playoffs, ist)
+            team_ids: Lista de IDs de times (opcional)
+            per_page: Itens por página
+        
+        Returns:
+            Lista de médias por time
+        """
+        params = {
+            "season": season,
+            "season_type": season_type,
+            "type": type,
+        }
+        
+        if team_ids:
+            params["team_ids[]"] = team_ids
+        
+        endpoint = f"team_season_averages/{category}"
+        return self.get_paginated(
+            endpoint,
+            params=params,
+            per_page=per_page,
+            base_url_override=API_BASE_URL_NBA,
+        )
     
     def get_active_players(
         self,

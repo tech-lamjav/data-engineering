@@ -20,6 +20,7 @@ data-engineering/
 │   │   ├── games_extractor.py
 │   │   ├── game_player_stats_extractor.py
 │   │   ├── season_averages_extractor.py
+│   │   ├── team_season_averages_extractor.py
 │   │   ├── active_players_extractor.py
 │   │   ├── player_injuries_extractor.py
 │   │   ├── team_standings_extractor.py
@@ -39,6 +40,9 @@ data-engineering/
 │   │   ├── main.py
 │   │   └── requirements.txt
 │   ├── extract_season_averages/
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   ├── extract_team_season_averages/
 │   │   ├── main.py
 │   │   └── requirements.txt
 │   ├── extract_active_players/
@@ -66,6 +70,7 @@ data-engineering/
 │   ├── extract_games.py
 │   ├── extract_game_player_stats.py
 │   ├── extract_season_averages.py
+│   ├── extract_team_season_averages.py
 │   ├── extract_player_injuries.py
 │   ├── extract_team_standings.py
 │   ├── extract_player_props.py
@@ -111,6 +116,7 @@ Cada extractor é responsável por extrair dados de um endpoint específico:
   - `games_extractor.py`
   - `game_player_stats_extractor.py`
   - `season_averages_extractor.py`
+  - `team_season_averages_extractor.py`
   - `active_players_extractor.py`
   - `player_injuries_extractor.py`
   - `team_standings_extractor.py`
@@ -218,10 +224,11 @@ Google Cloud Storage
 1. **games** - Jogos da temporada (com data)
 2. **game_player_stats** - Estatísticas de jogadores por jogo (com data)
 3. **season_averages** - Médias da temporada (sem data)
-4. **active_players** - Jogadores ativos (sem data)
-5. **player_injuries** - Lesões de jogadores (sem data)
-6. **team_standings** - Classificação de times (sem data)
-7. **player_props** - Props de jogadores (DraftKings, todas as prop types) (com data)
+4. **team_season_averages** - Médias da temporada por time (general/advanced) (sem data)
+5. **active_players** - Jogadores ativos (sem data)
+6. **player_injuries** - Lesões de jogadores (sem data)
+7. **team_standings** - Classificação de times (sem data)
+8. **player_props** - Props de jogadores (DraftKings, todas as prop types) (com data)
 
 ## Estrutura de Caminhos no GCS
 
@@ -230,6 +237,8 @@ Google Cloud Storage
   - Exemplo: `nba/active_players/2025/raw_nba_active_players_2025.json`
 - **Endpoints com data**: `nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{YYYY-MM-DD}.json`
   - Exemplo: `nba/game_player_stats/2025/raw_nba_game_player_stats_2025-10-21.json`
+- **Endpoints com category/type** (season_averages, team_season_averages): `nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{category}-{type}.json`
+  - Exemplo: `nba/team_season_averages/2025/raw_nba_team_season_averages_2025-general-advanced.json`
 
 ## Configuração
 
@@ -304,6 +313,9 @@ python scripts/extract_game_player_stats.py --season 2025 --game-ids 123 456
 # Médias da temporada
 python scripts/extract_season_averages.py --season 2025
 python scripts/extract_season_averages.py --season 2025 --player-ids 1 2 3
+
+# Médias da temporada por time (general/advanced)
+python scripts/extract_team_season_averages.py
 
 # Lesões de jogadores
 python scripts/extract_player_injuries.py --season 2025
@@ -389,6 +401,7 @@ O script:
 - `extract-games`
 - `extract-game-player-stats`
 - `extract-season-averages`
+- `extract-team-season-averages`
 - `extract-player-injuries`
 - `extract-team-standings`
 - `extract-player-props`
@@ -766,10 +779,11 @@ As external tables permitem:
 ### Endpoints e Estrutura
 
 **Endpoints sem data** (arquivo único):
-- `raw_active_players_{season}`
-- `raw_season_averages_{season}`
-- `raw_player_injuries_{season}`
-- `raw_team_standings_{season}`
+- `raw_active_players`
+- `raw_season_averages_{category}_{type}` (ex: `raw_season_averages_general_advanced`)
+- `raw_team_season_averages_{category}_{type}` (ex: `raw_team_season_averages_general_advanced`)
+- `raw_player_injuries`
+- `raw_team_standings`
 
 **Endpoints com data** (múltiplos arquivos com wildcard):
 - `raw_games_{season}` - Lê todos os arquivos `nba/games/{season}/*.json`

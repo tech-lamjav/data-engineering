@@ -27,6 +27,7 @@ SERVICES=(
     "extract-games:extract_games"
     "extract-game-player-stats:extract_game_player_stats"
     "extract-season-averages:extract_season_averages"
+    "extract-team-season-averages:extract_team_season_averages"
     "extract-player-injuries:extract_player_injuries"
     "extract-team-standings:extract_team_standings"
     "extract-player-props:extract_player_props"

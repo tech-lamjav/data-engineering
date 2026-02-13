@@ -10,6 +10,7 @@ load_dotenv(dotenv_path=env_path)
 # API Configuration
 API_BASE_URL = "https://api.balldontlie.io/v1"
 API_BASE_URL_V2 = "https://api.balldontlie.io/v2"  # Para endpoints v2
+API_BASE_URL_NBA = "https://api.balldontlie.io/nba/v1"  # Para team_season_averages
 API_KEY = os.getenv("BALLDONTLIE_KEY")
 API_TIMEOUT = 60
 
@@ -40,6 +41,10 @@ ENDPOINT_CONFIGS = {
         "per_page": 100,
     },
     "season_averages": {
+        "has_date": False,
+        "per_page": 100,
+    },
+    "team_season_averages": {
         "has_date": False,
         "per_page": 100,
     },

@@ -98,6 +98,15 @@ main:
                                 auth:
                                   type: OIDC
                                 timeout: 1800
+                    - extract_team_season_averages:
+                        steps:
+                          - call_extract_team_season_averages:
+                              call: http.get
+                              args:
+                                url: https://extract-team-season-averages-r52p4w2f2a-ue.a.run.app
+                                auth:
+                                  type: OIDC
+                                timeout: 1800
             - log_phase1_success:
                 call: sys.log
                 args:

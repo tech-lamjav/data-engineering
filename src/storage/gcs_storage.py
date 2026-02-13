@@ -171,6 +171,20 @@ class GCSStorage:
             
             return "\n".join(lines)
         
+        # Para team_season_averages, expande o array 'team_averages' em linhas separadas
+        if endpoint == "team_season_averages" and "team_averages" in data:
+            lines = []
+            metadata = {
+                "season": data.get("season"),
+                "category": data.get("category"),
+                "type": data.get("type"),
+                "season_type": data.get("season_type"),
+            }
+            for item in data["team_averages"]:
+                combined = {**metadata, **item}
+                lines.append(json.dumps(combined, ensure_ascii=False))
+            return "\n".join(lines) if lines else json.dumps(metadata, ensure_ascii=False)
+        
         # Para player_props, expande o array 'props' em linhas separadas
         # Cada prop será uma linha com os metadados (season, game_id, vendor, etc.)
         if endpoint == "player_props" and "props" in data:
