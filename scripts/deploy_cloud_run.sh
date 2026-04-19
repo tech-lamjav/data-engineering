@@ -26,11 +26,16 @@ SERVICES=(
     "extract-active-players:extract_active_players"
     "extract-games:extract_games"
     "extract-game-player-stats:extract_game_player_stats"
+    "extract-game-player-stats-period:extract_game_player_stats_period"
     "extract-season-averages:extract_season_averages"
     "extract-team-season-averages:extract_team_season_averages"
     "extract-player-injuries:extract_player_injuries"
     "extract-team-standings:extract_team_standings"
-    "extract-player-props:extract_player_props"
+    "extract-player-props-draftkings:extract_player_props_draftkings"
+    "extract-player-props-caesars:extract_player_props_caesars"
+    "extract-player-props-betrivers:extract_player_props_betrivers"
+    "extract-betting-odds:extract_betting_odds"
+    "notify-execution:notify_execution"
 )
 
 # Função para obter o diretório do serviço
@@ -185,10 +190,13 @@ deploy_service() {
     local TEMP_DIR=$(mktemp -d)
     print_info "Preparando diretório temporário: $TEMP_DIR"
     
-    # Copia arquivos do serviço (main.py e requirements.txt)
+    # Copia arquivos do serviço (main.py, requirements.txt e opcionalmente Procfile)
     print_info "Copiando arquivos do serviço..."
     cp "$SERVICE_PATH/main.py" "$TEMP_DIR/"
     cp "$SERVICE_PATH/requirements.txt" "$TEMP_DIR/"
+    if [ -f "$SERVICE_PATH/Procfile" ]; then
+        cp "$SERVICE_PATH/Procfile" "$TEMP_DIR/"
+    fi
     
     # Copia src/ e scripts/
     print_info "Copiando diretórios src/ e scripts/..."
@@ -221,28 +229,43 @@ deploy_service() {
     echo "  - scripts/: $(test -d "$TEMP_DIR/scripts" && echo "✓" || echo "✗")"
     
     # Constrói env vars
+    local ENTRY_POINT=$(get_entry_point "$SERVICE_NAME")
     local ENV_VARS=$(build_env_vars)
-    
+    ENV_VARS="${ENV_VARS},GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}"
+
     # Faz deploy
     print_info "Executando gcloud run deploy..."
     print_info "Service account (runtime): $SERVICE_ACCOUNT"
-    
-    # Nota: O Cloud Build usa a service account padrão do Compute Engine durante o build
-    # (PROJECT_NUMBER-compute@developer.gserviceaccount.com)
-    # Essa service account também precisa ter permissões de Storage
-    # O entry point é definido no main.py usando functions_framework
-    
-    gcloud run deploy "$SERVICE_NAME" \
-        --source "$TEMP_DIR" \
-        --region "$REGION" \
-        --platform managed \
-        --no-allow-unauthenticated \
-        --service-account "$SERVICE_ACCOUNT" \
-        --memory "$MEMORY" \
-        --cpu "$CPU" \
-        --timeout "$TIMEOUT" \
-        --set-env-vars "$ENV_VARS" \
-        --project "$GCP_PROJECT_ID"
+    print_info "Entry point: $ENTRY_POINT"
+
+    # notify-execution usa secrets do Secret Manager em vez de env vars padrão
+    if [ "$SERVICE_NAME" = "notify-execution" ]; then
+        gcloud run deploy "$SERVICE_NAME" \
+            --source "$TEMP_DIR" \
+            --region "$REGION" \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --service-account "$SERVICE_ACCOUNT" \
+            --memory "$MEMORY" \
+            --cpu "$CPU" \
+            --timeout "$TIMEOUT" \
+            --set-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
+            --set-secrets "GMAIL_USER=GMAIL_USER:latest,GMAIL_APP_PASSWORD=GMAIL_APP_PASSWORD:latest,NOTIFY_EMAIL=NOTIFY_EMAIL:latest" \
+            --project "$GCP_PROJECT_ID"
+    else
+        gcloud run deploy "$SERVICE_NAME" \
+            --source "$TEMP_DIR" \
+            --region "$REGION" \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --service-account "$SERVICE_ACCOUNT" \
+            --memory "$MEMORY" \
+            --cpu "$CPU" \
+            --timeout "$TIMEOUT" \
+            --set-env-vars "$ENV_VARS" \
+            --set-build-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
+            --project "$GCP_PROJECT_ID"
+    fi
     
     local DEPLOY_EXIT_CODE=$?
     

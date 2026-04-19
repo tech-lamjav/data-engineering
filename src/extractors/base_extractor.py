@@ -74,9 +74,15 @@ class BaseExtractor(ABC):
             Caminho completo do arquivo no GCS
         """
         logger.info(f"Iniciando extração do endpoint: {self.endpoint_name}")
-        
+
         data = self.extract(**kwargs)
-        
+
+        record_count = len(data) if isinstance(data, list) else len(data.get("data", []))
+        if record_count == 0:
+            logger.warning(
+                f"Extração retornou 0 registros para endpoint: {self.endpoint_name}"
+            )
+
         # Determina a data se necessário
         date = None
         if self.has_date:

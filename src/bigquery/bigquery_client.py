@@ -35,28 +35,47 @@ class BigQueryClient:
         self.client = bigquery.Client(project=self.project_id)
         logger.info(f"Cliente BigQuery inicializado para projeto: {self.project_id}")
     
-    def get_external_table_uri(self, endpoint: str, season: int, has_date: bool = False, category: str = None, type: str = None) -> str:
+    def get_player_props_uris(self, season: int, vendors: list) -> list:
+        """
+        Gera lista de URIs para player_props (um por vendor).
+        Necessário porque o BigQuery não suporta múltiplos wildcards em um único URI.
+
+        Args:
+            season: Temporada
+            vendors: Lista de vendors/markets
+
+        Returns:
+            Lista de URIs do GCS
+        """
+        bucket = GCS_BUCKET_NAME
+        return [f"gs://{bucket}/nba/player_props/{season}/{vendor}/*.json" for vendor in vendors]
+
+    def get_external_table_uri(self, endpoint: str, season: int, has_date: bool = False, category: str = None, type: str = None, market: str = None) -> str:
         """
         Gera o URI do GCS para a external table.
-        
+
         Args:
             endpoint: Nome do endpoint
             season: Temporada
             has_date: Se o endpoint tem data (usa wildcard)
             category: Categoria para season_averages (opcional)
             type: Tipo para season_averages (opcional)
-        
+            market: Market para player_props (ex: 'draftkings')
+
         Returns:
             URI do GCS (gs://bucket/path)
         """
         bucket = GCS_BUCKET_NAME
-        if has_date:
+        if endpoint == "player_props":
+            # Estrutura: nba/player_props/{season}/{market}/*.json
+            uri = f"gs://{bucket}/nba/{endpoint}/{season}/{market}/*.json"
+        elif has_date:
             # Para endpoints com data, usa wildcard para ler todos os arquivos
             uri = f"gs://{bucket}/nba/{endpoint}/{season}/*.json"
         elif endpoint in ("season_averages", "team_season_averages") and category and type:
             # Para season_averages e team_season_averages, cria URI específico para cada combinação category-type
             # Formato: raw_nba_{endpoint}_{season}-{category}-{type}.json
-            uri = f"gs://{bucket}/nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{category}-{type}.json"
+            uri = f"gs://{bucket}/nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{category}-{type}-*.json"
         else:
             # Para endpoints sem data, lê um arquivo específico
             uri = f"gs://{bucket}/nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}.json"
@@ -87,56 +106,45 @@ class BigQueryClient:
     def create_external_table(
         self,
         table_id: str,
-        uri: str,
+        uri,
         description: str = "",
     ) -> bigquery.Table:
         """
         Cria ou atualiza uma external table no BigQuery.
         Sempre usa autodetect para inferir o schema automaticamente.
-        
+
         Args:
             table_id: ID da tabela
-            uri: URI do GCS (gs://bucket/path)
+            uri: URI do GCS (str) ou lista de URIs (list)
             description: Descrição da tabela
-        
+
         Returns:
             Objeto Table criado ou atualizado
         """
+        source_uris = uri if isinstance(uri, list) else [uri]
+
         dataset_ref = self.client.dataset(self.dataset_id)
         table_ref = dataset_ref.table(table_id)
-        
-        # Verifica se a tabela já existe
+
+        # Deleta e recria sempre para garantir que o autodetect releia o schema atual dos arquivos.
+        # UPDATE de external table com autodetect não força re-detecção, podendo manter schema desatualizado.
         try:
-            existing_table = self.client.get_table(table_ref)
-            logger.warning(f"Tabela {self.dataset_id}.{table_id} já existe. Atualizando...")
-            # Atualiza a tabela existente
-            external_config = bigquery.ExternalConfig(bigquery.SourceFormat.NEWLINE_DELIMITED_JSON)
-            external_config.source_uris = [uri]
-            external_config.autodetect = True
-            # Ignora erros de parsing para arquivos JSON com múltiplas linhas
-            external_config.ignore_unknown_values = True
-            existing_table.external_data_configuration = external_config
-            existing_table.description = description
-            table = self.client.update_table(
-                existing_table, 
-                ["external_data_configuration", "description"]
-            )
-            logger.info(f"✓ Tabela {self.dataset_id}.{table_id} atualizada")
-            return table
+            self.client.delete_table(table_ref)
+            logger.info(f"Tabela {self.dataset_id}.{table_id} removida para recriação")
         except NotFound:
-            # Cria nova tabela
-            table = bigquery.Table(table_ref)
-            external_config = bigquery.ExternalConfig(bigquery.SourceFormat.NEWLINE_DELIMITED_JSON)
-            external_config.source_uris = [uri]
-            external_config.autodetect = True
-            # Ignora erros de parsing para arquivos JSON com múltiplas linhas
-            external_config.ignore_unknown_values = True
-            table.external_data_configuration = external_config
-            table.description = description
-            
-            table = self.client.create_table(table)
-            logger.info(f"✓ Tabela {self.dataset_id}.{table_id} criada")
-            return table
+            pass
+
+        table = bigquery.Table(table_ref)
+        external_config = bigquery.ExternalConfig(bigquery.SourceFormat.NEWLINE_DELIMITED_JSON)
+        external_config.source_uris = source_uris
+        external_config.autodetect = True
+        external_config.ignore_unknown_values = True
+        table.external_data_configuration = external_config
+        table.description = description
+
+        table = self.client.create_table(table)
+        logger.info(f"✓ Tabela {self.dataset_id}.{table_id} criada")
+        return table
     
     def create_all_external_tables(
         self,
@@ -166,10 +174,31 @@ class BigQueryClient:
             {"category": "general", "type": "base"},
             {"category": "general", "type": "advanced"},
             {"category": "shooting", "type": "by_zone"},
+            {"category": "tracking", "type": "passing"},
         ]
-        # Combinações de team_season_averages (general advanced apenas)
+        # Combinações de team_season_averages
         TEAM_SEASON_AVERAGES_COMBINATIONS = [
-            {"category": "general", "type": "advanced"},
+            {"category": "general",   "type": "advanced"},
+            {"category": "general",   "type": "opponent"},
+            {"category": "general",   "type": "defense"},
+            {"category": "tracking",  "type": "rebounding"},
+            # Opp Rankings — Play Types
+            {"category": "playtype",     "type": "isolation"},
+            {"category": "playtype",     "type": "transition"},
+            {"category": "playtype",     "type": "spotup"},
+            {"category": "playtype",     "type": "handoff"},
+            {"category": "playtype",     "type": "cut"},
+            {"category": "playtype",     "type": "offscreen"},
+            {"category": "playtype",     "type": "postup"},
+            {"category": "playtype",     "type": "prballhandler"},
+            {"category": "playtype",     "type": "prrollman"},
+            {"category": "playtype",     "type": "offrebound"},
+            # Opp Rankings — Hustle / Rim Protection
+            {"category": "hustle",       "type": "overall"},
+            {"category": "tracking",     "type": "defense"},
+            # Opp Rankings — C&S / Pull Up
+            {"category": "shotdashboard", "type": "catch_and_shoot"},
+            {"category": "shotdashboard", "type": "pullups"},
         ]
         
         for endpoint in endpoints_to_process:
@@ -236,18 +265,44 @@ class BigQueryClient:
                         results[result_key] = True
                         logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
                         logger.info(f"  URI: {uri}")
+                elif endpoint == "betting_odds":
+                    # betting_odds: todos os vendors num único wildcard por game_id
+                    uri = f"gs://{GCS_BUCKET_NAME}/nba/betting_odds/{season}/*.json"
+                    table_id = "raw_betting_odds"
+                    description = "External table para dados brutos de betting odds (spread, moneyline, total) - todos os vendors"
+                    self.create_external_table(
+                        table_id=table_id,
+                        uri=uri,
+                        description=description,
+                    )
+                    results[endpoint] = True
+                    logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
+                    logger.info(f"  URI: {uri}")
+                elif endpoint == "player_props":
+                    # player_props: grava apenas draftkings no dataset principal
+                    uri = self.get_external_table_uri(endpoint, season, has_date, market="draftkings")
+                    table_id = f"raw_{endpoint}"
+                    description = "External table para dados brutos de props de jogadores - market DraftKings"
+                    self.create_external_table(
+                        table_id=table_id,
+                        uri=uri,
+                        description=description,
+                    )
+                    results[endpoint] = True
+                    logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
+                    logger.info(f"  URI: {uri}")
                 else:
                     # Gera URI do GCS
                     uri = self.get_external_table_uri(endpoint, season, has_date)
-                    
+
                     # Nome da tabela (sem o ano)
                     table_id = f"raw_{endpoint}"
-                    
+
                     # Descrição
                     description = f"External table para dados brutos do endpoint {endpoint}"
                     if has_date:
                         description += " (inclui múltiplos arquivos por data)"
-                    
+
                     # Cria a tabela
                     self.create_external_table(
                         table_id=table_id,

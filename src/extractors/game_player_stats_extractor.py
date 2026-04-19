@@ -3,6 +3,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from collections import defaultdict
 from src.extractors.base_extractor import BaseExtractor
+from src.config import NBA_SEASON_END_DATES, get_season_type_for_date
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -53,7 +54,11 @@ class GamePlayerStatsExtractor(BaseExtractor):
             dates=dates,
             per_page=self.config.get("per_page", 100),
         )
-        
+
+        for stat in stats:
+            game_date = (stat.get("game", {}).get("date") or date or "")[:10]
+            stat["season_type"] = get_season_type_for_date(game_date, self.season)
+
         return {
             "season": self.season,
             "date": date or datetime.now().strftime("%Y-%m-%d"),
@@ -68,10 +73,9 @@ class GamePlayerStatsExtractor(BaseExtractor):
         Returns:
             Lista de datas no formato YYYY-MM-DD
         """
-        # Temporada NBA vai de outubro do mesmo ano até a data atual
-        # Ex: temporada 2025 = outubro 2025 até hoje
-        start_date = datetime(self.season, 10, 21)  # Outubro do mesmo ano
-        end_date = datetime.now()  # Data de hoje
+        start_date = datetime(self.season, 10, 21)
+        end_str = NBA_SEASON_END_DATES.get(self.season)
+        end_date = datetime.strptime(end_str, "%Y-%m-%d") if end_str else datetime.now()
         
         dates = []
         current = start_date
@@ -120,7 +124,7 @@ class GamePlayerStatsExtractor(BaseExtractor):
                 stats = data.get("stats", [])
                 
                 if not stats:
-                    logger.info(f"Nenhuma estatística encontrada para {game_date}. Pulando...")
+                    logger.warning(f"Nenhuma estatística encontrada para {game_date}. Pulando...")
                     skipped_dates.append(game_date)
                     continue
                 
@@ -146,5 +150,10 @@ class GamePlayerStatsExtractor(BaseExtractor):
         logger.info(f"Extração concluída: {len(saved_paths)} arquivo(s) salvo(s)")
         if skipped_dates:
             logger.info(f"Datas sem dados: {len(skipped_dates)} ({skipped_dates[:5]}...)")
-        
+        if not saved_paths:
+            logger.warning(
+                f"Nenhum arquivo salvo para endpoint: {self.endpoint_name}. "
+                "Verifique se há jogos na temporada ou se a API está respondendo."
+            )
+
         return saved_paths

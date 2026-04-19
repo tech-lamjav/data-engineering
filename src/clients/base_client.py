@@ -7,83 +7,78 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+_RETRY_BACKOFFS = [30, 60, 120, 240, 480]
+
 
 class BaseClient:
     """Cliente base para requisições HTTP."""
-    
+
     def __init__(self, base_url: str, api_key: Optional[str] = None):
-        """
-        Inicializa o cliente base.
-        
-        Args:
-            base_url: URL base da API
-            api_key: Chave da API (opcional)
-        """
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.session = requests.Session()
-        
-        # Headers padrão
+
         if self.api_key:
             self.session.headers.update({
                 "Authorization": f"Bearer {self.api_key}",
             })
-        
+
         self.session.headers.update({
             "Content-Type": "application/json",
             "Accept": "application/json",
         })
-    
-    def _make_request(
+
+    def _execute_request(
         self,
         method: str,
-        endpoint: str,
+        url: str,
         params: Optional[Dict[str, Any]] = None,
     ) -> requests.Response:
-        """
-        Faz uma requisição HTTP.
-        
-        Args:
-            method: Método HTTP (GET, POST, etc.)
-            endpoint: Endpoint da API (relativo à base_url)
-            params: Parâmetros da query string
-        
-        Returns:
-            Response object
-        
-        Raises:
-            requests.RequestException: Se a requisição falhar
-        """
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        
-        try:
+        """Executa requisição HTTP com retry automático em 429."""
+        for attempt, backoff in enumerate(_RETRY_BACKOFFS, start=1):
             response = self.session.request(
                 method=method,
                 url=url,
                 params=params,
                 timeout=API_TIMEOUT,
             )
-            response.raise_for_status()
-            return response
-            
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response
+
+            wait = int(response.headers.get("Retry-After", backoff))
+            logger.warning(
+                f"429 Too Many Requests para {url} — aguardando {wait}s antes da tentativa {attempt + 1}/{len(_RETRY_BACKOFFS) + 1}"
+            )
+            time.sleep(wait)
+
+        # última tentativa, deixa raise_for_status propagar
+        response = self.session.request(
+            method=method,
+            url=url,
+            params=params,
+            timeout=API_TIMEOUT,
+        )
+        response.raise_for_status()
+        return response
+
+    def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> requests.Response:
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        try:
+            return self._execute_request(method, url, params=params)
         except requests.exceptions.HTTPError as e:
-            logger.error(f"Erro HTTP {response.status_code} na requisição para {url}: {str(e)}")
+            logger.error(f"Erro HTTP na requisição para {url}: {str(e)}")
             raise
         except requests.exceptions.RequestException as e:
             logger.error(f"Erro na requisição para {url}: {str(e)}")
             raise
-    
+
     def get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> requests.Response:
-        """
-        Faz uma requisição GET.
-        
-        Args:
-            endpoint: Endpoint da API
-            params: Parâmetros da query string
-        
-        Returns:
-            Response object
-        """
         return self._make_request("GET", endpoint, params=params)
     
     def get_paginated(
@@ -130,13 +125,7 @@ class BaseClient:
                 logger.info(f"Buscando página {page} do endpoint {endpoint}...")
             
             url = f"{base_url}/{endpoint.lstrip('/')}"
-            response = self.session.request(
-                method="GET",
-                url=url,
-                params=params,
-                timeout=API_TIMEOUT,
-            )
-            response.raise_for_status()
+            response = self._execute_request("GET", url, params=params)
             data = response.json()
             
             # A API retorna dados em formato {'data': [...], 'meta': {...}}

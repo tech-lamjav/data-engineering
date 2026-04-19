@@ -1,4 +1,4 @@
-"""Script individual para extração de props de jogadores."""
+"""Script para extração de player props - vendor Caesars."""
 import sys
 from pathlib import Path
 
@@ -10,27 +10,25 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+VENDOR = "caesars"
+
 
 def main():
     try:
         extractor = PlayerPropsExtractor(season=SEASON)
-        logger.info(f"Iniciando extração de props para temporada {SEASON} (vendors: {extractor.vendors})")
-
-        gcs_paths = extractor.extract_and_save()
-        
+        logger.info(f"Extraindo props ({VENDOR}) para temporada {SEASON}")
+        gcs_paths = extractor.extract_and_save(vendors=[VENDOR])
         if gcs_paths:
-            logger.info(f"✓ Extração concluída: {len(gcs_paths)} arquivo(s) salvo(s)")
+            logger.info(f"✓ {len(gcs_paths)} arquivo(s) salvos")
             for path in gcs_paths:
                 logger.info(f"  → {path}")
         else:
-            logger.warning("Nenhum arquivo foi salvo.")
-        
+            logger.warning("Nenhum arquivo salvo.")
         return 0
     except Exception as e:
-        logger.error(f"✗ Erro na extração: {str(e)}", exc_info=True)
+        logger.error(f"✗ Erro na extração: {e}", exc_info=True)
         return 1
 
 
 if __name__ == "__main__":
     sys.exit(main())
-

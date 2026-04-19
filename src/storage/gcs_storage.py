@@ -67,10 +67,12 @@ class GCSStorage:
         game_id: Optional[int] = None,
         category: Optional[str] = None,
         type: Optional[str] = None,
+        season_type: Optional[str] = None,
+        period: Optional[int] = None,
     ) -> str:
         """
         Faz upload de um JSON para o GCS.
-        
+
         Args:
             data: Dados a serem enviados (será convertido para JSON)
             endpoint: Nome do endpoint
@@ -80,14 +82,16 @@ class GCSStorage:
             game_id: Game ID para player_props (opcional)
             category: Categoria para season_averages (opcional)
             type: Tipo para season_averages (opcional)
-        
+            season_type: Tipo de temporada para season_averages (opcional)
+
         Returns:
             Caminho completo do arquivo no GCS
         """
         # Gera o caminho no GCS
         blob_path = get_gcs_path(
-            endpoint, season, date=date, market=market, game_id=game_id, 
-            category=category, type=type
+            endpoint, season, date=date, market=market, game_id=game_id,
+            category=category, type=type, season_type=season_type,
+            period=period,
         )
         logger.info(f"Fazendo upload para: gs://{self.bucket_name}/{blob_path}")
         
@@ -222,9 +226,29 @@ class GCSStorage:
             
             return "\n".join(lines)
         
+        # Para betting_odds, expande o array 'odds' em linhas separadas
+        # Cada linha inclui metadados (season, game_id) + campos do objeto de odds do vendor
+        if endpoint == "betting_odds" and "odds" in data:
+            lines = []
+            metadata = {
+                "season": data.get("season"),
+                "game_id": data.get("game_id"),
+                "total_odds": data.get("total_odds"),
+            }
+            metadata = {k: v for k, v in metadata.items() if v is not None}
+            if not data.get("odds"):
+                return json.dumps(metadata, ensure_ascii=False)
+            for item in data["odds"]:
+                if isinstance(item, dict):
+                    combined = {**metadata, **item}
+                else:
+                    combined = {**metadata, "odds": item}
+                lines.append(json.dumps(combined, ensure_ascii=False))
+            return "\n".join(lines) if lines else json.dumps(metadata, ensure_ascii=False)
+
         # Para games e game_player_stats, salva como um único objeto JSON (mantém o array intacto)
         # Isso é necessário porque o BigQuery espera que cada linha seja um objeto completo com o array dentro
-        if endpoint in ["games", "game_player_stats"]:
+        if endpoint in ["games", "game_player_stats", "game_player_stats_period"]:
             return json.dumps(data, ensure_ascii=False)
         
         # Para outros endpoints, verifica se há arrays principais

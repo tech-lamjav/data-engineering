@@ -124,7 +124,7 @@ class GamesExtractor(BaseExtractor):
                 games = data.get("games", [])
                 
                 if not games:
-                    logger.info(f"Nenhum jogo encontrado para {game_date}. Pulando...")
+                    logger.warning(f"Nenhum jogo encontrado para {game_date}. Pulando...")
                     skipped_dates.append(game_date)
                     continue
                 
@@ -150,5 +150,10 @@ class GamesExtractor(BaseExtractor):
         logger.info(f"Extração concluída: {len(saved_paths)} arquivo(s) salvo(s)")
         if skipped_dates:
             logger.info(f"Datas sem dados: {len(skipped_dates)} ({skipped_dates[:5]}...)")
-        
+        if not saved_paths:
+            logger.warning(
+                f"Nenhum arquivo salvo para endpoint: {self.endpoint_name}. "
+                "Verifique se há jogos na temporada ou se a API está respondendo."
+            )
+
         return saved_paths

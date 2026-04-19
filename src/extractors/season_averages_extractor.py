@@ -81,4 +81,5 @@ class SeasonAveragesExtractor(BaseExtractor):
             season=self.season,
             category=self.category,
             type=self.type,
+            season_type=self.season_type,
         )

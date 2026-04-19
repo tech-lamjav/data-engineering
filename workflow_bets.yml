@@ -1,6 +1,6 @@
 # ============================================================
-# WORKFLOW INJURY REPORT
-# Extrai lesões (extract_player_injuries) e executa job dbt-nba
+# WORKFLOW BETS
+# Extração de player props e betting odds + dbt + notificação
 # ============================================================
 
 main:
@@ -22,45 +22,88 @@ main:
             severity: INFO
             data:
                 message: "Workflow execution started"
-                workflow_name: "workflow_injury_report"
+                workflow_name: "workflow_bets"
                 execution_id: ${execution_id}
                 start_time: ${workflow_start_time}
 
     # ============================================================================
-    # FASE 1: Extração de lesões (player injuries)
+    # FASE 1: Extração de player props e betting odds (4 services em paralelo)
+    # Cada branch tem seu próprio try/except e escreve em failed_services (shared)
     # ============================================================================
     - phase1_initial_extraction:
-        try:
-            steps:
-            - call_extract_player_injuries:
-                call: http.get
-                args:
-                    url: https://extract-player-injuries-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    timeout: 1800
-            - log_phase1_success:
-                call: sys.log
-                args:
-                    severity: INFO
-                    data:
-                        message: "Phase 1 completed successfully"
-                        phase: "extract_player_injuries"
-        except:
-            as: e
-            steps:
-            - log_phase1_error:
-                call: sys.log
-                args:
-                    severity: ERROR
-                    data:
-                        message: "Phase 1 encountered errors"
-                        phase: "extract_player_injuries"
-                        error: ${e.message}
-            - handle_phase1_errors:
-                assign:
-                - workflow_status: "PARTIAL_FAILURE"
-                - failed_services: ${list.concat(failed_services, ["extract-player-injuries"])}
+        steps:
+        - extract_vendors_parallel:
+            parallel:
+              shared: [failed_services, workflow_status]
+              branches:
+                - draftkings_branch:
+                    steps:
+                    - call_extract_draftkings:
+                        try:
+                            call: http.get
+                            args:
+                                url: https://extract-player-props-draftkings-r52p4w2f2a-ue.a.run.app
+                                auth:
+                                    type: OIDC
+                                timeout: 1800
+                        except:
+                            as: e
+                            steps:
+                            - handle_draftkings_error:
+                                assign:
+                                - workflow_status: "PARTIAL_FAILURE"
+                                - failed_services: ${list.concat(failed_services, ["extract-player-props-draftkings"])}
+                - caesars_branch:
+                    steps:
+                    - call_extract_caesars:
+                        try:
+                            call: http.get
+                            args:
+                                url: https://extract-player-props-caesars-r52p4w2f2a-ue.a.run.app
+                                auth:
+                                    type: OIDC
+                                timeout: 1800
+                        except:
+                            as: e
+                            steps:
+                            - handle_caesars_error:
+                                assign:
+                                - workflow_status: "PARTIAL_FAILURE"
+                                - failed_services: ${list.concat(failed_services, ["extract-player-props-caesars"])}
+                - betrivers_branch:
+                    steps:
+                    - call_extract_betrivers:
+                        try:
+                            call: http.get
+                            args:
+                                url: https://extract-player-props-betrivers-r52p4w2f2a-ue.a.run.app
+                                auth:
+                                    type: OIDC
+                                timeout: 1800
+                        except:
+                            as: e
+                            steps:
+                            - handle_betrivers_error:
+                                assign:
+                                - workflow_status: "PARTIAL_FAILURE"
+                                - failed_services: ${list.concat(failed_services, ["extract-player-props-betrivers"])}
+                - betting_odds_branch:
+                    steps:
+                    - call_extract_betting_odds:
+                        try:
+                            call: http.get
+                            args:
+                                url: https://extract-betting-odds-r52p4w2f2a-ue.a.run.app
+                                auth:
+                                    type: OIDC
+                                timeout: 1800
+                        except:
+                            as: e
+                            steps:
+                            - handle_betting_odds_error:
+                                assign:
+                                - workflow_status: "PARTIAL_FAILURE"
+                                - failed_services: ${list.concat(failed_services, ["extract-betting-odds"])}
 
     # ============================================================================
     # FASE 2: Cloud Run Job execution (dbt-nba)
@@ -128,7 +171,7 @@ main:
             severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
             data:
                 message: "Workflow execution completed"
-                workflow_name: "workflow_injury_report"
+                workflow_name: "workflow_bets"
                 status: ${workflow_status}
                 duration_seconds: ${duration_seconds}
                 failed_services: ${failed_services}
@@ -143,7 +186,7 @@ main:
                     type: OIDC
                 timeout: 30
                 body:
-                    workflow_name: "workflow_injury_report"
+                    workflow_name: "workflow_bets"
                     status: ${workflow_status}
                     duration_seconds: ${duration_seconds}
                     failed_services: ${failed_services}

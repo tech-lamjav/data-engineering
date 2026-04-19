@@ -50,34 +50,39 @@ class BallDontLieClient(BaseClient):
         player_ids: Optional[List[int]] = None,
         dates: Optional[List[str]] = None,
         per_page: int = 100,
+        period: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Busca estatísticas de jogadores por jogo.
-        
+
         Args:
             season: Ano da temporada (opcional)
             game_ids: Lista de IDs de jogos (opcional)
             player_ids: Lista de IDs de jogadores (opcional)
             dates: Lista de datas no formato YYYY-MM-DD (opcional)
             per_page: Itens por página
-        
+            period: Número do período/quarto 1-4 (opcional; 0=jogo completo)
+
         Returns:
             Lista de estatísticas
         """
         params = {}
-        
+
         if season:
             params["seasons[]"] = season
-        
+
         if game_ids:
             params["game_ids[]"] = game_ids
-        
+
         if player_ids:
             params["player_ids[]"] = player_ids
-        
+
         if dates:
             params["dates[]"] = dates
-        
+
+        if period:
+            params["period"] = period
+
         return self.get_paginated("stats", params=params, per_page=per_page)
     
     def get_season_averages(
@@ -237,19 +242,38 @@ class BallDontLieClient(BaseClient):
         if vendors:
             params["vendors[]"] = vendors
         
-        # Endpoint v2 - usa URL base diferente
-        from src.config import API_TIMEOUT
         url = f"{API_BASE_URL_V2}/odds/player_props"
-        response = self.session.request(
-            method="GET",
-            url=url,
-            params=params,
-            timeout=API_TIMEOUT,
-        )
-        response.raise_for_status()
+        response = self._execute_request("GET", url, params=params)
         data = response.json()
         
         # A API v2 retorna diretamente uma lista ou um objeto com 'data'
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            return data.get("data", [])
+        else:
+            return []
+
+    def get_betting_odds(
+        self,
+        game_id: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca odds de apostas para um jogo específico (todos os vendors).
+
+        Args:
+            game_id: ID do jogo (obrigatório)
+
+        Returns:
+            Lista de odds (spread, moneyline, total) por vendor
+        """
+        from src.config import API_BASE_URL_V2
+
+        params = {"game_ids[]": [game_id]}
+        url = f"{API_BASE_URL_V2}/odds"
+        response = self._execute_request("GET", url, params=params)
+        data = response.json()
+
         if isinstance(data, list):
             return data
         elif isinstance(data, dict):

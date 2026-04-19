@@ -14,8 +14,7 @@ class PlayerPropsExtractor(BaseExtractor):
         """Inicializa o extractor de props."""
         super().__init__("player_props", season)
         self.market = self.config.get("market", "draftkings")
-        # Lista de vendors suportados
-        self.vendors = ["draftkings", "betway", "betrivers", "ballybet", "betparx", "caesars", "fanduel", "rebet"]
+        self.vendors = self.config.get("vendors", [self.market])
     
     def extract(
         self,
@@ -66,7 +65,7 @@ class PlayerPropsExtractor(BaseExtractor):
         Extrai props por game_id, buscando game_ids do storage e salvando imediatamente.
         
         Args:
-            vendors: Lista de vendors (opcional, usa market configurado se não fornecido)
+            vendors: Lista de vendors (opcional, usa todos os vendors configurados se não fornecido)
             **kwargs: Outros parâmetros (player_id, prop_type, etc.)
         
         Returns:
@@ -84,10 +83,10 @@ class PlayerPropsExtractor(BaseExtractor):
         
         logger.info(f"Encontrados {len(game_ids)} game_ids para processar")
         
-        # Se vendors não fornecido, usa apenas o market configurado
+        # Se vendors não fornecido, usa todos os vendors configurados
         if not vendors:
-            vendors = [self.market]
-        
+            vendors = self.vendors
+
         saved_paths = []
         skipped_games = []
         
