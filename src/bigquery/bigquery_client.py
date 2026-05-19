@@ -108,15 +108,17 @@ class BigQueryClient:
         table_id: str,
         uri,
         description: str = "",
+        schema: Optional[List[bigquery.SchemaField]] = None,
     ) -> bigquery.Table:
         """
         Cria ou atualiza uma external table no BigQuery.
-        Sempre usa autodetect para inferir o schema automaticamente.
+        Usa autodetect quando schema=None, ou schema explícito quando fornecido.
 
         Args:
             table_id: ID da tabela
             uri: URI do GCS (str) ou lista de URIs (list)
             description: Descrição da tabela
+            schema: Schema explícito (usa autodetect se None)
 
         Returns:
             Objeto Table criado ou atualizado
@@ -137,8 +139,11 @@ class BigQueryClient:
         table = bigquery.Table(table_ref)
         external_config = bigquery.ExternalConfig(bigquery.SourceFormat.NEWLINE_DELIMITED_JSON)
         external_config.source_uris = source_uris
-        external_config.autodetect = True
         external_config.ignore_unknown_values = True
+        if schema:
+            external_config.schema = schema
+        else:
+            external_config.autodetect = True
         table.external_data_configuration = external_config
         table.description = description
 
@@ -199,6 +204,9 @@ class BigQueryClient:
             # Opp Rankings — C&S / Pull Up
             {"category": "shotdashboard", "type": "catch_and_shoot"},
             {"category": "shotdashboard", "type": "pullups"},
+            # Opp Rankings — Shooting cedido (defesa por zona / faixa de distância)
+            {"category": "shooting", "type": "by_zone_opponent"},
+            {"category": "shooting", "type": "5ft_range_opponent"},
         ]
         
         for endpoint in endpoints_to_process:
@@ -244,6 +252,52 @@ class BigQueryClient:
                         logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
                         logger.info(f"  URI: {uri}")
                 elif endpoint == "team_season_averages":
+                    # Schemas explícitos para shooting opponent: autodetect infere alguns
+                    # campos (ex.: _40_ft_opp_fga) como INTEGER na regular, mas playoffs
+                    # contém valores FLOAT — força todos os stats como FLOAT64 para evitar
+                    # erro "Could not convert value '0.4' to integer".
+                    team_struct = bigquery.SchemaField("team", "RECORD", fields=[
+                        bigquery.SchemaField("id", "INTEGER"),
+                        bigquery.SchemaField("abbreviation", "STRING"),
+                        bigquery.SchemaField("city", "STRING"),
+                        bigquery.SchemaField("conference", "STRING"),
+                        bigquery.SchemaField("division", "STRING"),
+                        bigquery.SchemaField("full_name", "STRING"),
+                        bigquery.SchemaField("name", "STRING"),
+                    ])
+                    by_zone_opp_stat_fields = [
+                        "restricted_area_opp_fga", "restricted_area_opp_fgm", "restricted_area_opp_fg_pct",
+                        "in_the_paint_non_ra_opp_fga", "in_the_paint_non_ra_opp_fgm", "in_the_paint_non_ra_opp_fg_pct",
+                        "mid_range_opp_fga", "mid_range_opp_fgm", "mid_range_opp_fg_pct",
+                        "left_corner_3_opp_fga", "left_corner_3_opp_fgm", "left_corner_3_opp_fg_pct",
+                        "right_corner_3_opp_fga", "right_corner_3_opp_fgm", "right_corner_3_opp_fg_pct",
+                        "corner_3_opp_fga", "corner_3_opp_fgm", "corner_3_opp_fg_pct",
+                        "above_the_break_3_opp_fga", "above_the_break_3_opp_fgm", "above_the_break_3_opp_fg_pct",
+                        "backcourt_opp_fga", "backcourt_opp_fgm", "backcourt_opp_fg_pct",
+                    ]
+                    range_5ft_opp_stat_fields = [
+                        "less_than_5_ft_opp_fga", "less_than_5_ft_opp_fgm", "less_than_5_ft_opp_fg_pct",
+                        "_5_9_ft_opp_fga", "_5_9_ft_opp_fgm", "_5_9_ft_opp_fg_pct",
+                        "_10_14_ft_opp_fga", "_10_14_ft_opp_fgm", "_10_14_ft_opp_fg_pct",
+                        "_15_19_ft_opp_fga", "_15_19_ft_opp_fgm", "_15_19_ft_opp_fg_pct",
+                        "_20_24_ft_opp_fga", "_20_24_ft_opp_fgm", "_20_24_ft_opp_fg_pct",
+                        "_25_29_ft_opp_fga", "_25_29_ft_opp_fgm", "_25_29_ft_opp_fg_pct",
+                        "_30_34_ft_opp_fga", "_30_34_ft_opp_fgm", "_30_34_ft_opp_fg_pct",
+                        "_35_39_ft_opp_fga", "_35_39_ft_opp_fgm", "_35_39_ft_opp_fg_pct",
+                        "_40_ft_opp_fga", "_40_ft_opp_fgm", "_40_ft_opp_fg_pct",
+                    ]
+                    def shooting_opp_schema(stat_fields):
+                        return [
+                            bigquery.SchemaField("season", "INTEGER"),
+                            bigquery.SchemaField("season_type", "STRING"),
+                            bigquery.SchemaField("category", "STRING"),
+                            bigquery.SchemaField("type", "STRING"),
+                            team_struct,
+                            bigquery.SchemaField("stats", "RECORD", fields=[
+                                bigquery.SchemaField(name, "FLOAT") for name in stat_fields
+                            ]),
+                        ]
+
                     for combo in TEAM_SEASON_AVERAGES_COMBINATIONS:
                         category = combo["category"]
                         type_param = combo["type"]
@@ -256,10 +310,18 @@ class BigQueryClient:
                         )
                         table_id = f"raw_{endpoint}_{category}_{type_param}"
                         description = f"External table para dados brutos de team_season_averages (category={category}, type={type_param})"
+
+                        explicit_schema = None
+                        if category == "shooting" and type_param == "by_zone_opponent":
+                            explicit_schema = shooting_opp_schema(by_zone_opp_stat_fields)
+                        elif category == "shooting" and type_param == "5ft_range_opponent":
+                            explicit_schema = shooting_opp_schema(range_5ft_opp_stat_fields)
+
                         self.create_external_table(
                             table_id=table_id,
                             uri=uri,
                             description=description,
+                            schema=explicit_schema,
                         )
                         result_key = f"{endpoint}_{category}_{type_param}"
                         results[result_key] = True
@@ -279,14 +341,124 @@ class BigQueryClient:
                     logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
                     logger.info(f"  URI: {uri}")
                 elif endpoint == "player_props":
-                    # player_props: grava apenas draftkings no dataset principal
-                    uri = self.get_external_table_uri(endpoint, season, has_date, market="draftkings")
+                    # player_props: uma tabela por vendor ativo (DraftKings, Caesars, BetRivers).
+                    # BetRivers usa schema explícito porque seus arquivos têm duas variantes do STRUCT
+                    # market: {type, odds} (milestone) e {type, over_odds, under_odds} (over_under).
+                    # Autodetect amostral pode gerar schema incompleto, causando "No such field" em runtime.
+                    player_props_market_schema = bigquery.SchemaField("market", "RECORD", fields=[
+                        bigquery.SchemaField("type", "STRING"),
+                        bigquery.SchemaField("odds", "INTEGER"),
+                        bigquery.SchemaField("over_odds", "INTEGER"),
+                        bigquery.SchemaField("under_odds", "INTEGER"),
+                    ])
+                    player_props_schema = [
+                        bigquery.SchemaField("id", "INTEGER"),
+                        bigquery.SchemaField("player_id", "INTEGER"),
+                        bigquery.SchemaField("game_id", "INTEGER"),
+                        bigquery.SchemaField("season", "INTEGER"),
+                        bigquery.SchemaField("vendor", "STRING"),
+                        bigquery.SchemaField("prop_type", "STRING"),
+                        bigquery.SchemaField("line_value", "FLOAT"),
+                        player_props_market_schema,
+                        bigquery.SchemaField("total_props", "INTEGER"),
+                        bigquery.SchemaField("updated_at", "TIMESTAMP"),
+                    ]
+
+                    vendors_config = [
+                        {"market": "draftkings", "table_id": "raw_player_props",          "schema": None},
+                        {"market": "caesars",    "table_id": "raw_player_props_caesars",  "schema": None},
+                        {"market": "betrivers",  "table_id": "raw_player_props_betrivers","schema": player_props_schema},
+                    ]
+                    for vc in vendors_config:
+                        uri = self.get_external_table_uri(endpoint, season, has_date, market=vc["market"])
+                        self.create_external_table(
+                            table_id=vc["table_id"],
+                            uri=uri,
+                            description=f"External table para props de jogadores - {vc['market']}",
+                            schema=vc["schema"],
+                        )
+                        logger.info(f"✓ External table criada: {self.dataset_id}.{vc['table_id']}")
+                        logger.info(f"  URI: {uri}")
+                    results[endpoint] = True
+                elif endpoint == "game_player_advanced_stats":
+                    # Schema explícito: muitos campos rate/percentage do response /nba/v2/stats/advanced
+                    # voltam como INT quando valor=0 e FLOAT quando >0 (ex.: pct_assisted_2pt, contested_fg_pct).
+                    # Autodetect amostral pinaria como INTEGER e quebraria em arquivos posteriores.
+                    # Force FLOAT em todos os numéricos. Strings: matchup_minutes (formato MM:SS), season_type.
+                    advanced_numeric_fields = [
+                        "pie", "assist_percentage", "assist_ratio", "assist_to_turnover",
+                        "defensive_rating", "defensive_rebound_percentage",
+                        "effective_field_goal_percentage", "estimated_defensive_rating",
+                        "estimated_net_rating", "estimated_offensive_rating", "estimated_pace",
+                        "estimated_usage_percentage", "net_rating", "offensive_rating",
+                        "offensive_rebound_percentage", "pace", "pace_per_40", "possessions",
+                        "rebound_percentage", "true_shooting_percentage", "turnover_ratio",
+                        "usage_percentage", "blocks_against", "fouls_drawn",
+                        "points_fast_break", "points_off_turnovers", "points_paint",
+                        "points_second_chance", "opp_points_fast_break",
+                        "opp_points_off_turnovers", "opp_points_paint",
+                        "opp_points_second_chance", "pct_assisted_2pt", "pct_assisted_3pt",
+                        "pct_assisted_fgm", "pct_fga_2pt", "pct_fga_3pt", "pct_pts_2pt",
+                        "pct_pts_3pt", "pct_pts_fast_break", "pct_pts_free_throw",
+                        "pct_pts_midrange_2pt", "pct_pts_off_turnovers", "pct_pts_paint",
+                        "pct_unassisted_2pt", "pct_unassisted_3pt", "pct_unassisted_fgm",
+                        "four_factors_efg_pct", "free_throw_attempt_rate",
+                        "four_factors_oreb_pct", "opp_efg_pct",
+                        "opp_free_throw_attempt_rate", "opp_oreb_pct", "opp_turnover_pct",
+                        "team_turnover_pct", "box_outs", "box_out_player_rebounds",
+                        "box_out_player_team_rebounds", "defensive_box_outs",
+                        "offensive_box_outs", "charges_drawn", "contested_shots",
+                        "contested_shots_2pt", "contested_shots_3pt", "deflections",
+                        "loose_balls_recovered_def", "loose_balls_recovered_off",
+                        "loose_balls_recovered_total", "screen_assists",
+                        "screen_assist_points", "matchup_fg_pct", "matchup_fga",
+                        "matchup_fgm", "matchup_3pt_pct", "matchup_3pa", "matchup_3pm",
+                        "matchup_assists", "matchup_turnovers", "matchup_player_points",
+                        "switches_on", "partial_possessions", "speed", "distance",
+                        "touches", "passes", "secondary_assists", "free_throw_assists",
+                        "contested_fga", "contested_fgm", "contested_fg_pct",
+                        "uncontested_fga", "uncontested_fgm", "uncontested_fg_pct",
+                        "defended_at_rim_fga", "defended_at_rim_fgm",
+                        "defended_at_rim_fg_pct", "rebound_chances_def",
+                        "rebound_chances_off", "rebound_chances_total", "pct_blocks",
+                        "pct_blocks_allowed", "pct_fga", "pct_fgm", "pct_fta", "pct_ftm",
+                        "pct_personal_fouls", "pct_personal_fouls_drawn", "pct_points",
+                        "pct_rebounds_def", "pct_rebounds_off", "pct_rebounds_total",
+                        "pct_steals", "pct_3pa", "pct_3pm", "pct_turnovers",
+                    ]
+                    stat_struct_fields = [
+                        bigquery.SchemaField("id", "INTEGER"),
+                        bigquery.SchemaField("period", "INTEGER"),
+                        bigquery.SchemaField("season_type", "STRING"),
+                        bigquery.SchemaField("matchup_minutes", "STRING"),
+                        bigquery.SchemaField("player", "RECORD", fields=[
+                            bigquery.SchemaField("id", "INTEGER"),
+                        ]),
+                        bigquery.SchemaField("team", "RECORD", fields=[
+                            bigquery.SchemaField("id", "INTEGER"),
+                        ]),
+                        bigquery.SchemaField("game", "RECORD", fields=[
+                            bigquery.SchemaField("id", "INTEGER"),
+                            bigquery.SchemaField("date", "STRING"),
+                            bigquery.SchemaField("season", "INTEGER"),
+                        ]),
+                    ] + [bigquery.SchemaField(name, "FLOAT") for name in advanced_numeric_fields]
+
+                    advanced_schema = [
+                        bigquery.SchemaField("season", "INTEGER"),
+                        bigquery.SchemaField("date", "STRING"),
+                        bigquery.SchemaField("total_stats", "INTEGER"),
+                        bigquery.SchemaField("stats", "RECORD", mode="REPEATED", fields=stat_struct_fields),
+                    ]
+
+                    uri = self.get_external_table_uri(endpoint, season, has_date)
                     table_id = f"raw_{endpoint}"
-                    description = "External table para dados brutos de props de jogadores - market DraftKings"
+                    description = "External table para advanced stats game-by-game (/nba/v2/stats/advanced) com schema explícito FLOAT para evitar conversão int→float entre arquivos"
                     self.create_external_table(
                         table_id=table_id,
                         uri=uri,
                         description=description,
+                        schema=advanced_schema,
                     )
                     results[endpoint] = True
                     logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
@@ -309,7 +481,7 @@ class BigQueryClient:
                         uri=uri,
                         description=description,
                     )
-                    
+
                     results[endpoint] = True
                     logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
                     logger.info(f"  URI: {uri}")

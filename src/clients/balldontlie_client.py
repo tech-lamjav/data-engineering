@@ -1,7 +1,7 @@
 """Cliente específico para a API balldontlie.io."""
 from typing import Dict, Any, Optional, List
 from src.clients.base_client import BaseClient
-from src.config import API_BASE_URL, API_BASE_URL_NBA, API_KEY
+from src.config import API_BASE_URL, API_BASE_URL_NBA, API_BASE_URL_NBA_V2, API_KEY
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -84,7 +84,58 @@ class BallDontLieClient(BaseClient):
             params["period"] = period
 
         return self.get_paginated("stats", params=params, per_page=per_page)
-    
+
+    def get_game_player_advanced_stats(
+        self,
+        season: Optional[int] = None,
+        game_ids: Optional[List[int]] = None,
+        player_ids: Optional[List[int]] = None,
+        dates: Optional[List[str]] = None,
+        per_page: int = 100,
+        period: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca estatísticas avançadas de jogadores por jogo (endpoint nba/v2/stats/advanced).
+
+        Inclui métricas de tracking/passing (passes, secondary_assists, free_throw_assists,
+        screen_assists), eficiência (assist_percentage, assist_ratio, assist_to_turnover),
+        volume (touches, possessions, usage_percentage) e dezenas de outros campos avançados.
+
+        Args:
+            season: Ano da temporada (opcional)
+            game_ids: Lista de IDs de jogos (opcional)
+            player_ids: Lista de IDs de jogadores (opcional)
+            dates: Lista de datas no formato YYYY-MM-DD (opcional)
+            per_page: Itens por página
+            period: Período (0=jogo completo, 1-4=quarto)
+
+        Returns:
+            Lista de estatísticas avançadas
+        """
+        params = {}
+
+        if season:
+            params["seasons[]"] = season
+
+        if game_ids:
+            params["game_ids[]"] = game_ids
+
+        if player_ids:
+            params["player_ids[]"] = player_ids
+
+        if dates:
+            params["dates[]"] = dates
+
+        if period is not None:
+            params["period"] = period
+
+        return self.get_paginated(
+            "stats/advanced",
+            params=params,
+            per_page=per_page,
+            base_url_override=API_BASE_URL_NBA_V2,
+        )
+
     def get_season_averages(
         self,
         season: int,

@@ -27,6 +27,7 @@ SERVICES=(
     "extract-games:extract_games"
     "extract-game-player-stats:extract_game_player_stats"
     "extract-game-player-stats-period:extract_game_player_stats_period"
+    "extract-game-player-advanced-stats:extract_game_player_advanced_stats"
     "extract-season-averages:extract_season_averages"
     "extract-team-season-averages:extract_team_season_averages"
     "extract-player-injuries:extract_player_injuries"
@@ -36,6 +37,7 @@ SERVICES=(
     "extract-player-props-betrivers:extract_player_props_betrivers"
     "extract-betting-odds:extract_betting_odds"
     "notify-execution:notify_execution"
+    "sync-bq-to-postgres:sync_bq_to_postgres"
 )
 
 # Função para obter o diretório do serviço
@@ -251,6 +253,26 @@ deploy_service() {
             --timeout "$TIMEOUT" \
             --set-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
             --set-secrets "GMAIL_USER=GMAIL_USER:latest,GMAIL_APP_PASSWORD=GMAIL_APP_PASSWORD:latest,NOTIFY_EMAIL=NOTIFY_EMAIL:latest" \
+            --project "$GCP_PROJECT_ID"
+    elif [ "$SERVICE_NAME" = "sync-bq-to-postgres" ]; then
+        # Sync precisa de 1Gi (carrega CSV em memória) + dois secrets (PRD e DEV).
+        # Workflow agendado bate em ?env=prd e depois ?env=dev sequencialmente.
+        # Timeout 900s (~15 min) é suficiente p/ volume atual (~250k linhas total).
+        # max-instances=1: sync é serial, evitar concorrência destrutiva.
+        # Python 3.13 pinado: psycopg[binary]==3.2.3 não tem wheels pra cp314 ainda.
+        gcloud run deploy "$SERVICE_NAME" \
+            --source "$TEMP_DIR" \
+            --region "$REGION" \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --service-account "$SERVICE_ACCOUNT" \
+            --memory "1Gi" \
+            --cpu "$CPU" \
+            --timeout "900" \
+            --max-instances "1" \
+            --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},LOG_LEVEL=${LOG_LEVEL}" \
+            --set-build-env-vars "GOOGLE_RUNTIME_VERSION=3.13,GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
+            --set-secrets "SUPABASE_PG_URL_PRD=SUPABASE_PG_URL_PRD:latest,SUPABASE_PG_URL_DEV=SUPABASE_PG_URL_DEV:latest" \
             --project "$GCP_PROJECT_ID"
     else
         gcloud run deploy "$SERVICE_NAME" \

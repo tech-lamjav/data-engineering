@@ -11,6 +11,7 @@ load_dotenv(dotenv_path=env_path)
 API_BASE_URL = "https://api.balldontlie.io/v1"
 API_BASE_URL_V2 = "https://api.balldontlie.io/v2"  # Para endpoints v2
 API_BASE_URL_NBA = "https://api.balldontlie.io/nba/v1"  # Para team_season_averages
+API_BASE_URL_NBA_V2 = "https://api.balldontlie.io/nba/v2"  # Para stats/advanced game-by-game
 API_KEY = os.getenv("BALLDONTLIE_KEY")
 API_TIMEOUT = 60
 
@@ -23,6 +24,45 @@ GCS_USE_ADC = True  # Application Default Credentials
 BIGQUERY_PROJECT_ID = "smartbetting-dados"
 BIGQUERY_DATASET = "nba"
 BIGQUERY_LOCATION = "us-east1"
+
+# Supabase Postgres sync configuration
+# Connection strings DEVEM usar porta 5432 (sessão direta), NÃO 6543 (pgbouncer):
+# pgbouncer em modo transaction não suporta COPY nem prepared statements.
+# Dois ambientes: PRD recebe sync agendado via workflow, DEV idem (sequencial).
+SUPABASE_PG_URL_PRD = os.getenv("SUPABASE_PG_URL_PRD")
+SUPABASE_PG_URL_DEV = os.getenv("SUPABASE_PG_URL_DEV")
+MART_PG_SCHEMA = "nba_mart"
+
+
+def get_pg_url(env: str) -> str:
+    """Resolve URL Postgres por ambiente. Levanta se não configurado."""
+    env = (env or "prd").lower()
+    if env == "prd":
+        url = SUPABASE_PG_URL_PRD
+    elif env == "dev":
+        url = SUPABASE_PG_URL_DEV
+    else:
+        raise ValueError(f"env inválido: {env}. Use 'prd' ou 'dev'.")
+    if not url:
+        raise RuntimeError(
+            f"SUPABASE_PG_URL_{env.upper()} não configurado. "
+            f"Settar env var (porta 5432, NÃO 6543 pgbouncer)."
+        )
+    return url
+
+# Ordem deliberada: dimensões primeiro, depois fatos, depois marts derivadas.
+# Reduz janela de inconsistência cross-table durante o sync.
+MART_TABLES_ORDERED = [
+    "dim_teams",
+    "dim_players",
+    "dim_stat_player",
+    "dim_player_shooting_by_zones",
+    "dim_player_latest_line",
+    "ft_games",
+    "ft_game_player_stats",
+    "dim_teammate_impact_360",
+    "dim_daily_opportunities",
+]
 
 # Season Configuration
 SEASON = int(os.getenv("SEASON", "2025"))
@@ -106,6 +146,10 @@ ENDPOINT_CONFIGS = {
         "has_date": True,
         "per_page": 100,
         "periods": [1, 2, 3, 4],
+    },
+    "game_player_advanced_stats": {
+        "has_date": True,
+        "per_page": 100,
     },
 }
 

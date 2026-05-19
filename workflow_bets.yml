@@ -130,6 +130,10 @@ main:
                 call: googleapis.run.v2.projects.locations.jobs.run
                 args:
                     name: ${job_full_name}
+                    body:
+                        overrides:
+                            containerOverrides:
+                                - args: ["dbt", "run", "--select", "stg_betting_odds+ stg_player_props+", "--project-dir", "/app/dbt_nba", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                 result: job_execution_result
 
             - log_job_success:
@@ -155,6 +159,72 @@ main:
                 assign:
                 - workflow_status: "PARTIAL_FAILURE"
                 - failed_services: ${list.concat(failed_services, ["dbt-nba"])}
+
+    # ============================================================================
+    # FASE 3: Sync parcial das marts afetadas por bets/props (PRD + DEV)
+    # try/except independentes por ambiente.
+    # ============================================================================
+    - phase3_sync_bets_prd:
+        try:
+            steps:
+            - call_sync_bets_prd:
+                call: http.get
+                args:
+                    url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=prd&tables=dim_player_latest_line,ft_game_player_stats,dim_daily_opportunities
+                    auth:
+                        type: OIDC
+                    timeout: 600
+            - log_phase3_bets_prd_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 3 sync bets PRD completed successfully"
+        except:
+            as: e
+            steps:
+            - log_phase3_bets_prd_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 3 sync bets PRD failed"
+                        error: ${e.message}
+            - handle_phase3_bets_prd_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[prd]"])}
+
+    - phase3_sync_bets_dev:
+        try:
+            steps:
+            - call_sync_bets_dev:
+                call: http.get
+                args:
+                    url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=dev&tables=dim_player_latest_line,ft_game_player_stats,dim_daily_opportunities
+                    auth:
+                        type: OIDC
+                    timeout: 600
+            - log_phase3_bets_dev_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 3 sync bets DEV completed successfully"
+        except:
+            as: e
+            steps:
+            - log_phase3_bets_dev_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 3 sync bets DEV failed"
+                        error: ${e.message}
+            - handle_phase3_bets_dev_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[dev]"])}
 
     # ============================================================================
     # FINALIZAÇÃO

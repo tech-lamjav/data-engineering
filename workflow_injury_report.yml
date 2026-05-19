@@ -87,6 +87,10 @@ main:
                 call: googleapis.run.v2.projects.locations.jobs.run
                 args:
                     name: ${job_full_name}
+                    body:
+                        overrides:
+                            containerOverrides:
+                                - args: ["dbt", "run", "--select", "stg_player_injuries+ dim_teams+", "--project-dir", "/app/dbt_nba", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                 result: job_execution_result
 
             - log_job_success:
@@ -112,6 +116,72 @@ main:
                 assign:
                 - workflow_status: "PARTIAL_FAILURE"
                 - failed_services: ${list.concat(failed_services, ["dbt-nba"])}
+
+    # ============================================================================
+    # FASE 3: Sync parcial das marts afetadas pelo injury report (PRD + DEV)
+    # try/except independentes por ambiente.
+    # ============================================================================
+    - phase3_sync_injury_prd:
+        try:
+            steps:
+            - call_sync_injury_prd:
+                call: http.get
+                args:
+                    url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=prd&tables=dim_players,dim_teams,dim_stat_player,dim_daily_opportunities,dim_teammate_impact_360
+                    auth:
+                        type: OIDC
+                    timeout: 600
+            - log_phase3_injury_prd_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 3 sync injury PRD completed successfully"
+        except:
+            as: e
+            steps:
+            - log_phase3_injury_prd_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 3 sync injury PRD failed"
+                        error: ${e.message}
+            - handle_phase3_injury_prd_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[prd]"])}
+
+    - phase3_sync_injury_dev:
+        try:
+            steps:
+            - call_sync_injury_dev:
+                call: http.get
+                args:
+                    url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=dev&tables=dim_players,dim_teams,dim_stat_player,dim_daily_opportunities,dim_teammate_impact_360
+                    auth:
+                        type: OIDC
+                    timeout: 600
+            - log_phase3_injury_dev_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 3 sync injury DEV completed successfully"
+        except:
+            as: e
+            steps:
+            - log_phase3_injury_dev_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 3 sync injury DEV failed"
+                        error: ${e.message}
+            - handle_phase3_injury_dev_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[dev]"])}
 
     # ============================================================================
     # FINALIZAÇÃO

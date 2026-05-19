@@ -34,6 +34,9 @@ COMBINATIONS = [
     # Opp Rankings — C&S / Pull Up (shotdashboard)
     ("shotdashboard", "catch_and_shoot"),
     ("shotdashboard", "pullups"),
+    # Opp Rankings — Shooting cedido (defesa por zona / faixa de distância)
+    ("shooting", "by_zone_opponent"),
+    ("shooting", "5ft_range_opponent"),
 ]
 
 

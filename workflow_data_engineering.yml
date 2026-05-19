@@ -250,6 +250,23 @@ main:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
                                 - failed_services: ${list.concat(failed_services, ["extract-betting-odds"])}
+                - extract_game_player_advanced_stats:
+                    steps:
+                    - call_extract_game_player_advanced_stats:
+                        try:
+                            call: http.get
+                            args:
+                                url: https://extract-game-player-advanced-stats-r52p4w2f2a-ue.a.run.app
+                                auth:
+                                    type: OIDC
+                                timeout: 1800
+                        except:
+                            as: e
+                            steps:
+                            - handle_game_player_advanced_stats_error:
+                                assign:
+                                - workflow_status: "PARTIAL_FAILURE"
+                                - failed_services: ${list.concat(failed_services, ["extract-game-player-advanced-stats"])}
 
     # ============================================================================
     # FASE 2: Cloud Run Job execution (dbt-nba)
@@ -301,6 +318,72 @@ main:
                 assign:
                 - workflow_status: "PARTIAL_FAILURE"
                 - failed_services: ${list.concat(failed_services, ["dbt-nba"])}
+
+    # ============================================================================
+    # FASE 3: Sync BigQuery marts -> Supabase Postgres (PRD + DEV, sequencial)
+    # try/except independentes: falha em um ambiente não bloqueia o outro.
+    # ============================================================================
+    - phase3_sync_supabase_prd:
+        try:
+            steps:
+            - call_sync_prd:
+                call: http.get
+                args:
+                    url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=prd
+                    auth:
+                        type: OIDC
+                    timeout: 900
+            - log_phase3_prd_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 3 sync PRD completed successfully"
+        except:
+            as: e
+            steps:
+            - log_phase3_prd_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 3 sync PRD failed"
+                        error: ${e.message}
+            - handle_phase3_prd_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[prd]"])}
+
+    - phase3_sync_supabase_dev:
+        try:
+            steps:
+            - call_sync_dev:
+                call: http.get
+                args:
+                    url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=dev
+                    auth:
+                        type: OIDC
+                    timeout: 900
+            - log_phase3_dev_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 3 sync DEV completed successfully"
+        except:
+            as: e
+            steps:
+            - log_phase3_dev_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 3 sync DEV failed"
+                        error: ${e.message}
+            - handle_phase3_dev_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[dev]"])}
 
     # ============================================================================
     # FINALIZAÇÃO

@@ -173,8 +173,8 @@ class GCSStorage:
                 combined = {**metadata, **item}
                 lines.append(json.dumps(combined, ensure_ascii=False))
             
-            return "\n".join(lines)
-        
+            return "\n".join(lines) if lines else json.dumps(metadata, ensure_ascii=False)
+
         # Para team_season_averages, expande o array 'team_averages' em linhas separadas
         if endpoint == "team_season_averages" and "team_averages" in data:
             lines = []
@@ -248,7 +248,7 @@ class GCSStorage:
 
         # Para games e game_player_stats, salva como um único objeto JSON (mantém o array intacto)
         # Isso é necessário porque o BigQuery espera que cada linha seja um objeto completo com o array dentro
-        if endpoint in ["games", "game_player_stats", "game_player_stats_period"]:
+        if endpoint in ["games", "game_player_stats", "game_player_stats_period", "game_player_advanced_stats"]:
             return json.dumps(data, ensure_ascii=False)
         
         # Para outros endpoints, verifica se há arrays principais
