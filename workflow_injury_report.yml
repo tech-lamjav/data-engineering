@@ -130,6 +130,7 @@ main:
                     url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=prd&tables=dim_players,dim_teams,dim_stat_player,dim_daily_opportunities,dim_teammate_impact_360
                     auth:
                         type: OIDC
+                        audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
                     timeout: 600
             - log_phase3_injury_prd_success:
                 call: sys.log
@@ -161,6 +162,7 @@ main:
                     url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=dev&tables=dim_players,dim_teams,dim_stat_player,dim_daily_opportunities,dim_teammate_impact_360
                     auth:
                         type: OIDC
+                        audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
                     timeout: 600
             - log_phase3_injury_dev_success:
                 call: sys.log

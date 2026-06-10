@@ -173,6 +173,7 @@ main:
                     url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=prd&tables=dim_player_latest_line,ft_game_player_stats,dim_daily_opportunities
                     auth:
                         type: OIDC
+                        audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
                     timeout: 600
             - log_phase3_bets_prd_success:
                 call: sys.log
@@ -204,6 +205,7 @@ main:
                     url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=dev&tables=dim_player_latest_line,ft_game_player_stats,dim_daily_opportunities
                     auth:
                         type: OIDC
+                        audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
                     timeout: 600
             - log_phase3_bets_dev_success:
                 call: sys.log
