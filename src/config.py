@@ -15,6 +15,80 @@ API_BASE_URL_NBA_V2 = "https://api.balldontlie.io/nba/v2"  # Para stats/advanced
 API_KEY = os.getenv("BALLDONTLIE_KEY")
 API_TIMEOUT = 60
 
+# API-Football (futebol/soccer) — vertical paralela à NBA
+API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
+API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
+
+# Ligas alvo do pipeline futebol
+BRASILEIRAO_ID = 71
+COPA_MUNDO_ID = 1  # validar no primeiro run
+
+# Split entre backfill (one-shot, anos anteriores) e current (diário, ano corrente)
+LEAGUES_BACKFILL = [
+    (BRASILEIRAO_ID, 2024),
+    (BRASILEIRAO_ID, 2025),
+]
+LEAGUES_CURRENT = [
+    (BRASILEIRAO_ID, 2026),
+    (COPA_MUNDO_ID, 2026),
+]
+
+# Idem leagues — 4 chamadas distribuídas entre backfill (one-shot) e current (diário).
+TEAMS_BACKFILL = [
+    (BRASILEIRAO_ID, 2024),
+    (BRASILEIRAO_ID, 2025),
+]
+TEAMS_CURRENT = [
+    (BRASILEIRAO_ID, 2026),
+    (COPA_MUNDO_ID, 2026),
+]
+
+# Idem teams — catálogo de jogadores via /players?league=&season= (paginado).
+PLAYERS_BACKFILL = [
+    (BRASILEIRAO_ID, 2024),
+    (BRASILEIRAO_ID, 2025),
+]
+PLAYERS_CURRENT = [
+    (BRASILEIRAO_ID, 2026),
+    (COPA_MUNDO_ID, 2026),
+]
+
+# Fixtures (jogos) — tabela mãe via /fixtures?league=&season= (paginado).
+# Cada fixture_id destrava stats/events/lineups/player_stats (subtasks 5-8).
+FIXTURES_BACKFILL = [
+    (BRASILEIRAO_ID, 2024),
+    (BRASILEIRAO_ID, 2025),
+]
+FIXTURES_CURRENT = [
+    (BRASILEIRAO_ID, 2026),
+    (COPA_MUNDO_ID, 2026),
+]
+
+# Fixture statistics (/fixtures/statistics) — 1 chamada por fixture, só após FT.
+# No modo current, re-busca jogos cujo kickoff foi nos últimos N dias (captura
+# correções pós-jogo da API); jogos mais antigos já salvos são pulados (skip-if-exists).
+FIXTURE_STATS_REFETCH_WINDOW_DAYS = 3
+
+# Fixture events (/fixtures/events) — 1 chamada por fixture, só após FT. Mesma
+# mecânica do statistics: no modo current re-busca jogos dos últimos N dias
+# (captura VAR/correções pós-jogo da API), o resto é pulado por skip-if-exists.
+FIXTURE_EVENTS_REFETCH_WINDOW_DAYS = 3
+
+# Fixture lineups (/fixtures/lineups) — 1 chamada por fixture, em duas fases:
+# - pós-jogo (mode current/backfill): escalação real (lineup_phase="real"), mesma
+#   mecânica do statistics/events (janela 3d no current + skip-if-exists).
+# - pré-jogo (mode pregame): escalação confirmada (lineup_phase="confirmed") dos jogos
+#   NS com kickoff nos próximos FIXTURE_LINEUPS_PREGAME_WINDOW_MIN minutos. O fato é
+#   latest-wins (dbt) — "real" vence "confirmed"; o GCS guarda os dois snapshots.
+FIXTURE_LINEUPS_REFETCH_WINDOW_DAYS = 3
+FIXTURE_LINEUPS_PREGAME_WINDOW_MIN = 45
+
+# Fixture player stats (/fixtures/players) — 1 chamada por fixture, só após FT.
+# Mesma mecânica do statistics/events: no modo current re-busca jogos dos últimos N
+# dias (captura correções pós-jogo da API, ex.: rating revisado), o resto é pulado
+# por skip-if-exists.
+FIXTURE_PLAYER_STATS_REFETCH_WINDOW_DAYS = 3
+
 # GCS Configuration
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "smartbetting-landing")
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
@@ -23,6 +97,7 @@ GCS_USE_ADC = True  # Application Default Credentials
 # BigQuery Configuration
 BIGQUERY_PROJECT_ID = "smartbetting-dados"
 BIGQUERY_DATASET = "nba"
+BIGQUERY_DATASET_FUTEBOL = "futebol"
 BIGQUERY_LOCATION = "us-east1"
 
 # Supabase Postgres sync configuration
@@ -164,6 +239,8 @@ def get_gcs_path(
     type: str = None,
     season_type: str = None,
     period: int = None,
+    sport: str = "nba",
+    mode: str = None,
 ) -> str:
     """
     Gera o caminho no GCS seguindo a estrutura definida.
@@ -177,13 +254,31 @@ def get_gcs_path(
         category: Categoria para season_averages (opcional)
         type: Tipo para season_averages (opcional)
         season_type: Tipo de temporada para season_averages (ex: regular, playoffs, ist)
+        sport: Identificador do esporte ("nba" default, "futebol" para API-Football)
+        mode: Sufixo de modo para endpoints futebol ("current"|"backfill"), opcional
 
     Returns:
         Caminho completo no formato: nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}.json
         ou nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{date}.json
         ou nba/{endpoint}/{season}/{market}/raw_nba_{endpoint}_{season}-{game_id}.json (para player_props)
         ou nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{category}-{type}-{season_type}.json (para season_averages)
+        ou futebol/{endpoint}/raw_futebol_{endpoint}{_mode}.json (para sport='futebol')
     """
+    # Branch dedicado para sport='futebol' (não polui a lógica NBA existente)
+    if sport == "futebol":
+        # Endpoints per-fixture (ex: fixture_statistics) salvam 1 arquivo por jogo,
+        # reusando o param game_id como fixture_id:
+        # futebol/{endpoint}/raw_futebol_{endpoint}_{fixture_id}.json
+        # fixture_lineups grava em duas fases (mode "confirmed"|"real") → sufixo de fase
+        # no nome do arquivo p/ guardar os dois snapshots (T-30min e pós-jogo).
+        if game_id is not None:
+            phase = f"_{mode}" if mode in ("confirmed", "real") else ""
+            filename = f"raw_futebol_{endpoint}_{game_id}{phase}.json"
+            return f"futebol/{endpoint}/{filename}"
+        suffix = f"_{mode}" if mode in ("backfill", "current") else ""
+        filename = f"raw_futebol_{endpoint}{suffix}.json"
+        return f"futebol/{endpoint}/{filename}"
+
     if market and game_id:
         # Estrutura especial para player_props: nba/player_props/{season}/{market}/raw_nba_player_props_{season}-{game_id}.json
         filename = f"raw_nba_{endpoint}_{season}-{game_id}.json"

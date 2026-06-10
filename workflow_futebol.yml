@@ -1,0 +1,470 @@
+# ============================================================
+# WORKFLOW FUTEBOL
+# Pipeline da vertical de futebol (API-Football v3).
+# Subtasks 1-8/15: extract-leagues + extract-teams + extract-players + extract-fixtures + extract-fixture-statistics + extract-fixture-events + extract-fixture-lineups + extract-fixture-player-stats
+# -> dbt-futebol Cloud Run Job (build dim_leagues + dim_teams + dim_players + fact_fixtures + fact_fixture_stats + fact_fixture_events + fact_fixture_lineups(+players) + fact_fixture_player_stats).
+#
+# Lineups: este workflow pega a escalação REAL (pós-jogo, mode current/backfill). A
+# escalação CONFIRMADA (~T-30min) roda no workflow_futebol_lineups.yml (poll + dbt condicional).
+#
+# Argumento opcional:
+#   {"mode": "current"}   (default) — ano corrente; schedule diário
+#   {"mode": "backfill"}            — anos anteriores; trigger manual one-shot
+# ============================================================
+
+main:
+    params: [args]
+    steps:
+
+    # ============================================================================
+    # INICIALIZAÇÃO
+    # ============================================================================
+    - init:
+        assign:
+        - workflow_start_time: ${sys.now()}
+        - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
+        - workflow_status: "SUCCESS"
+        - failed_services: []
+        # mode default = "current" se não fornecido
+        - mode: ${default(map.get(args, "mode"), "current")}
+
+    - log_start:
+        call: sys.log
+        args:
+            severity: INFO
+            data:
+                message: "Workflow execution started"
+                workflow_name: "workflow_futebol"
+                execution_id: ${execution_id}
+                mode: ${mode}
+                start_time: ${workflow_start_time}
+
+    # ============================================================================
+    # FASE 1: Extração de leagues (API-Football)
+    # ============================================================================
+    - phase1_extract_leagues:
+        try:
+            steps:
+            - call_extract_leagues:
+                call: http.get
+                args:
+                    url: https://extract-leagues-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: ${mode}
+                    timeout: 1800
+            - log_phase1_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 1 completed successfully"
+                        phase: "extract_leagues"
+                        mode: ${mode}
+        except:
+            as: e
+            steps:
+            - log_phase1_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 1 encountered errors"
+                        phase: "extract_leagues"
+                        error: ${e.message}
+            - handle_phase1_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["extract-leagues"])}
+
+    # ============================================================================
+    # FASE 1b: Extração de teams (API-Football)
+    # ============================================================================
+    - phase1b_extract_teams:
+        try:
+            steps:
+            - call_extract_teams:
+                call: http.get
+                args:
+                    url: https://extract-teams-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: ${mode}
+                    timeout: 1800
+            - log_phase1b_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 1b completed successfully"
+                        phase: "extract_teams"
+                        mode: ${mode}
+        except:
+            as: e
+            steps:
+            - log_phase1b_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 1b encountered errors"
+                        phase: "extract_teams"
+                        error: ${e.message}
+            - handle_phase1b_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["extract-teams"])}
+
+    # ============================================================================
+    # FASE 1c: Extração de players (API-Football)
+    # ============================================================================
+    - phase1c_extract_players:
+        try:
+            steps:
+            - call_extract_players:
+                call: http.get
+                args:
+                    url: https://extract-players-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: ${mode}
+                    timeout: 1800
+            - log_phase1c_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 1c completed successfully"
+                        phase: "extract_players"
+                        mode: ${mode}
+        except:
+            as: e
+            steps:
+            - log_phase1c_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 1c encountered errors"
+                        phase: "extract_players"
+                        error: ${e.message}
+            - handle_phase1c_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["extract-players"])}
+
+    # ============================================================================
+    # FASE 1d: Extração de fixtures (API-Football) — tabela mãe
+    # ============================================================================
+    - phase1d_extract_fixtures:
+        try:
+            steps:
+            - call_extract_fixtures:
+                call: http.get
+                args:
+                    url: https://extract-fixtures-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: ${mode}
+                    timeout: 1800
+            - log_phase1d_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 1d completed successfully"
+                        phase: "extract_fixtures"
+                        mode: ${mode}
+        except:
+            as: e
+            steps:
+            - log_phase1d_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 1d encountered errors"
+                        phase: "extract_fixtures"
+                        error: ${e.message}
+            - handle_phase1d_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["extract-fixtures"])}
+
+    # ============================================================================
+    # FASE 1e: Extração de fixture statistics (API-Football) — stats por time/jogo
+    # Depende da fase 1d: lê os fixtures finalizados do arquivo recém-atualizado.
+    # ============================================================================
+    - phase1e_extract_fixture_statistics:
+        try:
+            steps:
+            - call_extract_fixture_statistics:
+                call: http.get
+                args:
+                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                    url: https://extract-fixture-statistics-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: ${mode}
+                    timeout: 1800
+            - log_phase1e_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 1e completed successfully"
+                        phase: "extract_fixture_statistics"
+                        mode: ${mode}
+        except:
+            as: e
+            steps:
+            - log_phase1e_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 1e encountered errors"
+                        phase: "extract_fixture_statistics"
+                        error: ${e.message}
+            - handle_phase1e_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["extract-fixture-statistics"])}
+
+    # ============================================================================
+    # FASE 1f: Extração de fixture events (API-Football) — linha do tempo do jogo
+    # Depende da fase 1d: lê os fixtures finalizados do arquivo recém-atualizado.
+    # ============================================================================
+    - phase1f_extract_fixture_events:
+        try:
+            steps:
+            - call_extract_fixture_events:
+                call: http.get
+                args:
+                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                    url: https://extract-fixture-events-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: ${mode}
+                    timeout: 1800
+            - log_phase1f_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 1f completed successfully"
+                        phase: "extract_fixture_events"
+                        mode: ${mode}
+        except:
+            as: e
+            steps:
+            - log_phase1f_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 1f encountered errors"
+                        phase: "extract_fixture_events"
+                        error: ${e.message}
+            - handle_phase1f_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["extract-fixture-events"])}
+
+    # ============================================================================
+    # FASE 1g: Extração de fixture lineups (API-Football) — escalações por time/jogo
+    # Pós-jogo (escalação REAL): depende da fase 1d (lê os fixtures finalizados).
+    # A escalação CONFIRMADA (~T-30min) roda no workflow_futebol_lineups.yml.
+    # ============================================================================
+    - phase1g_extract_fixture_lineups:
+        try:
+            steps:
+            - call_extract_fixture_lineups:
+                call: http.get
+                args:
+                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                    url: https://extract-fixture-lineups-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: ${mode}
+                    timeout: 1800
+            - log_phase1g_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 1g completed successfully"
+                        phase: "extract_fixture_lineups"
+                        mode: ${mode}
+        except:
+            as: e
+            steps:
+            - log_phase1g_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 1g encountered errors"
+                        phase: "extract_fixture_lineups"
+                        error: ${e.message}
+            - handle_phase1g_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["extract-fixture-lineups"])}
+
+    # ============================================================================
+    # FASE 1h: Extração de fixture player stats (API-Football) — stats por jogador/jogo
+    # Depende da fase 1d: lê os fixtures finalizados do arquivo recém-atualizado.
+    # ============================================================================
+    - phase1h_extract_fixture_player_stats:
+        try:
+            steps:
+            - call_extract_fixture_player_stats:
+                call: http.get
+                args:
+                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                    url: https://extract-fixture-player-stats-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: ${mode}
+                    timeout: 1800
+            - log_phase1h_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 1h completed successfully"
+                        phase: "extract_fixture_player_stats"
+                        mode: ${mode}
+        except:
+            as: e
+            steps:
+            - log_phase1h_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 1h encountered errors"
+                        phase: "extract_fixture_player_stats"
+                        error: ${e.message}
+            - handle_phase1h_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["extract-fixture-player-stats"])}
+
+    # ============================================================================
+    # FASE 2: Cloud Run Job execution (dbt-futebol) — build dim_leagues + dim_teams + dim_players + fact_fixtures + fact_fixture_stats + fact_fixture_events + fact_fixture_lineups(+players) + fact_fixture_player_stats
+    # ============================================================================
+    - phase2_cloud_run_job:
+        try:
+            steps:
+            - init_job_config:
+                assign:
+                - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+                - job_name: "dbt-futebol"
+                - job_location: "us-east1"
+                - job_full_name: ${"projects/" + project_id + "/locations/" + job_location + "/jobs/" + job_name}
+
+            - log_job_start:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Starting Cloud Run Job execution"
+                        job_name: ${job_name}
+
+            - execute_cloud_run_job:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                    name: ${job_full_name}
+                    body:
+                        overrides:
+                            containerOverrides:
+                                - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                result: job_execution_result
+
+            - log_job_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Cloud Run Job executed successfully"
+                        job_name: ${job_name}
+                        execution_name: ${job_execution_result.name}
+        except:
+            as: e
+            steps:
+            - log_job_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Cloud Run Job execution failed"
+                        job_name: "dbt-futebol"
+                        error: ${e.message}
+            - handle_job_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["dbt-futebol"])}
+
+    # ============================================================================
+    # FINALIZAÇÃO
+    # ============================================================================
+    - finalize:
+        assign:
+        - workflow_end_time: ${sys.now()}
+        - duration_seconds: ${workflow_end_time - workflow_start_time}
+        - failed_count: ${len(failed_services)}
+
+    - log_completion:
+        call: sys.log
+        args:
+            severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+            data:
+                message: "Workflow execution completed"
+                workflow_name: "workflow_futebol"
+                status: ${workflow_status}
+                mode: ${mode}
+                duration_seconds: ${duration_seconds}
+                failed_services: ${failed_services}
+                failed_count: ${failed_count}
+
+    - send_notification:
+        try:
+            call: http.post
+            args:
+                url: https://notify-execution-r52p4w2f2a-ue.a.run.app
+                auth:
+                    type: OIDC
+                timeout: 30
+                body:
+                    workflow_name: "workflow_futebol"
+                    status: ${workflow_status}
+                    mode: ${mode}
+                    duration_seconds: ${duration_seconds}
+                    failed_services: ${failed_services}
+        except:
+            as: e
+            steps:
+            - log_notification_error:
+                call: sys.log
+                args:
+                    severity: WARNING
+                    data:
+                        message: "Falha ao enviar notificação por email"
+                        error: ${e.message}
+
+    - return_result:
+        return:
+            status: ${workflow_status}
+            mode: ${mode}
+            duration_seconds: ${duration_seconds}
+            failed_services: ${failed_services}

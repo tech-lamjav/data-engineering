@@ -1,0 +1,85 @@
+"""Extractor para /teams da API-Football v3."""
+from typing import Dict, Any
+from datetime import datetime
+from src.extractors.base_extractor import BaseExtractor
+from src.clients.api_football_client import ApiFootballClient
+from src.config import TEAMS_BACKFILL, TEAMS_CURRENT
+from src.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
+
+
+class TeamsExtractor(BaseExtractor):
+    """Extrai metadados de times via /teams.
+
+    Modo "current" (default): ano corrente — usado pelo schedule diário.
+    Modo "backfill": anos anteriores — one-shot manual.
+    """
+
+    def __init__(self, mode: str = "current"):
+        super().__init__(
+            endpoint_name="teams",
+            client=ApiFootballClient(),
+            sport="futebol",
+        )
+        self.has_date = False
+        if mode not in ("current", "backfill"):
+            raise ValueError(f"mode inválido: {mode}. Use 'current' ou 'backfill'.")
+        self.mode = mode
+        self.targets = TEAMS_CURRENT if mode == "current" else TEAMS_BACKFILL
+
+    def extract(self, **kwargs) -> Dict[str, Any]:
+        """Itera sobre os targets e mescla resposta + metadata da request."""
+        teams = []
+        for league_id, season in self.targets:
+            logger.info(f"Extraindo league={league_id} season={season}...")
+            envelope = self.client.get_teams(league_id, season)
+
+            errors = envelope.get("errors")
+            if errors:
+                logger.error(
+                    f"API errors para league={league_id} season={season}: {errors}"
+                )
+                continue
+
+            response = envelope.get("response", []) or []
+            if not response:
+                logger.warning(
+                    f"Resposta vazia para league={league_id} season={season}"
+                )
+                continue
+
+            for item in response:
+                teams.append({
+                    "requested_league_id": league_id,
+                    "requested_season": season,
+                    "loaded_at": datetime.utcnow().isoformat(),
+                    **item,  # team: {...}, venue: {...}
+                })
+
+        logger.info(
+            f"Coletadas {len(teams)} linhas (mode={self.mode}, targets={len(self.targets)})"
+        )
+        return {
+            "mode": self.mode,
+            "total_teams": len(teams),
+            "teams": teams,
+        }
+
+    def extract_and_save(self, **kwargs) -> str:
+        """Override: usa mode no path do GCS em vez de date."""
+        logger.info(f"Iniciando extração teams (mode={self.mode})")
+        data = self.extract(**kwargs)
+
+        if data.get("total_teams", 0) == 0:
+            logger.warning("Nenhum time coletado — arquivo será uploadado vazio (metadata only)")
+
+        gcs_path = self.storage.upload_json(
+            data=data,
+            endpoint="teams",
+            season=0,  # ignorado pelo branch sport='futebol' do get_gcs_path
+            sport="futebol",
+            mode=self.mode,
+        )
+        logger.info(f"Extração concluída: {gcs_path}")
+        return gcs_path

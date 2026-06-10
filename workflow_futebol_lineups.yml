@@ -1,0 +1,156 @@
+# ============================================================
+# WORKFLOW FUTEBOL LINEUPS (pré-jogo / T-30min)
+# Poll das escalações CONFIRMADAS dos jogos prestes a começar (status NS, kickoff nos
+# próximos ~45min) e, se algo novo foi coletado, rebuild ENXUTO dos modelos de lineups
+# no dbt-futebol — pra escalação chegar no fato ANTES do kickoff (ajuste por desfalques).
+#
+# Disparado pelo Cloud Scheduler a cada ~15min (SA schedulerde@, tem workflows.invoker).
+# Sem notificação por email no sucesso (poll de alta frequência). A escalação REAL
+# (pós-jogo) é coberta pela fase 1g do workflow_futebol.yml (run diário).
+#
+# O dbt usa --select SEM '+' (enxuto): assume fact_fixtures já materializado pelo run
+# diário — jogos NS futuros já estão lá; o calendário não muda intradia.
+# ============================================================
+
+main:
+    steps:
+    - init:
+        assign:
+        - workflow_start_time: ${sys.now()}
+        - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
+        - workflow_status: "SUCCESS"
+        - saved_count: 0
+
+    - log_start:
+        call: sys.log
+        args:
+            severity: INFO
+            data:
+                message: "Workflow lineups (pregame) started"
+                workflow_name: "workflow_futebol_lineups"
+                execution_id: ${execution_id}
+
+    # ========================================================================
+    # FASE 1: Extração das escalações confirmadas (mode=pregame)
+    # ========================================================================
+    - phase1_extract_lineups_pregame:
+        try:
+            steps:
+            - call_extract_lineups:
+                call: http.get
+                args:
+                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                    url: https://extract-fixture-lineups-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: "pregame"
+                    timeout: 1800
+                result: lineups_result
+            - read_saved_count:
+                assign:
+                - saved_count: ${default(map.get(lineups_result.body, "saved_count"), 0)}
+            - log_phase1_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Pregame lineups extraction completed"
+                        saved_count: ${saved_count}
+        except:
+            as: e
+            steps:
+            - log_phase1_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Pregame lineups extraction failed"
+                        error: ${e.message}
+            - handle_phase1_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+
+    # ========================================================================
+    # GATE: só roda o dbt se algo novo foi coletado (saved_count > 0).
+    # ========================================================================
+    - check_new_lineups:
+        switch:
+            - condition: ${saved_count > 0}
+              next: phase2_dbt
+        next: skip_dbt
+
+    - skip_dbt:
+        steps:
+        - log_skip:
+            call: sys.log
+            args:
+                severity: INFO
+                data:
+                    message: "Nenhuma escalação nova — dbt pulado"
+                    saved_count: ${saved_count}
+        - skip_to_finalize:
+            next: finalize
+
+    # ========================================================================
+    # FASE 2: dbt enxuto (só os 4 modelos de lineups). Cai em finalize ao terminar.
+    # ========================================================================
+    - phase2_dbt:
+        try:
+            steps:
+            - init_job_config:
+                assign:
+                - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+                - job_full_name: ${"projects/" + project_id + "/locations/us-east1/jobs/dbt-futebol"}
+            - execute_cloud_run_job:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                    name: ${job_full_name}
+                    body:
+                        overrides:
+                            containerOverrides:
+                                - args: ["dbt", "run", "--select", "stg_futebol_fixture_lineups", "stg_futebol_fixture_lineups_players", "fact_fixture_lineups", "fact_fixture_lineups_players", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                result: job_execution_result
+            - log_job_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "dbt lineups rebuild completed"
+                        saved_count: ${saved_count}
+                        execution_name: ${job_execution_result.name}
+        except:
+            as: e
+            steps:
+            - log_job_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "dbt lineups rebuild failed"
+                        error: ${e.message}
+            - handle_job_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+
+    - finalize:
+        assign:
+        - workflow_end_time: ${sys.now()}
+        - duration_seconds: ${workflow_end_time - workflow_start_time}
+
+    - log_completion:
+        call: sys.log
+        args:
+            severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+            data:
+                message: "Workflow lineups (pregame) completed"
+                workflow_name: "workflow_futebol_lineups"
+                status: ${workflow_status}
+                saved_count: ${saved_count}
+                duration_seconds: ${duration_seconds}
+
+    - return_result:
+        return:
+            status: ${workflow_status}
+            saved_count: ${saved_count}
+            duration_seconds: ${duration_seconds}

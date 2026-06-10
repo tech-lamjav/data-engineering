@@ -69,6 +69,8 @@ class GCSStorage:
         type: Optional[str] = None,
         season_type: Optional[str] = None,
         period: Optional[int] = None,
+        sport: str = "nba",
+        mode: Optional[str] = None,
     ) -> str:
         """
         Faz upload de um JSON para o GCS.
@@ -91,7 +93,7 @@ class GCSStorage:
         blob_path = get_gcs_path(
             endpoint, season, date=date, market=market, game_id=game_id,
             category=category, type=type, season_type=season_type,
-            period=period,
+            period=period, sport=sport, mode=mode,
         )
         logger.info(f"Fazendo upload para: gs://{self.bucket_name}/{blob_path}")
         
@@ -253,7 +255,7 @@ class GCSStorage:
         
         # Para outros endpoints, verifica se há arrays principais
         # Se houver um array no nível raiz ou um array com nome comum (games, players, etc.)
-        array_keys = ["players", "teams", "injuries", "standings"]
+        array_keys = ["players", "teams", "injuries", "standings", "leagues", "fixtures", "fixture_statistics", "fixture_events", "fixture_lineups", "fixture_player_stats", "team_season_stats"]
         for key in array_keys:
             if key in data and isinstance(data[key], list):
                 lines = []
@@ -424,4 +426,175 @@ class GCSStorage:
         
         logger.info(f"Total de {files_processed} arquivos processados, {len(game_ids)} game_ids únicos encontrados")
         return sorted(list(game_ids))
+
+    def get_fixture_ids_from_storage(self, mode: str) -> List[Dict[str, Any]]:
+        """
+        Lê o arquivo de fixtures do GCS (raw_futebol_fixtures_{mode}.json) e retorna
+        os jogos FINALIZADOS — base para o /fixtures/statistics (1 chamada por fixture).
+
+        Args:
+            mode: "current" | "backfill" — seleciona qual arquivo de fixtures ler.
+
+        Returns:
+            Lista de dicts {"fixture_id": int, "date_utc": "YYYY-MM-DD"} dos jogos com
+            status FT/AET/PEN (finalizados; inclui mata-mata por prorrogação/pênaltis).
+        """
+        import json
+        from datetime import datetime, timezone
+
+        finished_statuses = {"FT", "AET", "PEN"}
+        blob_path = get_gcs_path("fixtures", 0, sport="futebol", mode=mode)
+        logger.info(f"Lendo fixtures de gs://{self.bucket_name}/{blob_path}...")
+
+        blob = self.bucket.blob(blob_path)
+        if not blob.exists():
+            logger.warning(f"Arquivo de fixtures não encontrado: {blob_path}")
+            return []
+
+        content = blob.download_as_text()
+        fixtures = []
+        for line_num, line in enumerate(content.strip().split("\n"), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Linha {line_num} inválida em {blob_path}: {str(e)}")
+                continue
+
+            fixture = row.get("fixture") or {}
+            status_short = (fixture.get("status") or {}).get("short")
+            if status_short not in finished_statuses:
+                continue
+
+            fixture_id = fixture.get("id")
+            ts = fixture.get("timestamp")
+            if fixture_id is None or ts is None:
+                continue
+
+            date_utc = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            fixtures.append({"fixture_id": fixture_id, "date_utc": date_utc})
+
+        logger.info(
+            f"{len(fixtures)} fixtures finalizados (FT/AET/PEN) em {blob_path} (mode={mode})"
+        )
+        return fixtures
+
+    def get_team_ids_from_storage(self, mode: str) -> List[Dict[str, Any]]:
+        """
+        Lê o arquivo de teams do GCS (raw_futebol_teams_{mode}.json) e retorna a lista
+        de (team, liga, season) — base para o /teams/statistics (1 chamada por time).
+
+        Mesma mecânica do get_fixture_ids_from_storage, mas sobre o arquivo de teams:
+        cada linha NDJSON traz requested_league_id, requested_season e team.id. Usar o
+        MESMO mode garante alinhamento de escopo (current = Brasileirão 2026 + Copa 2026;
+        backfill = Brasileirão 2024/2025).
+
+        Args:
+            mode: "current" | "backfill" — seleciona qual arquivo de teams ler.
+
+        Returns:
+            Lista de dicts {"team_id": int, "league_id": int, "season": int}.
+        """
+        import json
+
+        blob_path = get_gcs_path("teams", 0, sport="futebol", mode=mode)
+        logger.info(f"Lendo teams de gs://{self.bucket_name}/{blob_path}...")
+
+        blob = self.bucket.blob(blob_path)
+        if not blob.exists():
+            logger.warning(f"Arquivo de teams não encontrado: {blob_path}")
+            return []
+
+        content = blob.download_as_text()
+        teams = []
+        for line_num, line in enumerate(content.strip().split("\n"), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Linha {line_num} inválida em {blob_path}: {str(e)}")
+                continue
+
+            team_id = (row.get("team") or {}).get("id")
+            league_id = row.get("requested_league_id")
+            season = row.get("requested_season")
+            if team_id is None or league_id is None or season is None:
+                continue
+
+            teams.append(
+                {"team_id": team_id, "league_id": league_id, "season": season}
+            )
+
+        logger.info(
+            f"{len(teams)} times em {blob_path} (mode={mode})"
+        )
+        return teams
+
+    def get_upcoming_fixture_ids(self, window_min: int) -> List[Dict[str, Any]]:
+        """
+        Lê o arquivo de fixtures do GCS (raw_futebol_fixtures_current.json) e retorna
+        os jogos PRESTES A COMEÇAR — base para o /fixtures/lineups pré-jogo (T-30min).
+
+        Espelha get_fixture_ids_from_storage, mas filtra o OPOSTO: jogos ainda não
+        iniciados (status NS) cujo kickoff cai na janela [agora, agora + window_min].
+        Sempre usa o arquivo "current" (pré-jogo só faz sentido pro ano corrente).
+
+        Args:
+            window_min: look-ahead em minutos a partir de agora (UTC).
+
+        Returns:
+            Lista de dicts {"fixture_id": int, "date_utc": "YYYY-MM-DD"} dos jogos NS
+            com kickoff iminente.
+        """
+        import json
+        from datetime import datetime, timezone, timedelta
+
+        blob_path = get_gcs_path("fixtures", 0, sport="futebol", mode="current")
+        logger.info(f"Lendo fixtures de gs://{self.bucket_name}/{blob_path}...")
+
+        blob = self.bucket.blob(blob_path)
+        if not blob.exists():
+            logger.warning(f"Arquivo de fixtures não encontrado: {blob_path}")
+            return []
+
+        now = datetime.now(timezone.utc)
+        horizon = now + timedelta(minutes=window_min)
+
+        content = blob.download_as_text()
+        fixtures = []
+        for line_num, line in enumerate(content.strip().split("\n"), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Linha {line_num} inválida em {blob_path}: {str(e)}")
+                continue
+
+            fixture = row.get("fixture") or {}
+            status_short = (fixture.get("status") or {}).get("short")
+            if status_short != "NS":  # Not Started — jogo ainda por começar
+                continue
+
+            fixture_id = fixture.get("id")
+            ts = fixture.get("timestamp")
+            if fixture_id is None or ts is None:
+                continue
+
+            kickoff = datetime.fromtimestamp(ts, tz=timezone.utc)
+            if not (now <= kickoff <= horizon):
+                continue
+
+            date_utc = kickoff.strftime("%Y-%m-%d")
+            fixtures.append({"fixture_id": fixture_id, "date_utc": date_utc})
+
+        logger.info(
+            f"{len(fixtures)} fixtures NS com kickoff em até {window_min}min em {blob_path}"
+        )
+        return fixtures
 

@@ -24,6 +24,9 @@ WORKFLOWS=(
     "workflow-data-engineering:workflow_data_engineering.yml"
     "workflow-injury-report:workflow_injury_report.yml"
     "workflow-bets:workflow_bets.yml"
+    "workflow-futebol:workflow_futebol.yml"
+    "workflow-futebol-lineups:workflow_futebol_lineups.yml"
+    "workflow-futebol-team-stats:workflow_futebol_team_stats.yml"
 )
 
 print_info()    { echo -e "${GREEN}[INFO]${NC} $1"; }
@@ -68,10 +71,13 @@ deploy_workflow() {
     fi
 
     print_info "Deployando $name a partir de $source_file..."
+    # SA explícita: workflows novos defaultariam pra compute SA (sem run.invoker) e
+    # dariam 403 ao chamar os serviços Cloud Run. workflowsde@ tem run.invoker + run.admin.
     gcloud workflows deploy "$name" \
         --source="$source_path" \
         --location="$LOCATION" \
         --project="$GCP_PROJECT_ID" \
+        --service-account="workflowsde@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
         > /dev/null
 
     if [ $? -eq 0 ]; then

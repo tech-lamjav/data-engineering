@@ -13,12 +13,21 @@ _RETRY_BACKOFFS = [30, 60, 120, 240, 480]
 class BaseClient:
     """Cliente base para requisições HTTP."""
 
-    def __init__(self, base_url: str, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: Optional[str] = None,
+        auth_headers: Optional[Dict[str, str]] = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.session = requests.Session()
 
-        if self.api_key:
+        # Auth via header dict has precedence (API-Football usa x-apisports-key).
+        # Fallback: Authorization: Bearer (balldontlie).
+        if auth_headers:
+            self.session.headers.update(auth_headers)
+        elif self.api_key:
             self.session.headers.update({
                 "Authorization": f"Bearer {self.api_key}",
             })

@@ -82,15 +82,21 @@ class BigQueryClient:
         
         return uri
     
-    def create_dataset_if_not_exists(self) -> bigquery.Dataset:
+    def create_dataset_if_not_exists(
+        self,
+        description: str = "Dataset para external tables dos dados brutos da NBA",
+    ) -> bigquery.Dataset:
         """
         Cria o dataset se não existir.
-        
+
+        Args:
+            description: Descrição do dataset (default mantém compatibilidade NBA)
+
         Returns:
             Objeto Dataset criado ou existente
         """
         dataset_ref = self.client.dataset(self.dataset_id)
-        
+
         try:
             dataset = self.client.get_dataset(dataset_ref)
             logger.info(f"Dataset {self.dataset_id} já existe")
@@ -98,7 +104,7 @@ class BigQueryClient:
         except NotFound:
             dataset = bigquery.Dataset(dataset_ref)
             dataset.location = BIGQUERY_LOCATION
-            dataset.description = "Dataset para external tables dos dados brutos da NBA"
+            dataset.description = description
             dataset = self.client.create_dataset(dataset)
             logger.info(f"✓ Dataset {self.dataset_id} criado na localização {BIGQUERY_LOCATION}")
             return dataset

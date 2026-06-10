@@ -1,0 +1,188 @@
+# ============================================================
+# WORKFLOW FUTEBOL TEAM STATS (semanal)
+# Agregados de temporada por time (/teams/statistics) — input direto pro modelo Poisson.
+# extract-team-season-stats -> dbt-futebol Cloud Run Job (build +fact_team_season_stats).
+#
+# Separado do workflow_futebol.yml (diário) porque a cadência é SEMANAL: os agregados de
+# temporada mudam devagar e o endpoint é 1 chamada por time (~52/semana na temporada ativa).
+# Disparado pelo Cloud Scheduler 1x/semana (SA schedulerde@, tem workflows.invoker).
+#
+# Argumento opcional:
+#   {"mode": "current"}   (default) — Brasileirão 2026 + Copa 2026; schedule semanal
+#   {"mode": "backfill"}            — Brasileirão 2024/2025; trigger manual one-shot
+#
+# Pré-req: raw_futebol_teams_{mode}.json já no GCS (o extractor lê a lista de times dele).
+# O run diário (workflow_futebol.yml) mantém o arquivo de teams atualizado.
+# ============================================================
+
+main:
+    params: [args]
+    steps:
+
+    - init:
+        assign:
+        - workflow_start_time: ${sys.now()}
+        - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
+        - workflow_status: "SUCCESS"
+        - failed_services: []
+        - mode: ${default(map.get(args, "mode"), "current")}
+
+    - log_start:
+        call: sys.log
+        args:
+            severity: INFO
+            data:
+                message: "Workflow execution started"
+                workflow_name: "workflow_futebol_team_stats"
+                execution_id: ${execution_id}
+                mode: ${mode}
+                start_time: ${workflow_start_time}
+
+    # ========================================================================
+    # FASE 1: Extração dos agregados de temporada por time (API-Football)
+    # ========================================================================
+    - phase1_extract_team_season_stats:
+        try:
+            steps:
+            - call_extract_team_season_stats:
+                call: http.get
+                args:
+                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                    url: https://extract-team-season-stats-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: ${mode}
+                    timeout: 1800
+            - log_phase1_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 1 completed successfully"
+                        phase: "extract_team_season_stats"
+                        mode: ${mode}
+        except:
+            as: e
+            steps:
+            - log_phase1_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 1 encountered errors"
+                        phase: "extract_team_season_stats"
+                        error: ${e.message}
+            - handle_phase1_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["extract-team-season-stats"])}
+
+    # ========================================================================
+    # FASE 2: Cloud Run Job (dbt-futebol) — build +fact_team_season_stats (stg + fact)
+    # ========================================================================
+    - phase2_cloud_run_job:
+        try:
+            steps:
+            - init_job_config:
+                assign:
+                - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+                - job_name: "dbt-futebol"
+                - job_location: "us-east1"
+                - job_full_name: ${"projects/" + project_id + "/locations/" + job_location + "/jobs/" + job_name}
+
+            - log_job_start:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Starting Cloud Run Job execution"
+                        job_name: ${job_name}
+
+            - execute_cloud_run_job:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                    name: ${job_full_name}
+                    body:
+                        overrides:
+                            containerOverrides:
+                                - args: ["dbt", "run", "--select", "+fact_team_season_stats", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                result: job_execution_result
+
+            - log_job_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Cloud Run Job executed successfully"
+                        job_name: ${job_name}
+                        execution_name: ${job_execution_result.name}
+        except:
+            as: e
+            steps:
+            - log_job_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Cloud Run Job execution failed"
+                        job_name: "dbt-futebol"
+                        error: ${e.message}
+            - handle_job_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["dbt-futebol"])}
+
+    # ========================================================================
+    # FINALIZAÇÃO
+    # ========================================================================
+    - finalize:
+        assign:
+        - workflow_end_time: ${sys.now()}
+        - duration_seconds: ${workflow_end_time - workflow_start_time}
+        - failed_count: ${len(failed_services)}
+
+    - log_completion:
+        call: sys.log
+        args:
+            severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+            data:
+                message: "Workflow execution completed"
+                workflow_name: "workflow_futebol_team_stats"
+                status: ${workflow_status}
+                mode: ${mode}
+                duration_seconds: ${duration_seconds}
+                failed_services: ${failed_services}
+                failed_count: ${failed_count}
+
+    - send_notification:
+        try:
+            call: http.post
+            args:
+                url: https://notify-execution-r52p4w2f2a-ue.a.run.app
+                auth:
+                    type: OIDC
+                timeout: 30
+                body:
+                    workflow_name: "workflow_futebol_team_stats"
+                    status: ${workflow_status}
+                    mode: ${mode}
+                    duration_seconds: ${duration_seconds}
+                    failed_services: ${failed_services}
+        except:
+            as: e
+            steps:
+            - log_notification_error:
+                call: sys.log
+                args:
+                    severity: WARNING
+                    data:
+                        message: "Falha ao enviar notificação por email"
+                        error: ${e.message}
+
+    - return_result:
+        return:
+            status: ${workflow_status}
+            mode: ${mode}
+            duration_seconds: ${duration_seconds}
+            failed_services: ${failed_services}

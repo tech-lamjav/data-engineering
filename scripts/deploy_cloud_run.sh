@@ -20,9 +20,9 @@ MEMORY="512Mi"
 CPU="1"
 TIMEOUT="3600"  # 60 minutos (máximo permitido pelo Cloud Run para requisições HTTP)
 
-# Lista de serviços (compatível com bash 3.x)
-# Formato: SERVICE_NAME:SERVICE_DIR
-SERVICES=(
+# Listas de serviços por esporte (compatível com bash 3.x)
+# Formato: SERVICE_NAME:SERVICE_DIR (SERVICE_DIR relativo a cloud_run/)
+NBA_SERVICES=(
     "extract-active-players:extract_active_players"
     "extract-games:extract_games"
     "extract-game-player-stats:extract_game_player_stats"
@@ -36,9 +36,52 @@ SERVICES=(
     "extract-player-props-caesars:extract_player_props_caesars"
     "extract-player-props-betrivers:extract_player_props_betrivers"
     "extract-betting-odds:extract_betting_odds"
+)
+
+FUTEBOL_SERVICES=(
+    "extract-leagues:futebol/extract_leagues"
+    "extract-teams:futebol/extract_teams"
+    "extract-players:futebol/extract_players"
+    "extract-fixtures:futebol/extract_fixtures"
+    "extract-fixture-statistics:futebol/extract_fixture_statistics"
+    "extract-fixture-events:futebol/extract_fixture_events"
+    "extract-fixture-lineups:futebol/extract_fixture_lineups"
+    "extract-fixture-player-stats:futebol/extract_fixture_player_stats"
+    "extract-team-season-stats:futebol/extract_team_season_stats"
+)
+
+# Serviços compartilhados (não específicos de esporte)
+SHARED_SERVICES=(
     "notify-execution:notify_execution"
     "sync-bq-to-postgres:sync_bq_to_postgres"
 )
+
+# União: todos os serviços (preserva back-compat com `./deploy_cloud_run.sh extract-X`)
+SERVICES=(
+    "${NBA_SERVICES[@]}"
+    "${FUTEBOL_SERVICES[@]}"
+    "${SHARED_SERVICES[@]}"
+)
+
+# Esportes suportados — usados para arg parsing (./deploy_cloud_run.sh futebol [...])
+SUPPORTED_SPORTS=("nba" "futebol")
+
+# Verifica se um valor é um esporte conhecido
+is_supported_sport() {
+    local candidate=$1
+    local sport
+    for sport in "${SUPPORTED_SPORTS[@]}"; do
+        [ "$sport" = "$candidate" ] && return 0
+    done
+    return 1
+}
+
+# Retorna o array de serviços de um esporte específico (echo na stdout)
+get_services_for_sport() {
+    local sport=$1
+    local arr_name="$(echo "$sport" | tr '[:lower:]' '[:upper:]')_SERVICES[@]"
+    echo "${!arr_name}"
+}
 
 # Função para obter o diretório do serviço
 get_service_dir() {
@@ -49,6 +92,18 @@ get_service_dir() {
             echo "${service_entry#*:}"
             return 0
         fi
+    done
+    return 1
+}
+
+# Verifica se um serviço pertence a um esporte (uso: pair sport+service no CLI)
+service_belongs_to_sport() {
+    local service_name=$1
+    local sport=$2
+    local arr_name="$(echo "$sport" | tr '[:lower:]' '[:upper:]')_SERVICES[@]"
+    local entry
+    for entry in "${!arr_name}"; do
+        [[ "$entry" == "$service_name:"* ]] && return 0
     done
     return 1
 }
@@ -138,6 +193,12 @@ load_env() {
     if [ -z "$LOG_LEVEL" ]; then
         LOG_LEVEL="INFO"
     fi
+
+    # API_FOOTBALL_KEY é opcional (somente serviços de futebol usam).
+    # Warn não-fatal — não quebra deploys NBA-only.
+    if [ -z "$API_FOOTBALL_KEY" ]; then
+        print_warning "API_FOOTBALL_KEY não encontrada no .env (necessária apenas para serviços de futebol)"
+    fi
     
     # Service account (opcional, padrão: ExtractScripts)
     if [ -z "$SERVICE_ACCOUNT" ]; then
@@ -161,6 +222,9 @@ build_env_vars() {
     ENV_VARS="${ENV_VARS},GCP_PROJECT_ID=${GCP_PROJECT_ID}"
     ENV_VARS="${ENV_VARS},SEASON=${SEASON}"
     ENV_VARS="${ENV_VARS},LOG_LEVEL=${LOG_LEVEL}"
+    if [ -n "$API_FOOTBALL_KEY" ]; then
+        ENV_VARS="${ENV_VARS},API_FOOTBALL_KEY=${API_FOOTBALL_KEY}"
+    fi
     echo "$ENV_VARS"
 }
 
@@ -396,49 +460,101 @@ main() {
         echo ""
     fi
     
-    # Verifica se foi passado um serviço específico
-    if [ $# -eq 1 ]; then
-        SERVICE_NAME=$1
-        SERVICE_DIR=$(get_service_dir "$SERVICE_NAME")
-        
-        if [ -z "$SERVICE_DIR" ]; then
-            print_error "Serviço '$SERVICE_NAME' não encontrado"
-            echo ""
-            echo "Serviços disponíveis:"
-            for service in "${SERVICES[@]}"; do
-                echo "  - ${service%%:*}"
-            done
+    # Resolve o(s) serviço(s) a deployar a partir dos argumentos.
+    #
+    # Formas suportadas:
+    #   ./deploy_cloud_run.sh                              -> tudo
+    #   ./deploy_cloud_run.sh <sport>                      -> todos do esporte (nba|futebol)
+    #   ./deploy_cloud_run.sh <service>                    -> back-compat (1 serviço)
+    #   ./deploy_cloud_run.sh <sport> <service>            -> 1 serviço, valida que pertence ao esporte
+    local SERVICES_TO_DEPLOY=()
+
+    if [ $# -eq 0 ]; then
+        SERVICES_TO_DEPLOY=("${SERVICES[@]}")
+        print_info "Fazendo deploy de TODOS os serviços (${#SERVICES_TO_DEPLOY[@]} no total)..."
+
+    elif [ $# -eq 1 ]; then
+        if is_supported_sport "$1"; then
+            local sport=$1
+            local arr_name="$(echo "$sport" | tr '[:lower:]' '[:upper:]')_SERVICES[@]"
+            SERVICES_TO_DEPLOY=("${!arr_name}")
+            local sport_upper
+            sport_upper=$(echo "$sport" | tr '[:lower:]' '[:upper:]')
+            print_info "Fazendo deploy de TODOS os serviços de ${sport_upper} (${#SERVICES_TO_DEPLOY[@]})..."
+        else
+            local SERVICE_NAME=$1
+            local SERVICE_DIR
+            SERVICE_DIR=$(get_service_dir "$SERVICE_NAME")
+            if [ -z "$SERVICE_DIR" ]; then
+                print_error "'$SERVICE_NAME' não é um esporte nem um serviço conhecido"
+                echo ""
+                echo "Esportes:"
+                for sport in "${SUPPORTED_SPORTS[@]}"; do echo "  - $sport"; done
+                echo "Serviços:"
+                for service in "${SERVICES[@]}"; do echo "  - ${service%%:*}"; done
+                exit 1
+            fi
+            SERVICES_TO_DEPLOY=("$SERVICE_NAME:$SERVICE_DIR")
+        fi
+
+    elif [ $# -eq 2 ]; then
+        local sport=$1
+        local SERVICE_NAME=$2
+
+        if ! is_supported_sport "$sport"; then
+            print_error "Esporte '$sport' não suportado"
+            echo "Esportes disponíveis: ${SUPPORTED_SPORTS[*]}"
             exit 1
         fi
-        
-        deploy_service "$SERVICE_NAME" "$SERVICE_DIR"
-    else
-        # Deploy de todos os serviços
-        print_info "Fazendo deploy de todos os serviços..."
-        echo ""
-        
-        SUCCESS_COUNT=0
-        FAIL_COUNT=0
-        
-        for service in "${SERVICES[@]}"; do
-            SERVICE_NAME="${service%%:*}"
-            SERVICE_DIR="${service#*:}"
-            
-            if deploy_service "$SERVICE_NAME" "$SERVICE_DIR"; then
-                SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-            else
-                FAIL_COUNT=$((FAIL_COUNT + 1))
-            fi
-            
+
+        if ! service_belongs_to_sport "$SERVICE_NAME" "$sport"; then
+            print_error "Serviço '$SERVICE_NAME' não pertence ao esporte '$sport'"
             echo ""
-        done
-        
+            echo "Serviços de $(echo "$sport" | tr '[:lower:]' '[:upper:]'):"
+            local arr_name="$(echo "$sport" | tr '[:lower:]' '[:upper:]')_SERVICES[@]"
+            for entry in "${!arr_name}"; do echo "  - ${entry%%:*}"; done
+            exit 1
+        fi
+
+        local SERVICE_DIR
+        SERVICE_DIR=$(get_service_dir "$SERVICE_NAME")
+        SERVICES_TO_DEPLOY=("$SERVICE_NAME:$SERVICE_DIR")
+        print_info "Fazendo deploy de $(echo "$sport" | tr '[:lower:]' '[:upper:]')/$SERVICE_NAME..."
+
+    else
+        print_error "Argumentos inválidos. Uso:"
+        echo "  $0                      # tudo"
+        echo "  $0 <sport>              # todos do esporte (nba|futebol)"
+        echo "  $0 <service>            # 1 serviço (back-compat)"
+        echo "  $0 <sport> <service>    # 1 serviço, validado pelo esporte"
+        exit 1
+    fi
+
+    echo ""
+    SUCCESS_COUNT=0
+    FAIL_COUNT=0
+
+    for service in "${SERVICES_TO_DEPLOY[@]}"; do
+        local SERVICE_NAME="${service%%:*}"
+        local SERVICE_DIR="${service#*:}"
+
+        if deploy_service "$SERVICE_NAME" "$SERVICE_DIR"; then
+            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+        else
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+
+        echo ""
+    done
+
+    # Mostra resumo quando há mais de 1 serviço
+    if [ "${#SERVICES_TO_DEPLOY[@]}" -gt 1 ]; then
         echo ""
         print_info "=== Resumo do Deploy ==="
         echo "  Sucessos: $SUCCESS_COUNT"
         echo "  Falhas: $FAIL_COUNT"
         echo ""
-        
+
         if [ $FAIL_COUNT -eq 0 ]; then
             list_services
         fi

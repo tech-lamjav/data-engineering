@@ -12,19 +12,30 @@ logger = setup_logger(__name__)
 
 class BaseExtractor(ABC):
     """Classe base para extractors de dados."""
-    
-    def __init__(self, endpoint_name: str, season: int = SEASON):
+
+    def __init__(
+        self,
+        endpoint_name: str,
+        season: int = SEASON,
+        client: Optional[Any] = None,
+        storage: Optional[GCSStorage] = None,
+        sport: str = "nba",
+    ):
         """
         Inicializa o extractor.
-        
+
         Args:
             endpoint_name: Nome do endpoint
             season: Ano da temporada
+            client: Client de API (default: BallDontLieClient — NBA)
+            storage: Storage backend (default: GCSStorage)
+            sport: Identificador do esporte para path no GCS ("nba", "futebol")
         """
         self.endpoint_name = endpoint_name
         self.season = season
-        self.client = BallDontLieClient()
-        self.storage = GCSStorage()
+        self.client = client or BallDontLieClient()
+        self.storage = storage or GCSStorage()
+        self.sport = sport
         self.config = ENDPOINT_CONFIGS.get(endpoint_name, {})
         self.has_date = self.config.get("has_date", False)
     
@@ -61,6 +72,7 @@ class BaseExtractor(ABC):
             endpoint=self.endpoint_name,
             season=self.season,
             date=date,
+            sport=self.sport,
         )
     
     def extract_and_save(self, **kwargs) -> str:
