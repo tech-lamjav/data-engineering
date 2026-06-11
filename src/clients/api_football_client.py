@@ -47,6 +47,24 @@ class ApiFootballClient(BaseClient):
         )
         return response.json()
 
+    def get_standings(self, league_id: int, season: int) -> Dict[str, Any]:
+        """GET /standings?league={league_id}&season={season}.
+
+        Tabela do campeonato (classificação) da liga/temporada — snapshot do momento
+        da chamada. `response[0].league.standings` é um ARRAY DE ARRAYS: 1 array
+        interno por grupo (Brasileirão tem 1; Copa do Mundo tem N grupos), cada item
+        com rank/team/points/goalsDiff/group/form/all/home/away/update.
+
+        Returns:
+            Envelope cru: {response: [{league: {..., standings: [[...]]}}], errors, ...}
+        """
+        response = self._make_request(
+            "GET",
+            "standings",
+            params={"league": league_id, "season": season},
+        )
+        return response.json()
+
     def get_team_season_stats(
         self, league_id: int, season: int, team_id: int
     ) -> Dict[str, Any]:

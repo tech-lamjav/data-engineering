@@ -48,6 +48,7 @@ FUTEBOL_SERVICES=(
     "extract-fixture-lineups:futebol/extract_fixture_lineups"
     "extract-fixture-player-stats:futebol/extract_fixture_player_stats"
     "extract-team-season-stats:futebol/extract_team_season_stats"
+    "extract-standings:futebol/extract_standings"
 )
 
 # Serviços compartilhados (não específicos de esporte)

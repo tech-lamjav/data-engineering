@@ -408,6 +408,65 @@ def main():
         )
         logger.info(f"✓ raw_futebol_team_season_stats criada (URI: {team_season_stats_uri})")
 
+        # raw_futebol_standings — snapshot DIÁRIO da tabela do campeonato. Diferente
+        # dos demais (latest-only), 1 arquivo por dia+mode (date-stampado:
+        # raw_futebol_standings_{mode}_{YYYY-MM-DD}.json) — o GCS acumula o histórico
+        # de evolução e o wildcard cobre tudo. N linhas por arquivo (1 por time × liga
+        # × season; grupos da Copa já achatados no extractor). Schema EXPLÍCITO:
+        # all/group/goals.for são keywords SQL (crases no stg) e description/form
+        # podem vir null — autodetect seria frágil.
+        standings_record = [  # shape de all/home/away
+            bigquery.SchemaField("played", "INTEGER"),
+            bigquery.SchemaField("win", "INTEGER"),
+            bigquery.SchemaField("draw", "INTEGER"),
+            bigquery.SchemaField("lose", "INTEGER"),
+            bigquery.SchemaField("goals", "RECORD", fields=[
+                bigquery.SchemaField("for", "INTEGER"),
+                bigquery.SchemaField("against", "INTEGER"),
+            ]),
+        ]
+        standings_schema = [
+            bigquery.SchemaField("requested_league_id", "INTEGER"),
+            bigquery.SchemaField("requested_season", "INTEGER"),
+            bigquery.SchemaField("snapshot_date", "DATE"),  # data da coleta (chave de partição no fato)
+            bigquery.SchemaField("loaded_at", "TIMESTAMP"),
+            bigquery.SchemaField("total_rows", "INTEGER"),
+            bigquery.SchemaField("rank", "INTEGER"),
+            bigquery.SchemaField("team", "RECORD", fields=[
+                bigquery.SchemaField("id", "INTEGER"),
+                bigquery.SchemaField("name", "STRING"),
+                bigquery.SchemaField("logo", "STRING"),
+            ]),
+            bigquery.SchemaField("points", "INTEGER"),
+            bigquery.SchemaField("goalsDiff", "INTEGER"),
+            bigquery.SchemaField("group", "STRING"),       # "Serie A" | "Group A"...
+            bigquery.SchemaField("form", "STRING"),        # últimos 5 jogos ("WWDLW")
+            bigquery.SchemaField("status", "STRING"),      # "same" | "up" | "down"
+            bigquery.SchemaField("description", "STRING"), # "Promotion - Libertadores" | null
+            bigquery.SchemaField("all", "RECORD", fields=standings_record),
+            bigquery.SchemaField("home", "RECORD", fields=standings_record),
+            bigquery.SchemaField("away", "RECORD", fields=standings_record),
+            bigquery.SchemaField("update", "TIMESTAMP"),   # última atualização da tabela na API
+        ]
+        standings_uri = f"gs://{GCS_BUCKET_NAME}/futebol/standings/*.json"
+        bq.create_external_table(
+            table_id="raw_futebol_standings",
+            uri=standings_uri,
+            schema=standings_schema,
+            description=(
+                "API-Football /standings, NDJSON. Snapshot diário da tabela do campeonato: "
+                "N linhas por (liga, season, snapshot_date) — 1 por time×grupo (na Copa o "
+                "time aparece no grupo e no 'Ranking of third-placed teams'). 1 arquivo por "
+                "dia+mode (date-stampado, acumula histórico; re-run no mesmo dia sobrescreve "
+                "= idempotente): _current_{data}.json (Brasileirão 2026 + Copa 2026, diário) "
+                "+ _backfill_{data}.json (tabela FINAL Brasileirão 2024/2025, one-shot). "
+                "snapshot_date = data da coleta (partição no fato); `update` = última "
+                "atualização da tabela na API. Grupos da Copa achatados (coluna group). "
+                "Schema explícito (all/group/goals.for são keywords SQL — crases no stg)."
+            ),
+        )
+        logger.info(f"✓ raw_futebol_standings criada (URI: {standings_uri})")
+
         return 0
     except Exception as e:
         logger.error(f"✗ Erro: {str(e)}", exc_info=True)

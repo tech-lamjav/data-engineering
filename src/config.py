@@ -64,6 +64,21 @@ FIXTURES_CURRENT = [
     (COPA_MUNDO_ID, 2026),
 ]
 
+# Standings (/standings) — snapshot diário da tabela do campeonato (1 chamada por
+# liga×season, ~20 linhas Brasileirão). Diferente dos demais (latest-only), o arquivo
+# é date-stampado (raw_futebol_standings_{mode}_{YYYY-MM-DD}.json): o GCS acumula 1
+# snapshot por dia (histórico de evolução da tabela) e re-rodar no mesmo dia
+# sobrescreve o mesmo arquivo (idempotente). A API não tem histórico diário — o
+# backfill captura a tabela FINAL de 2024/2025 com snapshot_date do dia da coleta.
+STANDINGS_BACKFILL = [
+    (BRASILEIRAO_ID, 2024),
+    (BRASILEIRAO_ID, 2025),
+]
+STANDINGS_CURRENT = [
+    (BRASILEIRAO_ID, 2026),
+    (COPA_MUNDO_ID, 2026),
+]
+
 # Fixture statistics (/fixtures/statistics) — 1 chamada por fixture, só após FT.
 # No modo current, re-busca jogos cujo kickoff foi nos últimos N dias (captura
 # correções pós-jogo da API); jogos mais antigos já salvos são pulados (skip-if-exists).
@@ -263,6 +278,7 @@ def get_gcs_path(
         ou nba/{endpoint}/{season}/{market}/raw_nba_{endpoint}_{season}-{game_id}.json (para player_props)
         ou nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{category}-{type}-{season_type}.json (para season_averages)
         ou futebol/{endpoint}/raw_futebol_{endpoint}{_mode}.json (para sport='futebol')
+        ou futebol/{endpoint}/raw_futebol_{endpoint}{_mode}_{date}.json (futebol com date — snapshots diários)
     """
     # Branch dedicado para sport='futebol' (não polui a lógica NBA existente)
     if sport == "futebol":
@@ -275,8 +291,12 @@ def get_gcs_path(
             phase = f"_{mode}" if mode in ("confirmed", "real") else ""
             filename = f"raw_futebol_{endpoint}_{game_id}{phase}.json"
             return f"futebol/{endpoint}/{filename}"
+        # `date` opcional: endpoints de snapshot diário (ex.: standings) date-stampam
+        # o arquivo p/ acumular histórico no GCS (1 arquivo/dia; re-run no mesmo dia
+        # sobrescreve). Os demais endpoints não passam date → latest-only, como antes.
         suffix = f"_{mode}" if mode in ("backfill", "current") else ""
-        filename = f"raw_futebol_{endpoint}{suffix}.json"
+        datepart = f"_{date}" if date else ""
+        filename = f"raw_futebol_{endpoint}{suffix}{datepart}.json"
         return f"futebol/{endpoint}/{filename}"
 
     if market and game_id:

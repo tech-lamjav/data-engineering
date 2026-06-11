@@ -1,8 +1,8 @@
 # ============================================================
 # WORKFLOW FUTEBOL
 # Pipeline da vertical de futebol (API-Football v3).
-# Subtasks 1-8/15: extract-leagues + extract-teams + extract-players + extract-fixtures + extract-fixture-statistics + extract-fixture-events + extract-fixture-lineups + extract-fixture-player-stats
-# -> dbt-futebol Cloud Run Job (build dim_leagues + dim_teams + dim_players + fact_fixtures + fact_fixture_stats + fact_fixture_events + fact_fixture_lineups(+players) + fact_fixture_player_stats).
+# Subtasks 1-8 e 10/15: extract-leagues + extract-teams + extract-players + extract-fixtures + extract-fixture-statistics + extract-fixture-events + extract-fixture-lineups + extract-fixture-player-stats + extract-standings
+# -> dbt-futebol Cloud Run Job (build dim_leagues + dim_teams + dim_players + fact_fixtures + fact_fixture_stats + fact_fixture_events + fact_fixture_lineups(+players) + fact_fixture_player_stats + fact_standings_snapshot).
 #
 # Lineups: este workflow pega a escalação REAL (pós-jogo, mode current/backfill). A
 # escalação CONFIRMADA (~T-30min) roda no workflow_futebol_lineups.yml (poll + dbt condicional).
@@ -361,7 +361,49 @@ main:
                 - failed_services: ${list.concat(failed_services, ["extract-fixture-player-stats"])}
 
     # ============================================================================
-    # FASE 2: Cloud Run Job execution (dbt-futebol) — build dim_leagues + dim_teams + dim_players + fact_fixtures + fact_fixture_stats + fact_fixture_events + fact_fixture_lineups(+players) + fact_fixture_player_stats
+    # FASE 1i: Extração de standings (API-Football) — snapshot diário da tabela
+    # do campeonato. Independente das demais fases (1 chamada por liga×season);
+    # arquivo date-stampado no GCS (acumula histórico; re-run no dia sobrescreve).
+    # ============================================================================
+    - phase1i_extract_standings:
+        try:
+            steps:
+            - call_extract_standings:
+                call: http.get
+                args:
+                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                    url: https://extract-standings-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    query:
+                        mode: ${mode}
+                    timeout: 1800
+            - log_phase1i_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Phase 1i completed successfully"
+                        phase: "extract_standings"
+                        mode: ${mode}
+        except:
+            as: e
+            steps:
+            - log_phase1i_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Phase 1i encountered errors"
+                        phase: "extract_standings"
+                        error: ${e.message}
+            - handle_phase1i_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["extract-standings"])}
+
+    # ============================================================================
+    # FASE 2: Cloud Run Job execution (dbt-futebol) — build dim_leagues + dim_teams + dim_players + fact_fixtures + fact_fixture_stats + fact_fixture_events + fact_fixture_lineups(+players) + fact_fixture_player_stats + fact_standings_snapshot
     # ============================================================================
     - phase2_cloud_run_job:
         try:
@@ -388,7 +430,7 @@ main:
                     body:
                         overrides:
                             containerOverrides:
-                                - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--select", "+fact_standings_snapshot", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                 result: job_execution_result
 
             - log_job_success:
