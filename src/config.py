@@ -142,14 +142,27 @@ def get_pg_url(env: str) -> str:
 
 # Ordem deliberada: dimensões primeiro, depois fatos, depois marts derivadas.
 # Reduz janela de inconsistência cross-table durante o sync.
+# As 6 tabelas de passing / contexto de time / período foram adicionadas em
+# 2026-06: tinham ficado de fora do cutover FDW->sync (só 9 dos 15 marts BI
+# foram portados). As tabelas destino são criadas pela migration 069 do
+# prop-play-predictor (nba_mart). check_schema_parity já validado contra o BQ.
 MART_TABLES_ORDERED = [
+    # dimensões base
     "dim_teams",
     "dim_players",
     "dim_stat_player",
     "dim_player_shooting_by_zones",
+    "dim_player_passing_stats",
     "dim_player_latest_line",
+    "dim_team_opponent_stats",
+    "dim_team_playtypes",
+    "dim_team_shooting_zone_defense",
+    # fatos
     "ft_games",
     "ft_game_player_stats",
+    "ft_game_player_passing_stats",
+    "ft_game_player_stats_period",
+    # marts derivadas
     "dim_teammate_impact_360",
     "dim_daily_opportunities",
 ]
