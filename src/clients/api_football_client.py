@@ -65,6 +65,31 @@ class ApiFootballClient(BaseClient):
         )
         return response.json()
 
+    def get_injuries(self, league_id: int, season: int) -> Dict[str, Any]:
+        """GET /injuries?league={league_id}&season={season} (NÃO paginado).
+
+        Lesionados/suspensos ligados aos fixtures da liga/temporada — snapshot do
+        momento da chamada. Cada item: {player, team, fixture, league, type, reason}.
+        type ∈ {"Missing Fixture","Questionable"}; reason é texto livre (inclui
+        suspensões: "Suspended"/"Red Card"...).
+
+        Como /fixtures, o endpoint REJEITA o parâmetro `page` ("The Page field do not
+        exist.") — retorna a temporada inteira numa única resposta, então é uma chamada
+        simples (sem paginação), igual a get_standings.
+
+        ⚠️ Só ligas com coverage.injuries=TRUE retornam dados (Brasileirão sim; Copa
+        do Mundo não — validado em dim_leagues).
+
+        Returns:
+            Envelope cru: {response: [{player, team, fixture, league, type, reason}], errors, ...}
+        """
+        response = self._make_request(
+            "GET",
+            "injuries",
+            params={"league": league_id, "season": season},
+        )
+        return response.json()
+
     def get_team_season_stats(
         self, league_id: int, season: int, team_id: int
     ) -> Dict[str, Any]:

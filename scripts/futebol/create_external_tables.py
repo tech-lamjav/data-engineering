@@ -467,6 +467,69 @@ def main():
         )
         logger.info(f"✓ raw_futebol_standings criada (URI: {standings_uri})")
 
+        # raw_futebol_injuries — snapshot DIÁRIO de lesionados/suspensos. Igual ao
+        # standings (e diferente dos latest-only), 1 arquivo por dia+mode (date-stampado:
+        # raw_futebol_injuries_{mode}_{YYYY-MM-DD}.json) — o GCS acumula o histórico e o
+        # wildcard cobre tudo. N linhas/arquivo (1 por player×fixture×type×reason — a API
+        # repete linhas EXATAS; dedup no fato). Schema EXPLÍCITO: ⚠️ type/reason vêm
+        # ANINHADOS em player (não no topo!) e devem ser STRING; structs aninhados podem
+        # vir null ao longo do wildcard — autodetect seria frágil. fixture.date é ISO 8601 → TIMESTAMP
+        # (precedente: `update` no standings).
+        # ⚠️ Coverage: só Brasileirão (71) retorna dados; Copa do Mundo (1) tem
+        # coverage.injuries=FALSE (validado em dim_leagues) e está fora dos targets.
+        injuries_schema = [
+            bigquery.SchemaField("requested_league_id", "INTEGER"),
+            bigquery.SchemaField("requested_season", "INTEGER"),
+            bigquery.SchemaField("snapshot_date", "DATE"),  # data da coleta (chave de partição no fato)
+            bigquery.SchemaField("loaded_at", "TIMESTAMP"),
+            bigquery.SchemaField("total_rows", "INTEGER"),
+            bigquery.SchemaField("player", "RECORD", fields=[
+                bigquery.SchemaField("id", "INTEGER"),
+                bigquery.SchemaField("name", "STRING"),
+                bigquery.SchemaField("photo", "STRING"),
+                bigquery.SchemaField("type", "STRING"),    # "Missing Fixture" | "Questionable" — ⚠️ aninhado em player
+                bigquery.SchemaField("reason", "STRING"),  # texto livre (inclui suspensões) — ⚠️ aninhado em player
+            ]),
+            bigquery.SchemaField("team", "RECORD", fields=[
+                bigquery.SchemaField("id", "INTEGER"),
+                bigquery.SchemaField("name", "STRING"),
+                bigquery.SchemaField("logo", "STRING"),
+            ]),
+            bigquery.SchemaField("fixture", "RECORD", fields=[
+                bigquery.SchemaField("id", "INTEGER"),
+                bigquery.SchemaField("timezone", "STRING"),
+                bigquery.SchemaField("date", "TIMESTAMP"),    # ISO 8601 com offset
+                bigquery.SchemaField("timestamp", "INTEGER"),
+            ]),
+            bigquery.SchemaField("league", "RECORD", fields=[
+                bigquery.SchemaField("id", "INTEGER"),
+                bigquery.SchemaField("season", "INTEGER"),
+                bigquery.SchemaField("name", "STRING"),
+                bigquery.SchemaField("country", "STRING"),
+                bigquery.SchemaField("logo", "STRING"),
+                bigquery.SchemaField("flag", "STRING"),
+            ]),
+        ]
+        injuries_uri = f"gs://{GCS_BUCKET_NAME}/futebol/injuries/*.json"
+        bq.create_external_table(
+            table_id="raw_futebol_injuries",
+            uri=injuries_uri,
+            schema=injuries_schema,
+            description=(
+                "API-Football /injuries, NDJSON. Snapshot diário de lesionados/suspensos: "
+                "N linhas por (liga, season, snapshot_date) — 1 por (player, fixture, type, "
+                "reason); a API repete linhas exatas (dedup no fato). 1 arquivo "
+                "por dia+mode (date-stampado, acumula histórico; re-run no mesmo dia sobrescreve "
+                "= idempotente): _current_{data}.json (Brasileirão 2026, diário) + "
+                "_backfill_{data}.json (Brasileirão 2024/2025, one-shot). snapshot_date = data "
+                "da coleta (partição no fato). type ∈ {Missing Fixture, Questionable}; reason é "
+                "texto livre (inclui suspensões). Schema explícito (type/reason STRING aninhados "
+                "em player; fixture.date ISO→TIMESTAMP). ⚠️ Só Brasileirão tem coverage.injuries=TRUE "
+                "(Copa do Mundo fora — coverage FALSE)."
+            ),
+        )
+        logger.info(f"✓ raw_futebol_injuries criada (URI: {injuries_uri})")
+
         return 0
     except Exception as e:
         logger.error(f"✗ Erro: {str(e)}", exc_info=True)

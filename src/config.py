@@ -79,6 +79,22 @@ STANDINGS_CURRENT = [
     (COPA_MUNDO_ID, 2026),
 ]
 
+# Injuries (/injuries) — snapshot diário de lesionados/suspensos (1 chamada/liga×season,
+# NÃO paginada — como /fixtures, rejeita `page` e devolve o log de lesões da temporada
+# INTEIRA, ~2k linhas/liga). Mesma mecânica date-stampada do standings
+# (raw_futebol_injuries_{mode}_{data}.json): o GCS acumula 1 snapshot/dia e re-rodar no
+# mesmo dia sobrescreve (idempotente). ⚠️ A API repete linhas EXATAS — dedup no fato.
+# ⚠️ Coverage validado em dim_leagues (2026-06-15): coverage.injuries = TRUE só p/
+# Brasileirão (71) 2024/25/26. Copa do Mundo (1) 2026 = FALSE → EXCLUÍDA (a API não
+# fornece lesões da Copa; incluí-la gastaria quota e voltaria vazia).
+INJURIES_BACKFILL = [
+    (BRASILEIRAO_ID, 2024),
+    (BRASILEIRAO_ID, 2025),
+]
+INJURIES_CURRENT = [
+    (BRASILEIRAO_ID, 2026),
+]
+
 # Fixture statistics (/fixtures/statistics) — 1 chamada por fixture, só após FT.
 # No modo current, re-busca jogos cujo kickoff foi nos últimos N dias (captura
 # correções pós-jogo da API); jogos mais antigos já salvos são pulados (skip-if-exists).
