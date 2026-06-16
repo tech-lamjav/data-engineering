@@ -228,6 +228,66 @@ class ApiFootballClient(BaseClient):
         )
         return response.json()
 
+    def get_odds(self, fixture_id: int) -> Dict[str, Any]:
+        """GET /odds?fixture={fixture_id} (paginado). 1 jogo por chamada.
+
+        Odds pré-jogo de TODAS as casas/mercados de um fixture — base do produto de
+        value betting (CLV/EV). A resposta é {league, fixture, update, bookmakers:[...]}
+        onde cada bookmaker tem {id, name, bets:[{id, name, values:[{value, odd}]}]}.
+
+        Diferente de /injuries e /fixtures (que rejeitam `page`), o /odds PAGINA via
+        {paging:{current,total}} como /players. Quando filtrado por um único fixture, as
+        casas podem vir distribuídas entre páginas — então iteramos page=1..paging.total
+        e MERGEAMOS os bookmakers num único bloco (fixture/league/update vêm da página 1).
+
+        Returns:
+            Envelope sintético single-page no mesmo formato dos outros métodos:
+            {response: [{league, fixture, update, bookmakers: [todas as casas]}], errors,
+            paging:{total}}. Se não houver odds, response vem [] (jogo sem mercado ainda).
+        """
+        all_bookmakers = []
+        base = None
+        first_errors = None
+        page = 1
+        total_pages = 1
+
+        while page <= total_pages:
+            envelope = self._make_request(
+                "GET",
+                "odds",
+                params={"fixture": fixture_id, "page": page},
+            ).json()
+
+            if page == 1:
+                first_errors = envelope.get("errors")
+                total_pages = (envelope.get("paging") or {}).get("total", 1) or 1
+
+            response = envelope.get("response", []) or []
+            if response:
+                item = response[0]
+                if base is None:
+                    # Guarda league/fixture/update da 1ª página; só mergeia bookmakers depois.
+                    base = {
+                        "league": item.get("league"),
+                        "fixture": item.get("fixture"),
+                        "update": item.get("update"),
+                    }
+                all_bookmakers.extend(item.get("bookmakers") or [])
+
+            page += 1
+            if page <= total_pages:
+                time.sleep(0.5)  # cortesia entre páginas (mesmo delay de get_players)
+
+        merged_response = []
+        if base is not None:
+            merged_response = [{**base, "bookmakers": all_bookmakers}]
+
+        return {
+            "errors": first_errors,
+            "paging": {"total": total_pages},
+            "response": merged_response,
+        }
+
     def get_fixture_player_stats(self, fixture_id: int) -> Dict[str, Any]:
         """GET /fixtures/players?fixture={fixture_id}. 1 chamada por jogo.
 

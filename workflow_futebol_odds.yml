@@ -1,0 +1,156 @@
+# ============================================================
+# WORKFLOW FUTEBOL ODDS (pré-jogo / T-24h e T-1h)
+# Poll das ODDS pré-jogo (coração do value betting) em 2 janelas por jogo: T-24h (linha de
+# abertura) e T-1h (linha perto do fechamento). Uma passada cobre as duas janelas — o
+# extractor bucketa cada jogo NS pela proximidade do kickoff (FUTEBOL_ODDS_WINDOWS) e grava
+# 1 arquivo por (fixture, janela) com skip-if-exists (1 snapshot/janela). Se algo novo foi
+# coletado, rebuild ENXUTO dos modelos de odds no dbt-futebol.
+#
+# Disparado pelo Cloud Scheduler a cada ~15min (SA schedulerde@, tem workflows.invoker).
+# Sem notificação por email no sucesso (poll de alta frequência). Coleta FORWARD-ONLY (não
+# dá pra reconstruir as janelas de jogos passados).
+#
+# O dbt usa --select SEM '+' (enxuto): a external table raw_futebol_odds é a fonte; o gate
+# saved_count>0 garante que só roda com arquivo novo no GCS (external table não-vazia).
+# ============================================================
+
+main:
+    steps:
+    - init:
+        assign:
+        - workflow_start_time: ${sys.now()}
+        - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
+        - workflow_status: "SUCCESS"
+        - saved_count: 0
+
+    - log_start:
+        call: sys.log
+        args:
+            severity: INFO
+            data:
+                message: "Workflow odds (pregame) started"
+                workflow_name: "workflow_futebol_odds"
+                execution_id: ${execution_id}
+
+    # ========================================================================
+    # FASE 1: Extração das odds (2 janelas numa passada — sem query param)
+    # ========================================================================
+    - phase1_extract_odds:
+        try:
+            steps:
+            - call_extract_odds:
+                call: http.get
+                args:
+                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                    url: https://extract-odds-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    timeout: 1800
+                result: odds_result
+            - read_saved_count:
+                assign:
+                - saved_count: ${default(map.get(odds_result.body, "saved_count"), 0)}
+            - log_phase1_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Odds extraction completed"
+                        saved_count: ${saved_count}
+        except:
+            as: e
+            steps:
+            - log_phase1_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Odds extraction failed"
+                        error: ${e.message}
+            - handle_phase1_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+
+    # ========================================================================
+    # GATE: só roda o dbt se algo novo foi coletado (saved_count > 0).
+    # ========================================================================
+    - check_new_odds:
+        switch:
+            - condition: ${saved_count > 0}
+              next: phase2_dbt
+        next: skip_dbt
+
+    - skip_dbt:
+        steps:
+        - log_skip:
+            call: sys.log
+            args:
+                severity: INFO
+                data:
+                    message: "Nenhuma odd nova — dbt pulado"
+                    saved_count: ${saved_count}
+        - skip_to_finalize:
+            next: finalize
+
+    # ========================================================================
+    # FASE 2: dbt enxuto (só os 2 modelos de odds). Cai em finalize ao terminar.
+    # ========================================================================
+    - phase2_dbt:
+        try:
+            steps:
+            - init_job_config:
+                assign:
+                - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+                - job_full_name: ${"projects/" + project_id + "/locations/us-east1/jobs/dbt-futebol"}
+            - execute_cloud_run_job:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                    name: ${job_full_name}
+                    body:
+                        overrides:
+                            containerOverrides:
+                                - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                result: job_execution_result
+            - log_job_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "dbt odds rebuild completed"
+                        saved_count: ${saved_count}
+                        execution_name: ${job_execution_result.name}
+        except:
+            as: e
+            steps:
+            - log_job_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "dbt odds rebuild failed"
+                        error: ${e.message}
+            - handle_job_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+
+    - finalize:
+        assign:
+        - workflow_end_time: ${sys.now()}
+        - duration_seconds: ${workflow_end_time - workflow_start_time}
+
+    - log_completion:
+        call: sys.log
+        args:
+            severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+            data:
+                message: "Workflow odds (pregame) completed"
+                workflow_name: "workflow_futebol_odds"
+                status: ${workflow_status}
+                saved_count: ${saved_count}
+                duration_seconds: ${duration_seconds}
+
+    - return_result:
+        return:
+            status: ${workflow_status}
+            saved_count: ${saved_count}
+            duration_seconds: ${duration_seconds}

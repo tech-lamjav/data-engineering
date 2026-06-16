@@ -530,6 +530,56 @@ def main():
         )
         logger.info(f"✓ raw_futebol_injuries criada (URI: {injuries_uri})")
 
+        # raw_futebol_odds — snapshot pré-jogo de odds (value betting). FORWARD-ONLY, 2
+        # janelas por jogo (collection_window t24h|t1h). 1 arquivo por (fixture, janela):
+        # raw_futebol_odds_{fixture}_{t24h|t1h}.json — o wildcard cobre todos. N linhas por
+        # arquivo (1 por CASA), bets/values ANINHADOS (UNNEST no dbt). Schema EXPLÍCITO: a
+        # odd vem como STRING decimal ("1.85") — autodetect viraria FLOAT e perderia precisão/
+        # mistura de tipos; cast p/ FLOAT64 só no stg. Guarda TODAS as casas/mercados; o
+        # afunilamento p/ os 8 mercados-alvo é no fact_odds_snapshot. collection_timestamp e
+        # api_update são ISO → TIMESTAMP; kickoff_timestamp é unix INTEGER (TIMESTAMP_SECONDS no dbt).
+        odds_value_record = [
+            bigquery.SchemaField("value", "STRING"),  # rótulo do outcome ("Home", "Over 2.5", "1.5"...)
+            bigquery.SchemaField("odd", "STRING"),     # odd decimal como STRING — cast p/ FLOAT64 no stg
+        ]
+        odds_bet_record = [
+            bigquery.SchemaField("id", "INTEGER"),     # market_id (1=Match Winner, 5=Goals O/U, 8=BTTS...)
+            bigquery.SchemaField("name", "STRING"),
+            bigquery.SchemaField("values", "RECORD", mode="REPEATED", fields=odds_value_record),
+        ]
+        odds_schema = [
+            bigquery.SchemaField("fixture_id", "INTEGER"),
+            bigquery.SchemaField("league_id", "INTEGER"),
+            bigquery.SchemaField("season", "INTEGER"),
+            bigquery.SchemaField("collection_window", "STRING"),       # "t24h" | "t1h"
+            bigquery.SchemaField("collection_timestamp", "TIMESTAMP"), # momento da coleta (UTC) — partição no fato
+            bigquery.SchemaField("kickoff_timestamp", "INTEGER"),      # unix UTC do kickoff
+            bigquery.SchemaField("api_update", "TIMESTAMP"),           # última atualização das odds na API (ISO)
+            bigquery.SchemaField("loaded_at", "TIMESTAMP"),
+            bigquery.SchemaField("total_bookmakers", "INTEGER"),
+            bigquery.SchemaField("bookmaker_id", "INTEGER"),
+            bigquery.SchemaField("bookmaker_name", "STRING"),
+            bigquery.SchemaField("bets", "RECORD", mode="REPEATED", fields=odds_bet_record),
+        ]
+        odds_uri = f"gs://{GCS_BUCKET_NAME}/futebol/odds/*.json"
+        bq.create_external_table(
+            table_id="raw_futebol_odds",
+            uri=odds_uri,
+            schema=odds_schema,
+            description=(
+                "API-Football /odds, NDJSON. Snapshot pré-jogo de odds (CLV/EV/value betting), "
+                "FORWARD-ONLY, em 2 janelas por jogo (collection_window t24h = linha de abertura, "
+                "t1h = perto do fechamento). N linhas por (fixture, janela) — 1 por CASA; "
+                "bets/values aninhados (REPEATED). 1 arquivo por (fixture, janela): "
+                "raw_futebol_odds_{fixture}_{t24h|t1h}.json (skip-if-exists = 1 snapshot/janela). "
+                "Guarda TODAS as casas/mercados; o fact afunila p/ os 8 mercados-alvo. Schema "
+                "explícito (odd/value STRING — cast no stg; collection_timestamp/api_update ISO→"
+                "TIMESTAMP; kickoff_timestamp unix INTEGER). Brasileirão (71) + Copa do Mundo (1) "
+                "2026 (ambos coverage.odds=TRUE)."
+            ),
+        )
+        logger.info(f"✓ raw_futebol_odds criada (URI: {odds_uri})")
+
         return 0
     except Exception as e:
         logger.error(f"✗ Erro: {str(e)}", exc_info=True)

@@ -255,7 +255,7 @@ class GCSStorage:
         
         # Para outros endpoints, verifica se há arrays principais
         # Se houver um array no nível raiz ou um array com nome comum (games, players, etc.)
-        array_keys = ["players", "teams", "injuries", "standings", "leagues", "fixtures", "fixture_statistics", "fixture_events", "fixture_lineups", "fixture_player_stats", "team_season_stats"]
+        array_keys = ["players", "teams", "injuries", "standings", "leagues", "fixtures", "fixture_statistics", "fixture_events", "fixture_lineups", "fixture_player_stats", "team_season_stats", "odds"]
         for key in array_keys:
             if key in data and isinstance(data[key], list):
                 lines = []
@@ -592,6 +592,78 @@ class GCSStorage:
 
             date_utc = kickoff.strftime("%Y-%m-%d")
             fixtures.append({"fixture_id": fixture_id, "date_utc": date_utc})
+
+        logger.info(
+            f"{len(fixtures)} fixtures NS com kickoff em até {window_min}min em {blob_path}"
+        )
+        return fixtures
+
+    def get_upcoming_fixtures_with_kickoff(
+        self, window_min: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Variante de get_upcoming_fixture_ids que retorna TAMBÉM o kickoff e a liga/season.
+
+        Base do /odds (subtask 13): o extractor precisa do `kickoff_ts` p/ calcular o lead
+        (minutos até o jogo) e bucketar cada fixture na janela t24h/t1h, e do `league_id`
+        p/ filtrar por coverage.odds (FUTEBOL_ODDS_LEAGUE_IDS). Mesmo filtro do irmão: jogos
+        status NS com kickoff em [agora, agora + window_min], lidos de raw_futebol_fixtures_current.json.
+
+        Args:
+            window_min: look-ahead em minutos a partir de agora (UTC) — usar o maior
+                lead_max das janelas de odds (ex.: 1440 = 24h).
+
+        Returns:
+            Lista de dicts {"fixture_id": int, "kickoff_ts": int (unix UTC),
+            "league_id": int, "season": int} dos jogos NS dentro da janela.
+        """
+        import json
+        from datetime import datetime, timezone, timedelta
+
+        blob_path = get_gcs_path("fixtures", 0, sport="futebol", mode="current")
+        logger.info(f"Lendo fixtures de gs://{self.bucket_name}/{blob_path}...")
+
+        blob = self.bucket.blob(blob_path)
+        if not blob.exists():
+            logger.warning(f"Arquivo de fixtures não encontrado: {blob_path}")
+            return []
+
+        now = datetime.now(timezone.utc)
+        horizon = now + timedelta(minutes=window_min)
+
+        content = blob.download_as_text()
+        fixtures = []
+        for line_num, line in enumerate(content.strip().split("\n"), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Linha {line_num} inválida em {blob_path}: {str(e)}")
+                continue
+
+            fixture = row.get("fixture") or {}
+            status_short = (fixture.get("status") or {}).get("short")
+            if status_short != "NS":  # Not Started — jogo ainda por começar
+                continue
+
+            fixture_id = fixture.get("id")
+            ts = fixture.get("timestamp")
+            if fixture_id is None or ts is None:
+                continue
+
+            kickoff = datetime.fromtimestamp(ts, tz=timezone.utc)
+            if not (now <= kickoff <= horizon):
+                continue
+
+            league = row.get("league") or {}
+            fixtures.append({
+                "fixture_id": fixture_id,
+                "kickoff_ts": ts,
+                "league_id": league.get("id"),
+                "season": league.get("season"),
+            })
 
         logger.info(
             f"{len(fixtures)} fixtures NS com kickoff em até {window_min}min em {blob_path}"

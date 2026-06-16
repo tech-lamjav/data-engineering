@@ -95,6 +95,28 @@ INJURIES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
 ]
 
+# Odds (/odds) — coração do value betting. Snapshot pré-jogo de TODAS as casas em 2
+# janelas por jogo (T-24h = linha de abertura; T-1h = linha perto do fechamento) p/
+# permitir CLV/EV e movimento de linha. Coleta FORWARD-ONLY (não dá pra reconstruir as
+# janelas de jogos passados) via poll ~15min (workflow_futebol_odds.yml), espelhando o
+# poll pré-jogo das escalações. 1 chamada por (fixture, janela); 1 arquivo por (fixture,
+# janela): raw_futebol_odds_{fixture}_{t24h|t1h}.json (sufixo de fase no get_gcs_path).
+#
+# FUTEBOL_ODDS_WINDOWS: banda (lead_min, lead_max) em MINUTOS até o kickoff. A 1ª passada
+# do poll com lead na banda captura; skip-if-exists trava as seguintes (1 captura/janela).
+# Banda > intervalo de poll p/ não furar; a captura cai perto de lead_max (lead decresce
+# no tempo). minutes_to_kickoff exato é registrado no fato — a precisão de CLV não depende
+# da largura da banda. Extensível: somar "t15m": (0, 15) no futuro (linha de fechamento real).
+FUTEBOL_ODDS_WINDOWS = {
+    "t24h": (1320, 1440),  # 22h–24h antes (alvo 24h — linha de abertura)
+    "t1h":  (30, 60),      # 30–60min antes (alvo 1h — linha perto do fechamento)
+}
+
+# Ligas com coverage.odds=TRUE (validado em dim_leagues). O poll filtra os jogos NS
+# por esses league_ids. Diferente de /injuries (Copa excluída), odds de Copa do Mundo
+# normalmente existem — manter 1 aqui se a validação confirmar coverage.odds=TRUE.
+FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID]
+
 # Fixture statistics (/fixtures/statistics) — 1 chamada por fixture, só após FT.
 # No modo current, re-busca jogos cujo kickoff foi nos últimos N dias (captura
 # correções pós-jogo da API); jogos mais antigos já salvos são pulados (skip-if-exists).
@@ -316,8 +338,9 @@ def get_gcs_path(
         # futebol/{endpoint}/raw_futebol_{endpoint}_{fixture_id}.json
         # fixture_lineups grava em duas fases (mode "confirmed"|"real") → sufixo de fase
         # no nome do arquivo p/ guardar os dois snapshots (T-30min e pós-jogo).
+        # odds grava em duas janelas (mode "t24h"|"t1h") → mesmo mecanismo de sufixo.
         if game_id is not None:
-            phase = f"_{mode}" if mode in ("confirmed", "real") else ""
+            phase = f"_{mode}" if mode in ("confirmed", "real", "t24h", "t1h") else ""
             filename = f"raw_futebol_{endpoint}_{game_id}{phase}.json"
             return f"futebol/{endpoint}/{filename}"
         # `date` opcional: endpoints de snapshot diário (ex.: standings) date-stampam

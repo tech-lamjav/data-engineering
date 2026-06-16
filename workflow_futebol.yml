@@ -473,7 +473,7 @@ main:
                     body:
                         overrides:
                             containerOverrides:
-                                - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--select", "+fact_standings_snapshot", "--select", "+fact_h2h", "--select", "+fact_injuries_snapshot", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--select", "+fact_standings_snapshot", "--select", "+fact_h2h", "--select", "+fact_injuries_snapshot", "--select", "+fact_odds_snapshot", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                 result: job_execution_result
 
             - log_job_success:
