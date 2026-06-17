@@ -117,6 +117,25 @@ FUTEBOL_ODDS_WINDOWS = {
 # normalmente existem — manter 1 aqui se a validação confirmar coverage.odds=TRUE.
 FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID]
 
+# Predictions (/predictions) — BASELINE de comparação (a previsão do algoritmo da própria
+# API). Não é produto: serve p/ avaliar se um modelo nosso bate a API consistentemente
+# (= edge real). 1 chamada por jogo numa única janela T-2h (a API atualiza de hora em
+# hora; pegamos perto do kickoff). FORWARD-ONLY (previsão de jogo passado não é
+# reconstruível — a API recomputa com o resultado já conhecido), poll ~15min dedicado
+# (workflow_futebol_predictions.yml). 1 arquivo por fixture (janela única, sem sufixo):
+# raw_futebol_predictions_{fixture}.json; skip-if-exists = 1 captura/jogo.
+#
+# FUTEBOL_PREDICTIONS_WINDOWS: banda (lead_min, lead_max) em MINUTOS até o kickoff (mesma
+# mecânica de FUTEBOL_ODDS_WINDOWS). A captura cai perto de lead_max; banda > intervalo de
+# poll p/ não furar. Tunável/extensível.
+FUTEBOL_PREDICTIONS_WINDOWS = {
+    "t2h": (100, 130),  # 100–130min antes (alvo ~2h; captura cai perto de 130)
+}
+
+# coverage.predictions=TRUE p/ Brasileirão (71) E Copa do Mundo (1) — validado em
+# dim_leagues (2026-06-17). Diferente de /injuries (Copa excluída): ambos incluídos.
+FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID]
+
 # Fixture statistics (/fixtures/statistics) — 1 chamada por fixture, só após FT.
 # No modo current, re-busca jogos cujo kickoff foi nos últimos N dias (captura
 # correções pós-jogo da API); jogos mais antigos já salvos são pulados (skip-if-exists).

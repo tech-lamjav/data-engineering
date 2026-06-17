@@ -580,6 +580,68 @@ def main():
         )
         logger.info(f"✓ raw_futebol_odds criada (URI: {odds_uri})")
 
+        # raw_futebol_predictions — previsão pré-jogo do algoritmo da própria API
+        # (/predictions). BASELINE de comparação (não é produto). FORWARD-ONLY, 1 janela
+        # (T-2h), 1 arquivo por fixture: raw_futebol_predictions_{fixture}.json — o wildcard
+        # cobre todos. 1 LINHA por arquivo (1 previsão/jogo): predictions/comparison
+        # ANINHADOS (flatten por dot-access no dbt, sem UNNEST). Schema EXPLÍCITO: percentuais
+        # ("45%") e linhas de gol ("-1.5") vêm STRING — autodetect estragaria; cast no stg.
+        # collection_timestamp ISO → TIMESTAMP (partição no fato); kickoff_timestamp unix INTEGER.
+        # poisson_distribution é só home/away (sem draw); /predictions não tem campo `update`.
+        # home_away_str (home/away STRING) reusado da seção team_season_stats (mesmo escopo).
+        predictions_schema = [
+            bigquery.SchemaField("fixture_id", "INTEGER"),
+            bigquery.SchemaField("league_id", "INTEGER"),
+            bigquery.SchemaField("season", "INTEGER"),
+            bigquery.SchemaField("collection_window", "STRING"),        # "t2h"
+            bigquery.SchemaField("collection_timestamp", "TIMESTAMP"),  # momento da coleta (UTC) — partição no fato
+            bigquery.SchemaField("kickoff_timestamp", "INTEGER"),       # unix UTC do kickoff
+            bigquery.SchemaField("loaded_at", "TIMESTAMP"),
+            bigquery.SchemaField("predictions", "RECORD", fields=[
+                bigquery.SchemaField("winner", "RECORD", fields=[
+                    bigquery.SchemaField("id", "INTEGER"),
+                    bigquery.SchemaField("name", "STRING"),
+                    bigquery.SchemaField("comment", "STRING"),          # ex: "Win or draw"
+                ]),
+                bigquery.SchemaField("win_or_draw", "BOOLEAN"),
+                bigquery.SchemaField("under_over", "STRING"),           # ex: "-3.5" — cast no stg
+                bigquery.SchemaField("goals", "RECORD", fields=home_away_str),  # "-1.5" — cast no stg
+                bigquery.SchemaField("advice", "STRING"),
+                bigquery.SchemaField("percent", "RECORD", fields=[      # "45%" — cast no stg
+                    bigquery.SchemaField("home", "STRING"),
+                    bigquery.SchemaField("draw", "STRING"),
+                    bigquery.SchemaField("away", "STRING"),
+                ]),
+            ]),
+            bigquery.SchemaField("comparison", "RECORD", fields=[       # todos "45%" — cast no stg
+                bigquery.SchemaField("form", "RECORD", fields=home_away_str),
+                bigquery.SchemaField("att", "RECORD", fields=home_away_str),
+                bigquery.SchemaField("def", "RECORD", fields=home_away_str),
+                bigquery.SchemaField("poisson_distribution", "RECORD", fields=home_away_str),
+                bigquery.SchemaField("h2h", "RECORD", fields=home_away_str),
+                bigquery.SchemaField("goals", "RECORD", fields=home_away_str),
+                bigquery.SchemaField("total", "RECORD", fields=home_away_str),
+            ]),
+        ]
+        predictions_uri = f"gs://{GCS_BUCKET_NAME}/futebol/predictions/*.json"
+        bq.create_external_table(
+            table_id="raw_futebol_predictions",
+            uri=predictions_uri,
+            schema=predictions_schema,
+            description=(
+                "API-Football /predictions, NDJSON. Previsão pré-jogo do algoritmo da própria "
+                "API (BASELINE de comparação p/ modelo próprio). FORWARD-ONLY, 1 janela (T-2h), "
+                "1 LINHA por fixture: raw_futebol_predictions_{fixture}.json (skip-if-exists = 1 "
+                "captura/jogo). predictions (winner/win_or_draw/under_over/goals/advice/percent) e "
+                "comparison (form/att/def/poisson_distribution/h2h/goals/total) ANINHADOS — flatten "
+                "por dot-access em stg_futebol_predictions (sem UNNEST). Schema explícito "
+                "(percentuais '45%' e linhas de gol '-1.5' STRING — cast no stg; collection_timestamp "
+                "ISO→TIMESTAMP; kickoff_timestamp unix INTEGER). Brasileirão (71) + Copa do Mundo (1) "
+                "2026 (ambos coverage.predictions=TRUE)."
+            ),
+        )
+        logger.info(f"✓ raw_futebol_predictions criada (URI: {predictions_uri})")
+
         return 0
     except Exception as e:
         logger.error(f"✗ Erro: {str(e)}", exc_info=True)

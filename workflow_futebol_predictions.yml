@@ -1,0 +1,156 @@
+# ============================================================
+# WORKFLOW FUTEBOL PREDICTIONS (pré-jogo / T-2h)
+# Poll das PREVISÕES pré-jogo do algoritmo da própria API-Football (/predictions) —
+# BASELINE de comparação p/ avaliar um modelo próprio depois (não é produto). 1 chamada
+# por jogo numa janela T-2h: o extractor bucketa cada jogo NS pela proximidade do kickoff
+# (FUTEBOL_PREDICTIONS_WINDOWS) e grava 1 arquivo por fixture com skip-if-exists (1
+# captura/jogo). Se algo novo foi coletado, rebuild ENXUTO dos modelos de predictions.
+#
+# Disparado pelo Cloud Scheduler a cada ~15min (SA schedulerde@, tem workflows.invoker).
+# Sem notificação por email no sucesso (poll de alta frequência). Coleta FORWARD-ONLY
+# (previsão de jogo passado não é reconstruível).
+#
+# O dbt usa --select SEM '+' (enxuto): a external table raw_futebol_predictions é a fonte;
+# o gate saved_count>0 garante que só roda com arquivo novo no GCS (external table não-vazia).
+# ============================================================
+
+main:
+    steps:
+    - init:
+        assign:
+        - workflow_start_time: ${sys.now()}
+        - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
+        - workflow_status: "SUCCESS"
+        - saved_count: 0
+
+    - log_start:
+        call: sys.log
+        args:
+            severity: INFO
+            data:
+                message: "Workflow predictions (pregame) started"
+                workflow_name: "workflow_futebol_predictions"
+                execution_id: ${execution_id}
+
+    # ========================================================================
+    # FASE 1: Extração das previsões (janela T-2h numa passada — sem query param)
+    # ========================================================================
+    - phase1_extract_predictions:
+        try:
+            steps:
+            - call_extract_predictions:
+                call: http.get
+                args:
+                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                    url: https://extract-predictions-r52p4w2f2a-ue.a.run.app
+                    auth:
+                        type: OIDC
+                    timeout: 1800
+                result: predictions_result
+            - read_saved_count:
+                assign:
+                - saved_count: ${default(map.get(predictions_result.body, "saved_count"), 0)}
+            - log_phase1_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Predictions extraction completed"
+                        saved_count: ${saved_count}
+        except:
+            as: e
+            steps:
+            - log_phase1_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Predictions extraction failed"
+                        error: ${e.message}
+            - handle_phase1_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+
+    # ========================================================================
+    # GATE: só roda o dbt se algo novo foi coletado (saved_count > 0).
+    # ========================================================================
+    - check_new_predictions:
+        switch:
+            - condition: ${saved_count > 0}
+              next: phase2_dbt
+        next: skip_dbt
+
+    - skip_dbt:
+        steps:
+        - log_skip:
+            call: sys.log
+            args:
+                severity: INFO
+                data:
+                    message: "Nenhuma previsão nova — dbt pulado"
+                    saved_count: ${saved_count}
+        - skip_to_finalize:
+            next: finalize
+
+    # ========================================================================
+    # FASE 2: dbt enxuto (só os 2 modelos de predictions). Cai em finalize ao terminar.
+    # ========================================================================
+    - phase2_dbt:
+        try:
+            steps:
+            - init_job_config:
+                assign:
+                - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+                - job_full_name: ${"projects/" + project_id + "/locations/us-east1/jobs/dbt-futebol"}
+            - execute_cloud_run_job:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                    name: ${job_full_name}
+                    body:
+                        overrides:
+                            containerOverrides:
+                                - args: ["dbt", "run", "--select", "stg_futebol_predictions", "fact_predictions_api", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                result: job_execution_result
+            - log_job_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "dbt predictions rebuild completed"
+                        saved_count: ${saved_count}
+                        execution_name: ${job_execution_result.name}
+        except:
+            as: e
+            steps:
+            - log_job_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "dbt predictions rebuild failed"
+                        error: ${e.message}
+            - handle_job_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+
+    - finalize:
+        assign:
+        - workflow_end_time: ${sys.now()}
+        - duration_seconds: ${workflow_end_time - workflow_start_time}
+
+    - log_completion:
+        call: sys.log
+        args:
+            severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+            data:
+                message: "Workflow predictions (pregame) completed"
+                workflow_name: "workflow_futebol_predictions"
+                status: ${workflow_status}
+                saved_count: ${saved_count}
+                duration_seconds: ${duration_seconds}
+
+    - return_result:
+        return:
+            status: ${workflow_status}
+            saved_count: ${saved_count}
+            duration_seconds: ${duration_seconds}

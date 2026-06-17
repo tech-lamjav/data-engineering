@@ -307,3 +307,25 @@ class ApiFootballClient(BaseClient):
             params={"fixture": fixture_id},
         )
         return response.json()
+
+    def get_predictions(self, fixture_id: int) -> Dict[str, Any]:
+        """GET /predictions?fixture={fixture_id}. 1 jogo por chamada (NÃO paginado).
+
+        Previsão pré-jogo do algoritmo da própria API-Football — BASELINE de comparação
+        p/ avaliar um modelo próprio depois (se batermos a API consistentemente = edge
+        real). `response` traz 1 elemento: {predictions, league, teams, comparison, h2h}.
+        Guardamos predictions (winner/win_or_draw/under_over/goals/advice/percent) e
+        comparison (form/att/def/poisson_distribution/h2h/goals/total) — percentuais vêm
+        STRING ("45%"); goals/under_over vêm STRING tipo "-1.5". Como /fixtures/statistics,
+        não pagina (paging.total=1). Bater perto do kickoff (T-2h): o algoritmo atualiza
+        de hora em hora.
+
+        Returns:
+            Envelope cru: {response: [{predictions, league, teams, comparison, h2h}], errors, ...}
+        """
+        response = self._make_request(
+            "GET",
+            "predictions",
+            params={"fixture": fixture_id},
+        )
+        return response.json()

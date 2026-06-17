@@ -51,6 +51,7 @@ FUTEBOL_SERVICES=(
     "extract-standings:futebol/extract_standings"
     "extract-injuries:futebol/extract_injuries"
     "extract-odds:futebol/extract_odds"
+    "extract-predictions:futebol/extract_predictions"
 )
 
 # Serviços compartilhados (não específicos de esporte)
