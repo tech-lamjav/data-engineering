@@ -100,16 +100,19 @@ INJURIES_CURRENT = [
 # permitir CLV/EV e movimento de linha. Coleta FORWARD-ONLY (não dá pra reconstruir as
 # janelas de jogos passados) via poll ~15min (workflow_futebol_odds.yml), espelhando o
 # poll pré-jogo das escalações. 1 chamada por (fixture, janela); 1 arquivo por (fixture,
-# janela): raw_futebol_odds_{fixture}_{t24h|t1h}.json (sufixo de fase no get_gcs_path).
+# janela): raw_futebol_odds_{fixture}_{t24h|t1h|t15m}.json (sufixo de fase no get_gcs_path).
 #
 # FUTEBOL_ODDS_WINDOWS: banda (lead_min, lead_max) em MINUTOS até o kickoff. A 1ª passada
 # do poll com lead na banda captura; skip-if-exists trava as seguintes (1 captura/janela).
 # Banda > intervalo de poll p/ não furar; a captura cai perto de lead_max (lead decresce
 # no tempo). minutes_to_kickoff exato é registrado no fato — a precisão de CLV não depende
-# da largura da banda. Extensível: somar "t15m": (0, 15) no futuro (linha de fechamento real).
+# da largura da banda. t15m (0,15) é a LINHA DE FECHAMENTO (CLV real): banda inclusiva [0,15]
+# + poll */15 garante 1 captura perto do kickoff (lead≈15→0); forward-only, cada dia sem
+# t15m = linha de fechamento perdida pra sempre.
 FUTEBOL_ODDS_WINDOWS = {
     "t24h": (1320, 1440),  # 22h–24h antes (alvo 24h — linha de abertura)
-    "t1h":  (30, 60),      # 30–60min antes (alvo 1h — linha perto do fechamento)
+    "t1h":  (30, 60),      # 30–60min antes (alvo 1h — linha intermediária)
+    "t15m": (0, 15),       # 0–15min antes (alvo ~15min — linha de fechamento p/ CLV real)
 }
 
 # Ligas com coverage.odds=TRUE (validado em dim_leagues). O poll filtra os jogos NS
