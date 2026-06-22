@@ -58,6 +58,7 @@ FUTEBOL_SERVICES=(
 SHARED_SERVICES=(
     "notify-execution:notify_execution"
     "sync-bq-to-postgres:sync_bq_to_postgres"
+    "daily-summary:daily_summary"
 )
 
 # União: todos os serviços (preserva back-compat com `./deploy_cloud_run.sh extract-X`)
@@ -341,6 +342,26 @@ deploy_service() {
             --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},LOG_LEVEL=${LOG_LEVEL}" \
             --set-build-env-vars "GOOGLE_RUNTIME_VERSION=3.13,GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
             --set-secrets "SUPABASE_PG_URL_PRD=SUPABASE_PG_URL_PRD:latest,SUPABASE_PG_URL_DEV=SUPABASE_PG_URL_DEV:latest" \
+            --project "$GCP_PROJECT_ID"
+    elif [ "$SERVICE_NAME" = "daily-summary" ]; then
+        # daily-summary lê Cloud Logging + Workflow Executions e envia 1 email/dia
+        # (resumo consolidado de TODOS os workflows). Mesmos secrets do notify-execution
+        # (Gmail). Precisa de GCP_PROJECT_ID/LOG_LEVEL em env (src.config + logger).
+        # SA runtime = $SERVICE_ACCOUNT (ExtractScripts@), que precisa de
+        # roles/logging.viewer + roles/workflows.viewer (ver IAM no plano). Timeout 600s
+        # folgado p/ paginação do Logging.
+        gcloud run deploy "$SERVICE_NAME" \
+            --source "$TEMP_DIR" \
+            --region "$REGION" \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --service-account "$SERVICE_ACCOUNT" \
+            --memory "$MEMORY" \
+            --cpu "$CPU" \
+            --timeout "600" \
+            --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},LOG_LEVEL=${LOG_LEVEL}" \
+            --set-build-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
+            --set-secrets "GMAIL_USER=GMAIL_USER:latest,GMAIL_APP_PASSWORD=GMAIL_APP_PASSWORD:latest,NOTIFY_EMAIL=NOTIFY_EMAIL:latest" \
             --project "$GCP_PROJECT_ID"
     else
         gcloud run deploy "$SERVICE_NAME" \

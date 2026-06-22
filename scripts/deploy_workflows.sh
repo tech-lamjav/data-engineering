@@ -29,6 +29,7 @@ WORKFLOWS=(
     "workflow-futebol-team-stats:workflow_futebol_team_stats.yml"
     "workflow-futebol-odds:workflow_futebol_odds.yml"
     "workflow-futebol-predictions:workflow_futebol_predictions.yml"
+    "workflow-daily-summary:workflow_daily_summary.yml"
 )
 
 print_info()    { echo -e "${GREEN}[INFO]${NC} $1"; }

@@ -1,0 +1,71 @@
+# ============================================================
+# WORKFLOW DAILY SUMMARY
+# Dispara o serviço daily-summary: 1 email consolidado/dia com o status de execução de
+# TODOS os workflows do dia anterior (America/Sao_Paulo). Substitui os emails por
+# execução (a notificação por execução foi removida dos demais workflows).
+#
+# Disparado pelo Cloud Scheduler ~00:05 BRT (job "daily-summary", SA schedulerde@, tem
+# workflows.invoker). Chama o Cloud Run via OIDC (workflowsde@ tem run.invoker). Emite
+# log_completion no mesmo padrão dos outros — assim o próprio resumo é auto-monitorado
+# e aparece no resumo do dia seguinte.
+# ============================================================
+
+main:
+    steps:
+    - init:
+        assign:
+        - workflow_start_time: ${sys.now()}
+        - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
+        - workflow_status: "SUCCESS"
+
+    - log_start:
+        call: sys.log
+        args:
+            severity: INFO
+            data:
+                message: "Workflow daily-summary started"
+                workflow_name: "workflow_daily_summary"
+                execution_id: ${execution_id}
+
+    - call_daily_summary:
+        try:
+            call: http.get
+            args:
+                url: https://daily-summary-r52p4w2f2a-ue.a.run.app
+                auth:
+                    type: OIDC
+                timeout: 540
+            result: summary_result
+        except:
+            as: e
+            steps:
+            - log_summary_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "daily-summary failed"
+                        error: ${e.message}
+            - handle_summary_error:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+
+    - finalize:
+        assign:
+        - workflow_end_time: ${sys.now()}
+        - duration_seconds: ${workflow_end_time - workflow_start_time}
+
+    - log_completion:
+        call: sys.log
+        args:
+            severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+            data:
+                message: "Workflow execution completed"
+                workflow_name: "workflow_daily_summary"
+                status: ${workflow_status}
+                duration_seconds: ${duration_seconds}
+
+    - return_result:
+        return:
+            status: ${workflow_status}
+            duration_seconds: ${duration_seconds}
