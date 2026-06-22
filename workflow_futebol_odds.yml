@@ -4,7 +4,9 @@
 # abertura) e T-1h (linha perto do fechamento). Uma passada cobre as duas janelas — o
 # extractor bucketa cada jogo NS pela proximidade do kickoff (FUTEBOL_ODDS_WINDOWS) e grava
 # 1 arquivo por (fixture, janela) com skip-if-exists (1 snapshot/janela). Se algo novo foi
-# coletado, rebuild ENXUTO dos modelos de odds no dbt-futebol.
+# coletado, rebuild ENXUTO dos modelos de odds + Motor de Score no dbt-futebol
+# (int_futebol_odds_devig / _corroboracao / _premissas_1x2 -> fact_value_opportunities):
+# a cada janela nova de odds o Score 1X2 é recalculado com o edge/penalidades atualizados.
 #
 # Disparado pelo Cloud Scheduler a cada ~15min (SA schedulerde@, tem workflows.invoker).
 # Sem notificação por email no sucesso (poll de alta frequência). Coleta FORWARD-ONLY (não
@@ -93,7 +95,9 @@ main:
             next: finalize
 
     # ========================================================================
-    # FASE 2: dbt enxuto (só os 2 modelos de odds). Cai em finalize ao terminar.
+    # FASE 2: dbt enxuto — modelos de odds + Motor de Score 1X2. Cai em finalize ao terminar.
+    # Os modelos do Motor usam --select SEM '+' (os facts upstream já são materializados pelos
+    # outros workflows; aqui só recalcula devig/corroboração/premissas + o mart fact_value_opportunities).
     # ========================================================================
     - phase2_dbt:
         try:
@@ -109,14 +113,14 @@ main:
                     body:
                         overrides:
                             containerOverrides:
-                                - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_premissas_1x2", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                 result: job_execution_result
             - log_job_success:
                 call: sys.log
                 args:
                     severity: INFO
                     data:
-                        message: "dbt odds rebuild completed"
+                        message: "dbt odds + motor de score rebuild completed"
                         saved_count: ${saved_count}
                         execution_name: ${job_execution_result.name}
         except:
