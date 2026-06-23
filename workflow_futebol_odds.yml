@@ -5,8 +5,8 @@
 # extractor bucketa cada jogo NS pela proximidade do kickoff (FUTEBOL_ODDS_WINDOWS) e grava
 # 1 arquivo por (fixture, janela) com skip-if-exists (1 snapshot/janela). Se algo novo foi
 # coletado, rebuild ENXUTO dos modelos de odds + Motor de Score no dbt-futebol
-# (int_futebol_odds_devig / _corroboracao / _premissas_1x2 -> fact_value_opportunities):
-# a cada janela nova de odds o Score 1X2 é recalculado com o edge/penalidades atualizados.
+# (int_futebol_odds_devig / _corroboracao / _premissas_1x2 / _premissas_ou -> fact_value_opportunities):
+# a cada janela nova de odds o Score 1X2 + Gols O/U é recalculado com o edge/penalidades atualizados.
 #
 # Disparado pelo Cloud Scheduler a cada ~15min (SA schedulerde@, tem workflows.invoker).
 # Sem notificação por email no sucesso (poll de alta frequência). Coleta FORWARD-ONLY (não
@@ -95,7 +95,7 @@ main:
             next: finalize
 
     # ========================================================================
-    # FASE 2: dbt enxuto — modelos de odds + Motor de Score 1X2. Cai em finalize ao terminar.
+    # FASE 2: dbt enxuto — modelos de odds + Motor de Score 1X2 + Gols O/U. Cai em finalize ao terminar.
     # Os modelos do Motor usam --select SEM '+' (os facts upstream já são materializados pelos
     # outros workflows; aqui só recalcula devig/corroboração/premissas + o mart fact_value_opportunities).
     # ========================================================================
@@ -113,7 +113,7 @@ main:
                     body:
                         overrides:
                             containerOverrides:
-                                - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_premissas_1x2", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                 result: job_execution_result
             - log_job_success:
                 call: sys.log
