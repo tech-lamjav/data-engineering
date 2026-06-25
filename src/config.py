@@ -360,9 +360,11 @@ def get_gcs_path(
         # futebol/{endpoint}/raw_futebol_{endpoint}_{fixture_id}.json
         # fixture_lineups grava em duas fases (mode "confirmed"|"real") → sufixo de fase
         # no nome do arquivo p/ guardar os dois snapshots (T-30min e pós-jogo).
-        # odds grava em duas janelas (mode "t24h"|"t1h") → mesmo mecanismo de sufixo.
+        # odds grava em três janelas (mode "t24h"|"t1h"|"t15m") → mesmo mecanismo de sufixo.
         if game_id is not None:
-            phase = f"_{mode}" if mode in ("confirmed", "real", "t24h", "t1h") else ""
+            # Fases válidas derivadas das janelas de odds (fonte única: FUTEBOL_ODDS_WINDOWS)
+            # + as fases de lineups ("confirmed"|"real"). Novas janelas funcionam sem editar aqui.
+            phase = f"_{mode}" if mode in {"confirmed", "real", *FUTEBOL_ODDS_WINDOWS} else ""
             filename = f"raw_futebol_{endpoint}_{game_id}{phase}.json"
             return f"futebol/{endpoint}/{filename}"
         # `date` opcional: endpoints de snapshot diário (ex.: standings) date-stampam
