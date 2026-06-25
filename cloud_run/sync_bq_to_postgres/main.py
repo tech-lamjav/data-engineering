@@ -1,4 +1,5 @@
 import functions_framework
+import logging
 import os
 import sys
 
@@ -40,4 +41,9 @@ def sync_bq_to_postgres(request):
             "synced": result["synced"],
         }, 200
     except Exception as e:
-        return {"status": "error", "env": env, "error": str(e)}, 500
+        # Não ecoar str(e) ao chamador (pode vazar DSN/host/schema do Postgres).
+        # O traceback completo fica no Cloud Logging.
+        logging.getLogger("sync_bq_to_postgres").error(
+            f"Falha no sync (env={env}): {e}", exc_info=True
+        )
+        return {"status": "error", "env": env}, 500

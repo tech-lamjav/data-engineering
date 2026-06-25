@@ -33,8 +33,13 @@ def notify_execution(request):
     msg["From"] = GMAIL_USER
     msg["To"] = NOTIFY_EMAIL
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
-        smtp.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-        smtp.sendmail(GMAIL_USER, NOTIFY_EMAIL, msg.as_string())
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
+            smtp.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+            smtp.sendmail(GMAIL_USER, NOTIFY_EMAIL, msg.as_string())
+    except Exception as e:
+        # Não derrubar o handler silenciosamente; loga server-side e retorna 500.
+        print(f"Erro ao enviar email de notificacao: {e}")
+        return {"status": "error"}, 500
 
     return {"status": "notified"}, 200

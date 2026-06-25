@@ -25,5 +25,12 @@ wheels/
 htmlcov/
 *.log
 .DS_Store
-# Cloud Functions - src/ copiado durante deploy
-cloud_functions/*/src/
+# Cloud Run - src/ e scripts/ copiados durante deploy
+cloud_run/**/src/
+cloud_run/**/scripts/
+
+# Credenciais / chaves de service account (nunca commitar)
+*-key.json
+*credentials*.json
+service-account*.json
+sa-*.json
