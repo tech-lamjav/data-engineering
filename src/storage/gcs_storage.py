@@ -109,19 +109,9 @@ class GCSStorage:
         if not json_data or not json_data.strip():
             raise ValueError(f"JSON gerado está vazio para {blob_path}")
         
-        # Valida que cada linha é um JSON válido (para NDJSON)
-        lines = json_data.strip().split('\n')
-        for line_num, line in enumerate(lines, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                json.loads(line)
-            except json.JSONDecodeError as e:
-                raise ValueError(
-                    f"JSON inválido na linha {line_num} do arquivo {blob_path}: {str(e)}"
-                )
-        
+        # NDJSON é gerado por json.dumps linha a linha (_convert_to_newline_delimited_json),
+        # portanto já é válido por construção — sem re-parse por linha (evita custo dobrado).
+
         # Faz upload
         try:
             blob = self.bucket.blob(blob_path)
@@ -129,17 +119,12 @@ class GCSStorage:
                 json_data,
                 content_type="application/json",
             )
-            
-            # Verifica se o arquivo foi criado corretamente
-            if blob.exists():
-                logger.info(
-                    f"✓ Upload realizado com sucesso: gs://{self.bucket_name}/{blob_path} "
-                    f"({len(json_data)} bytes)"
-                )
-                logger.info(f"  Estrutura de pastas criada automaticamente: {blob_path}")
-            else:
-                logger.warning(f"Upload concluído mas arquivo não encontrado: {blob_path}")
-            
+            # upload_from_string levanta em caso de falha; sem verificação exists() extra
+            # (round-trip desnecessário a cada upload — eram milhares por execução).
+            logger.info(
+                f"✓ Upload realizado com sucesso: gs://{self.bucket_name}/{blob_path} "
+                f"({len(json_data)} bytes)"
+            )
             return f"gs://{self.bucket_name}/{blob_path}"
             
         except Exception as e:
