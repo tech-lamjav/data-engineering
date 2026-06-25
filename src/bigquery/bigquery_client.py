@@ -95,7 +95,7 @@ class BigQueryClient:
         Returns:
             Objeto Dataset criado ou existente
         """
-        dataset_ref = self.client.dataset(self.dataset_id)
+        dataset_ref = bigquery.DatasetReference(self.client.project, self.dataset_id)
 
         try:
             dataset = self.client.get_dataset(dataset_ref)
@@ -131,7 +131,7 @@ class BigQueryClient:
         """
         source_uris = uri if isinstance(uri, list) else [uri]
 
-        dataset_ref = self.client.dataset(self.dataset_id)
+        dataset_ref = bigquery.DatasetReference(self.client.project, self.dataset_id)
         table_ref = dataset_ref.table(table_id)
 
         # Deleta e recria sempre para garantir que o autodetect releia o schema atual dos arquivos.
@@ -230,33 +230,33 @@ class BigQueryClient:
                     for combo in SEASON_AVERAGES_COMBINATIONS:
                         category = combo["category"]
                         type_param = combo["type"]
-                        
-                        # Gera URI do GCS
-                        uri = self.get_external_table_uri(
-                            endpoint, 
-                            season, 
-                            has_date, 
-                            category=category, 
-                            type=type_param
-                        )
-                        
-                        # Nome da tabela específico para cada combinação
-                        table_id = f"raw_{endpoint}_{category}_{type_param}"
-                        
-                        # Descrição
-                        description = f"External table para dados brutos de season_averages (category={category}, type={type_param})"
-                        
-                        # Cria a tabela
-                        self.create_external_table(
-                            table_id=table_id,
-                            uri=uri,
-                            description=description,
-                        )
-                        
                         result_key = f"{endpoint}_{category}_{type_param}"
-                        results[result_key] = True
-                        logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
-                        logger.info(f"  URI: {uri}")
+                        # try/except POR combo: falha em um não aborta os demais nem os
+                        # marca como False (antes, 1 falha derrubava o restante do endpoint).
+                        try:
+                            uri = self.get_external_table_uri(
+                                endpoint,
+                                season,
+                                has_date,
+                                category=category,
+                                type=type_param,
+                            )
+                            table_id = f"raw_{endpoint}_{category}_{type_param}"
+                            description = f"External table para dados brutos de season_averages (category={category}, type={type_param})"
+                            self.create_external_table(
+                                table_id=table_id,
+                                uri=uri,
+                                description=description,
+                            )
+                            results[result_key] = True
+                            logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
+                            logger.info(f"  URI: {uri}")
+                        except Exception as e:
+                            results[result_key] = False
+                            logger.error(
+                                f"✗ Falha ao criar external table do combo {result_key}: {e}",
+                                exc_info=True,
+                            )
                 elif endpoint == "team_season_averages":
                     # Schemas explícitos para shooting opponent: autodetect infere alguns
                     # campos (ex.: _40_ft_opp_fga) como INTEGER na regular, mas playoffs
@@ -307,32 +307,40 @@ class BigQueryClient:
                     for combo in TEAM_SEASON_AVERAGES_COMBINATIONS:
                         category = combo["category"]
                         type_param = combo["type"]
-                        uri = self.get_external_table_uri(
-                            endpoint,
-                            season,
-                            has_date,
-                            category=category,
-                            type=type_param,
-                        )
-                        table_id = f"raw_{endpoint}_{category}_{type_param}"
-                        description = f"External table para dados brutos de team_season_averages (category={category}, type={type_param})"
-
-                        explicit_schema = None
-                        if category == "shooting" and type_param == "by_zone_opponent":
-                            explicit_schema = shooting_opp_schema(by_zone_opp_stat_fields)
-                        elif category == "shooting" and type_param == "5ft_range_opponent":
-                            explicit_schema = shooting_opp_schema(range_5ft_opp_stat_fields)
-
-                        self.create_external_table(
-                            table_id=table_id,
-                            uri=uri,
-                            description=description,
-                            schema=explicit_schema,
-                        )
                         result_key = f"{endpoint}_{category}_{type_param}"
-                        results[result_key] = True
-                        logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
-                        logger.info(f"  URI: {uri}")
+                        # try/except POR combo: isola falhas (uma não derruba as demais).
+                        try:
+                            uri = self.get_external_table_uri(
+                                endpoint,
+                                season,
+                                has_date,
+                                category=category,
+                                type=type_param,
+                            )
+                            table_id = f"raw_{endpoint}_{category}_{type_param}"
+                            description = f"External table para dados brutos de team_season_averages (category={category}, type={type_param})"
+
+                            explicit_schema = None
+                            if category == "shooting" and type_param == "by_zone_opponent":
+                                explicit_schema = shooting_opp_schema(by_zone_opp_stat_fields)
+                            elif category == "shooting" and type_param == "5ft_range_opponent":
+                                explicit_schema = shooting_opp_schema(range_5ft_opp_stat_fields)
+
+                            self.create_external_table(
+                                table_id=table_id,
+                                uri=uri,
+                                description=description,
+                                schema=explicit_schema,
+                            )
+                            results[result_key] = True
+                            logger.info(f"✓ External table criada: {self.dataset_id}.{table_id}")
+                            logger.info(f"  URI: {uri}")
+                        except Exception as e:
+                            results[result_key] = False
+                            logger.error(
+                                f"✗ Falha ao criar external table do combo {result_key}: {e}",
+                                exc_info=True,
+                            )
                 elif endpoint == "betting_odds":
                     # betting_odds: todos os vendors num único wildcard por game_id
                     uri = f"gs://{GCS_BUCKET_NAME}/nba/betting_odds/{season}/*.json"

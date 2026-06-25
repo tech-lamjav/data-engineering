@@ -19,9 +19,17 @@ def daily_summary(request):
               Util p/ teste/backfill de um dia especifico (dentro da retencao de logs).
     """
     date_arg = request.args.get("date")
+    target = None
+    if date_arg:
+        try:
+            target = date.fromisoformat(date_arg)
+        except ValueError:
+            # Erro do cliente (formato de data) → 400, não 500.
+            return {"status": "error", "error": f"date invalido: {date_arg!r} (use YYYY-MM-DD)"}, 400
     try:
-        target = date.fromisoformat(date_arg) if date_arg else None
         result = run_daily_summary(target_date=target)
         return {"status": "success", **result}, 200
     except Exception as e:
-        return {"status": "error", "error": str(e)}, 500
+        # Erro de execução: loga server-side, não ecoa str(e) cru ao chamador.
+        print(f"Erro no daily_summary: {e}")
+        return {"status": "error"}, 500

@@ -22,7 +22,10 @@ def main():
         mode = os.getenv("STANDINGS_MODE", "current")
         logger.info(f"Iniciando extract_standings (mode={mode})")
         gcs_path = StandingsExtractor(mode=mode).extract_and_save()
-        logger.info(f"✓ Concluído: {gcs_path}")
+        if not gcs_path:
+            logger.warning("extract_standings: extração retornou vazio (nada gravado).")
+        else:
+            logger.info(f"✓ Concluído: {gcs_path}")
         return 0
     except Exception as e:
         logger.error(f"✗ Erro na extração: {str(e)}", exc_info=True)

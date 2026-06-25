@@ -261,6 +261,9 @@ def _sync_one_table(
     Skip-if-unchanged: se bq.get_table().modified <= last_synced_bq_modified_time
     em _sync_state, pula essa tabela (sem TRUNCATE, sem locking).
     """
+    # Invariante de segurança: table_name vem SEMPRE da allowlist MART_TABLES_ORDERED
+    # (via resolve_tables). O assert torna explícita a segurança das f-strings de SQL.
+    assert table_name in MART_TABLES_ORDERED, f"tabela fora da allowlist: {table_name!r}"
     table_ref = f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{table_name}"
     bq_table = bq.get_table(table_ref)
     bq_modified = bq_table.modified  # timezone-aware datetime
