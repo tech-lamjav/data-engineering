@@ -18,14 +18,14 @@ sys.path.insert(0, project_root)
 scripts_dir = os.path.join(project_root, "scripts")
 sys.path.insert(0, scripts_dir)
 
-from extract_player_props_betrivers import main as extract_main
+from extract_player_props import main as extract_main
 
 
 @functions_framework.http
 def extract_player_props_betrivers(request):
     """NBA Player Props Pipeline - BetRivers"""
     try:
-        result_code = extract_main()
+        result_code = extract_main(vendor="betrivers")
         if result_code == 0:
             return {"status": "success", "message": "Pipeline executed successfully"}, 200
         else:
