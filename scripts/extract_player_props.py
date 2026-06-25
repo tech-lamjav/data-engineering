@@ -11,12 +11,12 @@ from src.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-def main():
+def main(vendor=None):
     try:
         extractor = PlayerPropsExtractor(season=SEASON)
-        logger.info(f"Iniciando extração de props para temporada {SEASON} (vendors: {extractor.vendors})")
+        logger.info(f"Iniciando extração de props para temporada {SEASON} (vendor(s): {vendor or extractor.vendors})")
 
-        gcs_paths = extractor.extract_and_save()
+        gcs_paths = extractor.extract_and_save(vendors=[vendor]) if vendor else extractor.extract_and_save()
         
         if gcs_paths:
             logger.info(f"✓ Extração concluída: {len(gcs_paths)} arquivo(s) salvo(s)")
