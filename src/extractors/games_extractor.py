@@ -1,6 +1,6 @@
 """Extractor para jogos."""
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from src.extractors.base_extractor import BaseExtractor
 from src.utils.logger import setup_logger
 
@@ -61,7 +61,7 @@ class GamesExtractor(BaseExtractor):
         
         return {
             "season": self.season,
-            "date": date or datetime.now().strftime("%Y-%m-%d"),
+            "date": date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "total_games": len(games_without_status),
             "games": games_without_status,
         }

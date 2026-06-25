@@ -224,9 +224,9 @@ class BallDontLieClient(BaseClient):
         Returns:
             Lista de jogadores ativos
         """
-        # Limite de segurança: NBA tem ~500 jogadores ativos, mas vamos permitir até 1000
-        # para cobrir variações e jogadores em diferentes ligas/status
-        return self.get_paginated("players/active", params={}, per_page=per_page, max_items=1000)
+        # O cursor da API termina sozinho quando acabam os jogadores ativos — sem max_items.
+        # (O cap de 1000 podia truncar silenciosamente: NBA tem ~500 ativos, mas varia.)
+        return self.get_paginated("players/active", params={}, per_page=per_page)
     
     def get_player_injuries(
         self,

@@ -1,6 +1,6 @@
 """Extractor para estatísticas de jogadores por jogo por período (quarto)."""
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from src.extractors.base_extractor import BaseExtractor
 from src.config import NBA_SEASON_END_DATES, get_season_type_for_date
 from src.utils.logger import setup_logger
@@ -57,7 +57,7 @@ class GamePlayerStatsPeriodExtractor(BaseExtractor):
 
         return {
             "season": self.season,
-            "date": date or datetime.now().strftime("%Y-%m-%d"),
+            "date": date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "period": period,
             "total_stats": len(stats),
             "stats": stats,
@@ -97,7 +97,7 @@ class GamePlayerStatsPeriodExtractor(BaseExtractor):
         """
         start_date = datetime(self.season, 10, 21)
         end_str = NBA_SEASON_END_DATES.get(self.season)
-        end_date = datetime.strptime(end_str, "%Y-%m-%d") if end_str else datetime.now()
+        end_date = datetime.strptime(end_str, "%Y-%m-%d") if end_str else datetime.now(timezone.utc).replace(tzinfo=None)
 
         dates = []
         current = start_date

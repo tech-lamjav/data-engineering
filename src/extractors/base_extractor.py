@@ -1,7 +1,7 @@
 """Classe base para extractors."""
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 from src.clients.balldontlie_client import BallDontLieClient
 from src.storage.gcs_storage import GCSStorage
 from src.config import SEASON, ENDPOINT_CONFIGS
@@ -101,7 +101,7 @@ class BaseExtractor(ABC):
             date = kwargs.get("date")
             if not date:
                 # Se não fornecida, usa data atual
-                date = datetime.now().strftime("%Y-%m-%d")
+                date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         # Salva no GCS
         gcs_path = self.save_to_gcs(data, date=date)
