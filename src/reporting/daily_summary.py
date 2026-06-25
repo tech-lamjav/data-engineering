@@ -305,7 +305,7 @@ def send_email(subject: str, html: str) -> None:
     msg["From"] = user
     msg["To"] = to
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
         smtp.login(user, password)
         smtp.sendmail(user, to, msg.as_string())
 
@@ -316,7 +316,12 @@ def run_daily_summary(target_date: date | None = None) -> dict:
     logger.info(f"Resumo diario p/ {day.isoformat()} (UTC {start_utc.isoformat()} .. {end_utc.isoformat()})")
 
     agg: dict = defaultdict(WFAgg)
-    collect_from_logging(gcloud_logging.Client(project=GCP_PROJECT_ID), start_utc, end_utc, agg)
+    try:
+        collect_from_logging(gcloud_logging.Client(project=GCP_PROJECT_ID), start_utc, end_utc, agg)
+    except Exception as e:
+        # Fonte primária: não derrubar o resumo inteiro se o Logging falhar — segue com o
+        # que a Executions API trouxer (operador não fica totalmente às cegas no dia).
+        logger.error(f"Cloud Logging indisponivel, resumo seguira so com a Executions API: {e}", exc_info=True)
     try:
         collect_crashed_executions(ExecutionsClient(), start_utc, end_utc, agg)
     except Exception as e:

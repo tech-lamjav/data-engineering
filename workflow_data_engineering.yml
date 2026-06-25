@@ -16,6 +16,7 @@ main:
         - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
         - workflow_status: "SUCCESS"
         - failed_services: []
+        - dbt_ok: true
 
     - log_start:
         call: sys.log
@@ -318,11 +319,21 @@ main:
                 assign:
                 - workflow_status: "PARTIAL_FAILURE"
                 - failed_services: ${list.concat(failed_services, ["dbt-nba"])}
+                - dbt_ok: false
 
     # ============================================================================
     # FASE 3: Sync BigQuery marts -> Supabase Postgres (PRD + DEV, sequencial)
     # try/except independentes: falha em um ambiente não bloqueia o outro.
+    # GATE: o sync PRD só roda se o dbt (fase 2) teve sucesso — não publicar marts
+    # potencialmente desatualizadas/parciais em produção quando o dbt falhou.
+    # (DEV é deixado rodando de propósito; gate análogo pode ser aplicado se desejado.)
     # ============================================================================
+    - phase3_sync_supabase_prd_gate:
+        switch:
+            - condition: ${dbt_ok}
+              next: phase3_sync_supabase_prd
+        next: skip_phase3_prd_sync
+
     - phase3_sync_supabase_prd:
         try:
             steps:
@@ -354,6 +365,21 @@ main:
                 assign:
                 - workflow_status: "PARTIAL_FAILURE"
                 - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[prd]"])}
+        next: phase3_sync_supabase_dev
+
+    # Alcançado apenas quando o gate desvia (dbt falhou): registra o skip e segue p/ o DEV.
+    - skip_phase3_prd_sync:
+        steps:
+        - log_skip_phase3_prd:
+            call: sys.log
+            args:
+                severity: WARNING
+                data:
+                    message: "Phase 3 sync PRD PULADO: dbt-nba falhou; marts nao publicadas em producao"
+                    failed_services: ${failed_services}
+        - mark_phase3_prd_skipped:
+            assign:
+            - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[prd]:skipped(dbt-failed)"])}
 
     - phase3_sync_supabase_dev:
         try:

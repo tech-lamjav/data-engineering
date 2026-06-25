@@ -1,7 +1,17 @@
 """Funções auxiliares."""
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
+
+
+def utcnow_iso() -> str:
+    """Timestamp UTC atual em ISO 8601 (usado no campo `loaded_at` dos extractors).
+
+    Substitui datetime.utcnow().isoformat() (deprecado no Python 3.12+) preservando o
+    MESMO formato naive (sem offset) — não altera os dados já gravados no GCS/BigQuery.
+    Fonte única de carimbo UTC (base p/ futura padronização de timezone entre NBA e futebol).
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
 def parse_date(date_str: Optional[str]) -> Optional[str]:

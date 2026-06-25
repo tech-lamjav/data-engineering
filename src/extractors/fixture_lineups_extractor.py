@@ -10,6 +10,7 @@ from src.config import (
     get_gcs_path,
 )
 from src.utils.logger import setup_logger
+from src.utils.helpers import utcnow_iso
 
 logger = setup_logger(__name__)
 
@@ -63,7 +64,7 @@ class FixtureLineupsExtractor(BaseExtractor):
             return {"total_teams": 0, "fixture_lineups": []}
 
         response = envelope.get("response", []) or []
-        loaded_at = datetime.utcnow().isoformat()
+        loaded_at = utcnow_iso()
 
         blocks = []
         for item in response:

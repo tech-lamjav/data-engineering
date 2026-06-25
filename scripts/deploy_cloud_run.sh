@@ -222,15 +222,24 @@ load_env() {
 
 # Converte variáveis de ambiente para formato --set-env-vars
 build_env_vars() {
-    ENV_VARS="BALLDONTLIE_KEY=${BALLDONTLIE_KEY}"
-    ENV_VARS="${ENV_VARS},GCS_BUCKET_NAME=${GCS_BUCKET_NAME}"
+    # Apenas config NÃO sensível. As chaves de API vão via Secret Manager (build_secrets).
+    ENV_VARS="GCS_BUCKET_NAME=${GCS_BUCKET_NAME}"
     ENV_VARS="${ENV_VARS},GCP_PROJECT_ID=${GCP_PROJECT_ID}"
     ENV_VARS="${ENV_VARS},SEASON=${SEASON}"
     ENV_VARS="${ENV_VARS},LOG_LEVEL=${LOG_LEVEL}"
-    if [ -n "$API_FOOTBALL_KEY" ]; then
-        ENV_VARS="${ENV_VARS},API_FOOTBALL_KEY=${API_FOOTBALL_KEY}"
-    fi
     echo "$ENV_VARS"
+}
+
+# Monta o --set-secrets das chaves de API (lidas do Secret Manager em runtime, não em texto puro).
+# Pré-requisito: os secrets BALLDONTLIE_KEY (e API_FOOTBALL_KEY p/ futebol) devem existir no
+# Secret Manager e a service account de runtime precisa de roles/secretmanager.secretAccessor.
+# A presença de API_FOOTBALL_KEY no .env continua decidindo se a chave de futebol é montada.
+build_secrets() {
+    SECRETS="BALLDONTLIE_KEY=BALLDONTLIE_KEY:latest"
+    if [ -n "$API_FOOTBALL_KEY" ]; then
+        SECRETS="${SECRETS},API_FOOTBALL_KEY=API_FOOTBALL_KEY:latest"
+    fi
+    echo "$SECRETS"
 }
 
 # Faz deploy de um serviço
@@ -374,6 +383,7 @@ deploy_service() {
             --cpu "$CPU" \
             --timeout "$TIMEOUT" \
             --set-env-vars "$ENV_VARS" \
+            --set-secrets "$(build_secrets)" \
             --set-build-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
             --project "$GCP_PROJECT_ID"
     fi

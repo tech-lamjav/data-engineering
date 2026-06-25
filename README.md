@@ -279,57 +279,67 @@ gcloud auth application-default login
 
 ## Uso
 
-### Carga Total Inicial
+### Execução dos extractors
 
-Para fazer a carga total de todos os endpoints da temporada 2025:
+> **Sem argumentos de CLI.** Os scripts não usam `argparse`; toda a configuração vem do
+> `.env` (carregado por `src/config.py`). Para trocar de temporada, ajuste `SEASON` no `.env`.
+> Em produção a orquestração é feita via **GCP Workflows** (`workflow_*.yml`), que disparam os
+> serviços Cloud Run — os comandos abaixo são para execução local/manual.
 
-```bash
-python scripts/full_load.py
-```
-
-Ou especificando uma temporada diferente:
-
-```bash
-python scripts/full_load.py --season 2024
-```
-
-### Uso Individual dos Extractors
-
-Você pode usar scripts individuais para cada endpoint:
+#### NBA (balldontlie.io)
 
 ```bash
-# Jogadores ativos
-python scripts/extract_active_players.py --season 2025
-
-# Jogos
-python scripts/extract_games.py --season 2025
-python scripts/extract_games.py --season 2025 --dates 2025-10-21 2025-10-22
-python scripts/extract_games.py --season 2025 --team-ids 1 2 3
-
-# Estatísticas de jogadores por jogo
-python scripts/extract_game_player_stats.py --season 2025 --date 2025-10-21
-python scripts/extract_game_player_stats.py --season 2025 --game-ids 123 456
-
-# Médias da temporada
-python scripts/extract_season_averages.py --season 2025
-python scripts/extract_season_averages.py --season 2025 --player-ids 1 2 3
-
-# Médias da temporada por time (general/advanced)
+python scripts/extract_active_players.py
+python scripts/extract_games.py
+python scripts/extract_game_player_stats.py
+python scripts/extract_game_player_stats_period.py
+python scripts/extract_game_player_advanced_stats.py
+python scripts/extract_season_averages.py
 python scripts/extract_team_season_averages.py
-
-# Lesões de jogadores
-python scripts/extract_player_injuries.py --season 2025
-
-# Classificação de times
-python scripts/extract_team_standings.py --season 2025
-
-# Player Props (DraftKings)
-python scripts/extract_player_props.py --season 2025
-python scripts/extract_player_props.py --season 2025 --date 2025-10-21
-python scripts/extract_player_props.py --season 2025 --prop-types points rebounds assists
+python scripts/extract_player_injuries.py
+python scripts/extract_team_standings.py
+python scripts/extract_player_props.py             # DraftKings (default)
+python scripts/extract_player_props_draftkings.py
+python scripts/extract_player_props_caesars.py
+python scripts/extract_player_props_betrivers.py
+python scripts/extract_betting_odds.py
 ```
 
-Ou usar programaticamente:
+#### Futebol (API-Football)
+
+Requer `API_FOOTBALL_KEY` no `.env`. Ligas/temporadas são definidas em `src/config.py`.
+
+```bash
+python scripts/futebol/extract_leagues.py
+python scripts/futebol/extract_teams.py
+python scripts/futebol/extract_players.py
+python scripts/futebol/extract_fixtures.py
+python scripts/futebol/extract_fixture_events.py
+python scripts/futebol/extract_fixture_lineups.py
+python scripts/futebol/extract_fixture_statistics.py
+python scripts/futebol/extract_fixture_player_stats.py
+python scripts/futebol/extract_standings.py
+python scripts/futebol/extract_team_season_stats.py
+python scripts/futebol/extract_predictions.py
+python scripts/futebol/extract_odds.py
+python scripts/futebol/extract_injuries.py
+```
+
+#### Tabelas externas no BigQuery
+
+```bash
+python scripts/create_bigquery_external_tables.py     # NBA (dataset `nba`)
+python scripts/futebol/create_external_tables.py      # Futebol
+```
+
+#### Sync para o Postgres e resumo diário
+
+```bash
+python scripts/sync_bq_to_postgres.py    # materializa marts BigQuery -> Postgres
+python scripts/daily_summary.py          # resumo diário das execuções (1 email/dia)
+```
+
+#### Uso programático
 
 ```python
 from src.extractors.active_players_extractor import ActivePlayersExtractor
@@ -982,16 +992,16 @@ O código é organizado de forma modular para facilitar:
 
 ### Adicionar Novo Endpoint
 
-1. Adicione configuração em `src/config.py` (ENDPOINT_CONFIGS)
-2. Crie método no `BallDontLieClient` (`src/clients/balldontlie_client.py`)
-3. Crie extractor em `src/extractors/` herdando de `BaseExtractor`
-4. Crie script em `scripts/` para execução local
-5. Crie serviço Cloud Run em `cloud_run/`:
-   - Crie diretório `cloud_run/extract_novo_endpoint/`
-   - Crie `main.py` seguindo o padrão dos outros serviços
+1. Adicione a configuração em `src/config.py` (ENDPOINT_CONFIGS)
+2. Crie/estenda o método no cliente apropriado (`BallDontLieClient` para NBA ou `ApiFootballClient` para futebol)
+3. Crie o extractor em `src/extractors/` herdando de `BaseExtractor`
+4. Crie o script em `scripts/` (ou `scripts/futebol/`) — fino, sem argparse, lendo de `src/config.py`
+5. Crie o serviço Cloud Run em `cloud_run/`:
+   - Crie o diretório `cloud_run/extract_novo_endpoint/`
+   - Crie `main.py` (wrapper `functions_framework` que chama `main()` do script)
    - Crie `requirements.txt` copiando de outro serviço
-   - Execute `prepare_services.sh` para copiar `src/`
-6. Adicione ao script `full_load.py` se necessário
+   - Obs.: `scripts/deploy_cloud_run.sh` copia `src/` e `scripts/` automaticamente no deploy
+6. Crie a tabela externa no BigQuery (`create_bigquery_external_tables.py` ou `futebol/create_external_tables.py`) e registre o serviço no GCP Workflow correspondente (`workflow_*.yml`)
 
 ## Troubleshooting
 

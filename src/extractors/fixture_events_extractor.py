@@ -6,6 +6,7 @@ from src.extractors.base_extractor import BaseExtractor
 from src.clients.api_football_client import ApiFootballClient
 from src.config import FIXTURE_EVENTS_REFETCH_WINDOW_DAYS, get_gcs_path
 from src.utils.logger import setup_logger
+from src.utils.helpers import utcnow_iso
 
 logger = setup_logger(__name__)
 
@@ -56,7 +57,7 @@ class FixtureEventsExtractor(BaseExtractor):
             return {"total_events": 0, "fixture_events": []}
 
         response = envelope.get("response", []) or []
-        loaded_at = datetime.utcnow().isoformat()
+        loaded_at = utcnow_iso()
 
         events = []
         for i, e in enumerate(response):

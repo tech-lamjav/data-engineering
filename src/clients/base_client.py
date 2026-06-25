@@ -8,6 +8,11 @@ from src.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 _RETRY_BACKOFFS = [30, 60, 120, 240, 480]
+# Teto (s) p/ Retry-After e backoff: evita dormir minutos/horas numa única chamada
+# (Retry-After de cota diária pode vir gigante e estourar o timeout do Cloud Run).
+_MAX_RETRY_WAIT = 120
+# Status que justificam retry: rate limit (429) + erros transitórios de servidor (5xx).
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 class BaseClient:
@@ -43,33 +48,56 @@ class BaseClient:
         url: str,
         params: Optional[Dict[str, Any]] = None,
     ) -> requests.Response:
-        """Executa requisição HTTP com retry automático em 429."""
-        for attempt, backoff in enumerate(_RETRY_BACKOFFS, start=1):
-            response = self.session.request(
-                method=method,
-                url=url,
-                params=params,
-                timeout=API_TIMEOUT,
-            )
-            if response.status_code != 429:
+        """Executa requisição HTTP com retry em 429/5xx e erros transitórios de conexão.
+
+        Backoff exponencial com teto (_MAX_RETRY_WAIT); respeita Retry-After (limitado ao teto).
+        """
+        total_attempts = len(_RETRY_BACKOFFS) + 1
+        for attempt in range(1, total_attempts + 1):
+            is_last = attempt == total_attempts
+            try:
+                response = self.session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    timeout=API_TIMEOUT,
+                )
+            except (
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ) as e:
+                if is_last:
+                    logger.error(f"Erro transitório persistente para {url}: {str(e)}")
+                    raise
+                wait = min(_RETRY_BACKOFFS[attempt - 1], _MAX_RETRY_WAIT)
+                logger.warning(
+                    f"{type(e).__name__} para {url} — aguardando {wait}s antes da tentativa {attempt + 1}/{total_attempts}"
+                )
+                time.sleep(wait)
+                continue
+
+            if response.status_code not in _RETRYABLE_STATUS:
                 response.raise_for_status()
                 return response
 
-            wait = int(response.headers.get("Retry-After", backoff))
+            if is_last:
+                # esgotou as tentativas: deixa raise_for_status propagar o erro
+                response.raise_for_status()
+                return response
+
+            retry_after = response.headers.get("Retry-After")
+            if retry_after and retry_after.isdigit():
+                wait = min(int(retry_after), _MAX_RETRY_WAIT)
+            else:
+                wait = min(_RETRY_BACKOFFS[attempt - 1], _MAX_RETRY_WAIT)
             logger.warning(
-                f"429 Too Many Requests para {url} — aguardando {wait}s antes da tentativa {attempt + 1}/{len(_RETRY_BACKOFFS) + 1}"
+                f"HTTP {response.status_code} para {url} — aguardando {wait}s antes da tentativa {attempt + 1}/{total_attempts}"
             )
             time.sleep(wait)
 
-        # última tentativa, deixa raise_for_status propagar
-        response = self.session.request(
-            method=method,
-            url=url,
-            params=params,
-            timeout=API_TIMEOUT,
-        )
-        response.raise_for_status()
-        return response
+        # Inalcançável: o laço sempre retorna ou levanta. Mantém o contrato de tipo.
+        raise RuntimeError(f"Retry esgotado para {url}")
 
     def _make_request(
         self,
@@ -116,8 +144,9 @@ class BaseClient:
         cursor = None
         use_cursor_pagination = False
         base_url = (base_url_override or self.base_url).rstrip("/")
-        
-        params = params or {}
+
+        # Copia defensiva: não mutar o dict do chamador (acrescentamos per_page/page/cursor).
+        params = dict(params or {})
         params["per_page"] = per_page
         
         while True:
