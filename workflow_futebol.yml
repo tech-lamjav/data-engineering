@@ -25,6 +25,7 @@ main:
         - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
         - workflow_status: "SUCCESS"
         - failed_services: []
+        - fixtures_ok: true
         # mode default = "current" se não fornecido
         - mode: ${default(map.get(args, "mode"), "current")}
 
@@ -194,6 +195,29 @@ main:
                 assign:
                 - workflow_status: "PARTIAL_FAILURE"
                 - failed_services: ${list.concat(failed_services, ["extract-fixtures"])}
+                - fixtures_ok: false
+
+    # ============================================================================
+    # GATE: as fases 1e–1h leem o arquivo de fixtures (tabela mãe). Se extract-fixtures
+    # falhou, pula-as para não processar fixtures defasados/parciais. 1i/1j (standings,
+    # injuries) são league-level, não dependem de fixtures, então seguem normalmente.
+    # ============================================================================
+    - phase1efgh_gate:
+        switch:
+            - condition: ${fixtures_ok}
+              next: phase1e_extract_fixture_statistics
+        next: skip_fixture_dependent_phases
+
+    - skip_fixture_dependent_phases:
+        steps:
+        - log_skip_fixture_phases:
+            call: sys.log
+            args:
+                severity: WARNING
+                data:
+                    message: "Fases 1e-1h (dependentes de fixtures) PULADAS: extract-fixtures falhou; nao processar fixtures defasados/parciais"
+                    failed_services: ${failed_services}
+        next: phase1i_extract_standings
 
     # ============================================================================
     # FASE 1e: Extração de fixture statistics (API-Football) — stats por time/jogo
@@ -448,6 +472,14 @@ main:
     # ============================================================================
     # FASE 2: Cloud Run Job execution (dbt-futebol) — build dim_leagues + dim_teams + dim_players + fact_fixtures + fact_fixture_stats + fact_fixture_events + fact_fixture_lineups(+players) + fact_fixture_player_stats + fact_standings_snapshot + fact_h2h (view sobre fact_fixtures, sem extractor) + fact_injuries_snapshot
     # ============================================================================
+    # GATE: a fase 2 (dbt) só roda se a extração mãe (extract-fixtures) teve sucesso —
+    # não rodar dbt-futebol sobre fixtures defasados/parciais (propaga p/ todas as marts).
+    - phase2_gate:
+        switch:
+            - condition: ${fixtures_ok}
+              next: phase2_cloud_run_job
+        next: skip_phase2_dbt
+
     - phase2_cloud_run_job:
         try:
             steps:
@@ -499,6 +531,21 @@ main:
                 assign:
                 - workflow_status: "PARTIAL_FAILURE"
                 - failed_services: ${list.concat(failed_services, ["dbt-futebol"])}
+        next: finalize
+
+    # Alcançado apenas quando o gate desvia (extract-fixtures falhou): registra o skip.
+    - skip_phase2_dbt:
+        steps:
+        - log_skip_phase2_dbt:
+            call: sys.log
+            args:
+                severity: WARNING
+                data:
+                    message: "Fase 2 dbt-futebol PULADA: extract-fixtures (tabela mae) falhou; nao rodar dbt sobre fixtures defasados/parciais"
+                    failed_services: ${failed_services}
+        - mark_phase2_dbt_skipped:
+            assign:
+            - failed_services: ${list.concat(failed_services, ["dbt-futebol:skipped(fixtures-failed)"])}
 
     # ============================================================================
     # FINALIZAÇÃO
