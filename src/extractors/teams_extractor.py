@@ -1,6 +1,6 @@
 """Extractor para /teams da API-Football v3."""
 from typing import Dict, Any
-from datetime import datetime
+from src.utils.helpers import utcnow_iso
 from src.extractors.base_extractor import BaseExtractor
 from src.clients.api_football_client import ApiFootballClient
 from src.config import TEAMS_BACKFILL, TEAMS_CURRENT
@@ -53,7 +53,7 @@ class TeamsExtractor(BaseExtractor):
                 teams.append({
                     "requested_league_id": league_id,
                     "requested_season": season,
-                    "loaded_at": datetime.utcnow().isoformat(),
+                    "loaded_at": utcnow_iso(),
                     **item,  # team: {...}, venue: {...}
                 })
 

@@ -5,6 +5,7 @@ from typing import Dict, Any, List
 from src.extractors.base_extractor import BaseExtractor
 from src.clients.api_football_client import ApiFootballClient
 from src.utils.logger import setup_logger
+from src.utils.helpers import utcnow_iso
 
 logger = setup_logger(__name__)
 
@@ -120,7 +121,7 @@ class TeamSeasonStatsExtractor(BaseExtractor):
                     "requested_league_id": league_id,
                     "requested_season": season,
                     "snapshot_date": snapshot_date,
-                    "loaded_at": datetime.utcnow().isoformat(),
+                    "loaded_at": utcnow_iso(),
                     **self._curate(resp),
                 })
             except Exception as e:

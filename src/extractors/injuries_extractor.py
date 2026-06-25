@@ -6,6 +6,7 @@ from src.extractors.base_extractor import BaseExtractor
 from src.clients.api_football_client import ApiFootballClient
 from src.config import INJURIES_BACKFILL, INJURIES_CURRENT
 from src.utils.logger import setup_logger
+from src.utils.helpers import utcnow_iso
 
 logger = setup_logger(__name__)
 
@@ -77,7 +78,7 @@ class InjuriesExtractor(BaseExtractor):
                         "requested_league_id": league_id,
                         "requested_season": season,
                         "snapshot_date": self.snapshot_date,
-                        "loaded_at": datetime.utcnow().isoformat(),
+                        "loaded_at": utcnow_iso(),
                         **item,
                     })
                 logger.info(
