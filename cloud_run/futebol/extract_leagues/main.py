@@ -27,12 +27,21 @@ def extract_leagues(request):
     """
     try:
         mode = request.args.get("mode", "current")
-        # Propaga via env var (script lê LEAGUES_MODE)
+        # O script lê o modo de LEAGUES_MODE dentro do main(). Setamos a env var
+        # imediatamente antes da chamada e restauramos no finally, evitando que o
+        # valor vaze para requisições subsequentes na mesma instância (warm).
+        # (Eliminar a mutação por completo exigiria main() aceitar `mode` — fora deste escopo.)
+        _prev_mode = os.environ.get("LEAGUES_MODE")
         os.environ["LEAGUES_MODE"] = mode
-
-        result_code = extract_main()
+        try:
+            result_code = extract_main()
+        finally:
+            if _prev_mode is None:
+                os.environ.pop("LEAGUES_MODE", None)
+            else:
+                os.environ["LEAGUES_MODE"] = _prev_mode
         if result_code == 0:
-            return {"status": "success", "mode": mode, "message": "Pipeline executed successfully"}
+            return {"status": "success", "mode": mode, "message": "Pipeline executed successfully"}, 200
         else:
             return {"status": "error", "mode": mode, "message": "Pipeline execution failed"}, 500
     except Exception as e:

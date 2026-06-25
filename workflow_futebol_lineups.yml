@@ -37,16 +37,25 @@ main:
         try:
             steps:
             - call_extract_lineups:
-                call: http.get
-                args:
-                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
-                    url: https://extract-fixture-lineups-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: "pregame"
-                    timeout: 1800
-                result: lineups_result
+                try:
+                    call: http.get
+                    args:
+                        # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                        url: https://extract-fixture-lineups-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: "pregame"
+                        timeout: 1800
+                    result: lineups_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - read_saved_count:
                 assign:
                 - saved_count: ${default(map.get(lineups_result.body, "saved_count"), 0)}
@@ -103,14 +112,23 @@ main:
                 - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
                 - job_full_name: ${"projects/" + project_id + "/locations/us-east1/jobs/dbt-futebol"}
             - execute_cloud_run_job:
-                call: googleapis.run.v2.projects.locations.jobs.run
-                args:
-                    name: ${job_full_name}
-                    body:
-                        overrides:
-                            containerOverrides:
-                                - args: ["dbt", "run", "--select", "stg_futebol_fixture_lineups", "stg_futebol_fixture_lineups_players", "fact_fixture_lineups", "fact_fixture_lineups_players", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
-                result: job_execution_result
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "stg_futebol_fixture_lineups", "stg_futebol_fixture_lineups_players", "fact_fixture_lineups", "fact_fixture_lineups_players", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: job_execution_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_job_success:
                 call: sys.log
                 args:

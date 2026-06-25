@@ -1,5 +1,5 @@
-functions-framework==3.*
+functions-framework==3.10.2
 google-cloud-logging==3.16.0
 google-cloud-workflows==1.22.0
 python-dotenv==1.0.0
-tzdata
+tzdata==2025.3

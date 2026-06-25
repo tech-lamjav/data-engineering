@@ -7,7 +7,7 @@
 #
 # Pre-req: gcloud auth login + GCP_PROJECT_ID no .env
 
-set -e
+set -euo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -49,7 +49,7 @@ load_env() {
     ENV_FILE="$PROJECT_ROOT/.env"
     [ -f "$ENV_FILE" ] || { print_error ".env nao encontrado em $ENV_FILE"; exit 1; }
     set -a; source "$ENV_FILE"; set +a
-    [ -n "$GCP_PROJECT_ID" ] || { print_error "GCP_PROJECT_ID nao definido no .env"; exit 1; }
+    [ -n "${GCP_PROJECT_ID:-}" ] || { print_error "GCP_PROJECT_ID nao definido no .env"; exit 1; }
 }
 
 get_workflow_source() {
@@ -76,14 +76,17 @@ deploy_workflow() {
     print_info "Deployando $name a partir de $source_file..."
     # SA explícita: workflows novos defaultariam pra compute SA (sem run.invoker) e
     # dariam 403 ao chamar os serviços Cloud Run. workflowsde@ tem run.invoker + run.admin.
+    # `|| deploy_rc=$?` evita que o `set -e` aborte o loop quando um deploy falha;
+    # o status é capturado e tratado abaixo (mantém o resumo ok/falha).
+    local deploy_rc=0
     gcloud workflows deploy "$name" \
         --source="$source_path" \
         --location="$LOCATION" \
         --project="$GCP_PROJECT_ID" \
         --service-account="workflowsde@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
-        > /dev/null
+        > /dev/null || deploy_rc=$?
 
-    if [ $? -eq 0 ]; then
+    if [ "$deploy_rc" -eq 0 ]; then
         print_info "[OK] $name deployado"
         return 0
     else

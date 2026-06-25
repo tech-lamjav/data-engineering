@@ -2,7 +2,7 @@
 # Script para fazer deploy de serviços Cloud Run
 # Lê variáveis de ambiente do arquivo .env e faz deploy de todos os serviços ou um específico
 
-set -e
+set -euo pipefail
 
 # Cores para output
 RED='\033[0;31m'
@@ -37,6 +37,13 @@ NBA_SERVICES=(
     "extract-player-props-betrivers:extract_player_props_betrivers"
     "extract-betting-odds:extract_betting_odds"
 )
+# NOTA: cloud_run/extract_player_props/ é um diretório ÓRFÃO — substituído pelas
+# variantes por vendor (-draftkings/-caesars/-betrivers) acima. NÃO está em
+# NBA_SERVICES nem é chamado por nenhum workflow (ver workflow_bets.yml /
+# workflow_data_engineering.yml), portanto NÃO é deployado por este script.
+# O wrapper genérico só sobrevive como exemplo do script local documentado em
+# CLAUDE.md (scripts/extract_player_props.py). Não adicione a NBA_SERVICES sem
+# antes confirmar que não há serviço Cloud Run órfão rodando defasado em produção.
 
 FUTEBOL_SERVICES=(
     "extract-leagues:futebol/extract_leagues"
@@ -175,38 +182,39 @@ load_env() {
     set +a
     
     # Verifica variáveis obrigatórias
-    if [ -z "$BALLDONTLIE_KEY" ]; then
+    # ${VAR:-} protege contra `set -u` quando a variável não vier do .env.
+    if [ -z "${BALLDONTLIE_KEY:-}" ]; then
         print_error "BALLDONTLIE_KEY não encontrada no .env"
         exit 1
     fi
-    
-    if [ -z "$GCS_BUCKET_NAME" ]; then
+
+    if [ -z "${GCS_BUCKET_NAME:-}" ]; then
         print_error "GCS_BUCKET_NAME não encontrada no .env"
         exit 1
     fi
-    
-    if [ -z "$GCP_PROJECT_ID" ]; then
+
+    if [ -z "${GCP_PROJECT_ID:-}" ]; then
         print_error "GCP_PROJECT_ID não encontrada no .env"
         exit 1
     fi
-    
-    if [ -z "$SEASON" ]; then
+
+    if [ -z "${SEASON:-}" ]; then
         print_warning "SEASON não encontrada no .env, usando padrão: 2025"
         SEASON="2025"
     fi
-    
-    if [ -z "$LOG_LEVEL" ]; then
+
+    if [ -z "${LOG_LEVEL:-}" ]; then
         LOG_LEVEL="INFO"
     fi
 
     # API_FOOTBALL_KEY é opcional (somente serviços de futebol usam).
     # Warn não-fatal — não quebra deploys NBA-only.
-    if [ -z "$API_FOOTBALL_KEY" ]; then
+    if [ -z "${API_FOOTBALL_KEY:-}" ]; then
         print_warning "API_FOOTBALL_KEY não encontrada no .env (necessária apenas para serviços de futebol)"
     fi
-    
+
     # Service account (opcional, padrão: ExtractScripts)
-    if [ -z "$SERVICE_ACCOUNT" ]; then
+    if [ -z "${SERVICE_ACCOUNT:-}" ]; then
         SERVICE_ACCOUNT="ExtractScripts@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
         print_info "Usando service account padrão: $SERVICE_ACCOUNT"
     else
@@ -236,7 +244,7 @@ build_env_vars() {
 # A presença de API_FOOTBALL_KEY no .env continua decidindo se a chave de futebol é montada.
 build_secrets() {
     SECRETS="BALLDONTLIE_KEY=BALLDONTLIE_KEY:latest"
-    if [ -n "$API_FOOTBALL_KEY" ]; then
+    if [ -n "${API_FOOTBALL_KEY:-}" ]; then
         SECRETS="${SECRETS},API_FOOTBALL_KEY=API_FOOTBALL_KEY:latest"
     fi
     echo "$SECRETS"
@@ -318,6 +326,10 @@ deploy_service() {
     print_info "Service account (runtime): $SERVICE_ACCOUNT"
     print_info "Entry point: $ENTRY_POINT"
 
+    # DEPLOY_EXIT_CODE inicia em 0; cada gcloud usa `|| DEPLOY_EXIT_CODE=$?` para que
+    # `set -e` não aborte o loop quando um serviço falha (tratamento abaixo preserva o resumo).
+    local DEPLOY_EXIT_CODE=0
+
     # notify-execution usa secrets do Secret Manager em vez de env vars padrão
     if [ "$SERVICE_NAME" = "notify-execution" ]; then
         gcloud run deploy "$SERVICE_NAME" \
@@ -331,7 +343,7 @@ deploy_service() {
             --timeout "$TIMEOUT" \
             --set-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
             --set-secrets "GMAIL_USER=GMAIL_USER:latest,GMAIL_APP_PASSWORD=GMAIL_APP_PASSWORD:latest,NOTIFY_EMAIL=NOTIFY_EMAIL:latest" \
-            --project "$GCP_PROJECT_ID"
+            --project "$GCP_PROJECT_ID" || DEPLOY_EXIT_CODE=$?
     elif [ "$SERVICE_NAME" = "sync-bq-to-postgres" ]; then
         # Sync precisa de 1Gi (carrega CSV em memória) + dois secrets (PRD e DEV).
         # Workflow agendado bate em ?env=prd e depois ?env=dev sequencialmente.
@@ -351,7 +363,7 @@ deploy_service() {
             --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},LOG_LEVEL=${LOG_LEVEL}" \
             --set-build-env-vars "GOOGLE_RUNTIME_VERSION=3.13,GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
             --set-secrets "SUPABASE_PG_URL_PRD=SUPABASE_PG_URL_PRD:latest,SUPABASE_PG_URL_DEV=SUPABASE_PG_URL_DEV:latest" \
-            --project "$GCP_PROJECT_ID"
+            --project "$GCP_PROJECT_ID" || DEPLOY_EXIT_CODE=$?
     elif [ "$SERVICE_NAME" = "daily-summary" ]; then
         # daily-summary lê Cloud Logging + Workflow Executions e envia 1 email/dia
         # (resumo consolidado de TODOS os workflows). Mesmos secrets do notify-execution
@@ -371,7 +383,7 @@ deploy_service() {
             --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},LOG_LEVEL=${LOG_LEVEL}" \
             --set-build-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
             --set-secrets "GMAIL_USER=GMAIL_USER:latest,GMAIL_APP_PASSWORD=GMAIL_APP_PASSWORD:latest,NOTIFY_EMAIL=NOTIFY_EMAIL:latest" \
-            --project "$GCP_PROJECT_ID"
+            --project "$GCP_PROJECT_ID" || DEPLOY_EXIT_CODE=$?
     else
         gcloud run deploy "$SERVICE_NAME" \
             --source "$TEMP_DIR" \
@@ -385,12 +397,10 @@ deploy_service() {
             --set-env-vars "$ENV_VARS" \
             --set-secrets "$(build_secrets)" \
             --set-build-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
-            --project "$GCP_PROJECT_ID"
+            --project "$GCP_PROJECT_ID" || DEPLOY_EXIT_CODE=$?
     fi
-    
-    local DEPLOY_EXIT_CODE=$?
-    
-    if [ $DEPLOY_EXIT_CODE -eq 0 ]; then
+
+    if [ "$DEPLOY_EXIT_CODE" -eq 0 ]; then
         print_info "✓ Deploy de $SERVICE_NAME concluído com sucesso"
         
         # Aguarda um pouco para garantir que o serviço está totalmente pronto

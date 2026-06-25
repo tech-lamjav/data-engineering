@@ -21,11 +21,11 @@ from src.extractors.odds_extractor import OddsExtractor
 
 @functions_framework.http
 def extract_odds(request):
-    """API-Football /odds pipeline (snapshot pré-jogo em 2 janelas T-24h e T-1h).
+    """API-Football /odds pipeline (snapshot pré-jogo nas janelas T-24h, T-1h e T-15m).
 
-    Sem query params: uma passada cobre as duas janelas (o extractor bucketa cada jogo NS
-    pela proximidade do kickoff). Retorna `saved_count` (nº de snapshots gravados) p/ o
-    gate do workflow.
+    Sem query params: uma passada cobre as janelas (o extractor bucketa cada jogo NS
+    pela proximidade do kickoff; T-15m é a linha de fechamento p/ CLV). Retorna
+    `saved_count` (nº de snapshots gravados) p/ o gate do workflow.
     """
     try:
         paths = OddsExtractor().extract_and_save()
@@ -33,6 +33,6 @@ def extract_odds(request):
             "status": "success",
             "saved_count": len(paths),
             "message": "Pipeline executed successfully",
-        }
+        }, 200
     except Exception as e:
         return {"status": "error", "error": str(e)}, 500

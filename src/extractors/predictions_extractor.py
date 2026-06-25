@@ -174,4 +174,10 @@ class PredictionsExtractor(BaseExtractor):
             f"predictions concluído: {len(saved_paths)} salvos, {skipped} pulados (já existem), "
             f"{empty} sem previsão, {failed} com erro; {considered} (fixture,janela) na banda."
         )
+        if failed:
+            # Resumo de FALHA distinto de 'sem previsão': forward-only, janela pode ser perdida.
+            logger.error(
+                f"RESUMO DE FALHA — predictions: {failed} (fixture,janela) falharam de {considered} na banda. "
+                "Coleta forward-only — janela pode ter sido perdida. Investigar."
+            )
         return saved_paths

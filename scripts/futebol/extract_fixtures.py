@@ -4,7 +4,6 @@ Sem argparse (regra `.cursorrules`). Modo via env var `FIXTURES_MODE`:
 - current (default): ano corrente — schedule diário (atualiza status/placar)
 - backfill: anos anteriores — one-shot manual
 """
-import os
 import sys
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.extractors.fixtures_extractor import FixturesExtractor
+from src.config import get_mode
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -19,7 +19,7 @@ logger = setup_logger(__name__)
 
 def main():
     try:
-        mode = os.getenv("FIXTURES_MODE", "current")
+        mode = get_mode("FIXTURES_MODE")
         logger.info(f"Iniciando extract_fixtures (mode={mode})")
         gcs_path = FixturesExtractor(mode=mode).extract_and_save()
         logger.info(f"✓ Concluído: {gcs_path}")

@@ -45,15 +45,24 @@ main:
         try:
             steps:
             - call_extract_team_season_stats:
-                call: http.get
-                args:
-                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
-                    url: https://extract-team-season-stats-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                        url: https://extract-team-season-stats-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1_success:
                 call: sys.log
                 args:
@@ -100,14 +109,23 @@ main:
                         job_name: ${job_name}
 
             - execute_cloud_run_job:
-                call: googleapis.run.v2.projects.locations.jobs.run
-                args:
-                    name: ${job_full_name}
-                    body:
-                        overrides:
-                            containerOverrides:
-                                - args: ["dbt", "run", "--select", "+fact_team_season_stats", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
-                result: job_execution_result
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "+fact_team_season_stats", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: job_execution_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
 
             - log_job_success:
                 call: sys.log

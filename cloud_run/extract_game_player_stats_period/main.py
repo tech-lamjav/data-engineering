@@ -30,7 +30,7 @@ def extract_game_player_stats_period(request):
     try:
         result_code = extract_main()
         if result_code == 0:
-            return {"status": "success", "message": "Pipeline executed successfully"}
+            return {"status": "success", "message": "Pipeline executed successfully"}, 200
         else:
             return {"status": "error", "message": "Pipeline execution failed"}, 500
     except Exception as e:

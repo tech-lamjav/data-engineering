@@ -2,7 +2,6 @@
 import json
 from typing import Dict, Any, Optional, List
 from google.cloud import storage
-from google.api_core import exceptions
 from src.config import GCS_BUCKET_NAME, GCP_PROJECT_ID, GCS_USE_ADC, get_gcs_path
 from src.utils.logger import setup_logger
 from src.utils.helpers import normalize_dict_keys
@@ -21,27 +20,17 @@ class GCSStorage:
             bucket_name: Nome do bucket (usa config se None)
         """
         self.bucket_name = bucket_name or GCS_BUCKET_NAME
-        
+
         # Inicializa cliente do GCS via Application Default Credentials (ADC).
         # (Os dois ramos do antigo GCS_USE_ADC eram idênticos — dead code removido.)
         self.client = storage.Client(project=GCP_PROJECT_ID) if GCP_PROJECT_ID else storage.Client()
-        
-        # Obtém ou cria o bucket
-        try:
-            self.bucket = self.client.bucket(self.bucket_name)
-            # Verifica se o bucket existe
-            if not self.bucket.exists():
-                logger.info(f"Criando bucket {self.bucket_name}...")
-                self.bucket = self.client.create_bucket(self.bucket_name)
-                logger.info(f"Bucket {self.bucket_name} criado com sucesso")
-            else:
-                logger.info(f"Bucket {self.bucket_name} já existe")
-        except exceptions.Forbidden:
-            logger.error(f"Sem permissão para acessar/criar o bucket {self.bucket_name}")
-            raise
-        except Exception as e:
-            logger.error(f"Erro ao acessar bucket {self.bucket_name}: {str(e)}")
-            raise
+
+        # Referência lazy ao bucket — NÃO faz round-trip nem cria bucket no runtime.
+        # O bucket é provisionado via IaC/Terraform (região/policies corretas) e a SA
+        # do serviço precisa apenas de storage.objectAdmin no bucket — não de
+        # storage.buckets.create. .bucket() não acessa a rede; um nome errado falha
+        # de forma ruidosa no primeiro upload em vez de criar um bucket silenciosamente.
+        self.bucket = self.client.bucket(self.bucket_name)
     
     def upload_json(
         self,
@@ -397,6 +386,72 @@ class GCSStorage:
         
         logger.info(f"Total de {files_processed} arquivos processados, {len(game_ids)} game_ids únicos encontrados")
         return sorted(list(game_ids))
+
+    def get_game_dates_from_storage(self, season: int) -> Dict[int, str]:
+        """
+        Mapeia game_id -> data do jogo (YYYY-MM-DD) a partir dos arquivos de games.
+
+        Base do skip-if-exists + janela de re-fetch dos extractors per-game NBA
+        (betting_odds/player_props): permite distinguir jogos recentes (re-buscar
+        odds/props, que ainda podem mudar) de jogos antigos (pular se já salvos).
+
+        Reaproveita a mesma listagem/parse de get_game_ids_from_storage; jogos sem
+        campo de data legível ficam de fora do mapa (o chamador trata ausência como
+        "sem data conhecida" e re-busca por segurança).
+
+        Args:
+            season: Ano da temporada.
+
+        Returns:
+            Dict {game_id: "YYYY-MM-DD"}.
+        """
+        import json
+
+        dates: Dict[int, str] = {}
+        prefix = f"nba/games/{season}/"
+        logger.info(f"Mapeando datas de games em gs://{self.bucket_name}/{prefix}...")
+
+        for blob in self.bucket.list_blobs(prefix=prefix):
+            if not blob.name.endswith(".json"):
+                continue
+            try:
+                content = blob.download_as_text()
+                games: List[Any] = []
+                try:
+                    data = json.loads(content)
+                    if isinstance(data, dict) and "games" in data:
+                        games = data.get("games", [])
+                    elif isinstance(data, list):
+                        games = data
+                except json.JSONDecodeError:
+                    for line in content.strip().split("\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(row, dict) and "games" in row:
+                            games.extend(row.get("games", []))
+                        elif isinstance(row, dict) and "id" in row and "date" in row:
+                            games.append(row)
+                        elif isinstance(row, list):
+                            games.extend(row)
+
+                for game in games:
+                    if not isinstance(game, dict):
+                        continue
+                    game_id = game.get("id")
+                    game_date = (game.get("date") or "")[:10]
+                    if game_id and game_date:
+                        dates[game_id] = game_date
+            except Exception as e:
+                logger.warning(f"Erro ao processar arquivo {blob.name}: {str(e)}")
+                continue
+
+        logger.info(f"{len(dates)} game_ids com data mapeados (season={season})")
+        return dates
 
     def get_fixture_ids_from_storage(self, mode: str) -> List[Dict[str, Any]]:
         """

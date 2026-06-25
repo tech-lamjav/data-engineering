@@ -96,6 +96,12 @@ class InjuriesExtractor(BaseExtractor):
             f"Coletadas {len(rows)} linhas (mode={self.mode}, alvos={len(self.targets)}, "
             f"{empty} sem injuries, {failed} com erro)."
         )
+        if failed:
+            # Resumo de FALHA distinto de 'sem injuries': sinaliza erro real (quota/5xx/GCS).
+            logger.error(
+                f"RESUMO DE FALHA — injuries (mode={self.mode}): {failed} alvo(s) falharam "
+                f"de {len(self.targets)}. Snapshot pode estar incompleto — re-executar."
+            )
         return {"total_rows": len(rows), "injuries": rows}
 
     def extract_and_save(self, **kwargs) -> str:

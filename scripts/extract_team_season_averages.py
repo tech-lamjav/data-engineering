@@ -6,38 +6,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import requests
 from src.extractors.team_season_averages_extractor import TeamSeasonAveragesExtractor
-from src.config import SEASON
+from src.config import SEASON, TEAM_SEASON_AVERAGES_COMBINATIONS, SEASON_TYPES, is_http_no_data
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
-
-
-COMBINATIONS = [
-    ("general", "advanced"),
-    ("general", "opponent"),
-    ("general", "defense"),
-    ("tracking", "rebounding"),
-    # Opp Rankings — Play Types
-    ("playtype", "isolation"),
-    ("playtype", "transition"),
-    ("playtype", "spotup"),
-    ("playtype", "handoff"),
-    ("playtype", "cut"),
-    ("playtype", "offscreen"),
-    ("playtype", "postup"),
-    ("playtype", "prballhandler"),
-    ("playtype", "prrollman"),
-    ("playtype", "offrebound"),
-    # Opp Rankings — Hustle / Rim Protection
-    ("hustle", "overall"),
-    ("tracking", "defense"),
-    # Opp Rankings — C&S / Pull Up (shotdashboard)
-    ("shotdashboard", "catch_and_shoot"),
-    ("shotdashboard", "pullups"),
-    # Opp Rankings — Shooting cedido (defesa por zona / faixa de distância)
-    ("shooting", "by_zone_opponent"),
-    ("shooting", "5ft_range_opponent"),
-]
 
 
 def main():
@@ -46,14 +18,14 @@ def main():
     Gera um arquivo por combinação+season_type em:
     nba/team_season_averages/{season}/raw_nba_team_season_averages_{season}-{category}-{type}-{season_type}.json
     """
-    season_types = ["regular", "playoffs", "ist"]
-
     try:
         logger.info(f"Iniciando extração de team season averages para temporada {SEASON}")
 
         results = []
-        for category, type_ in COMBINATIONS:
-            for season_type in season_types:
+        for combo in TEAM_SEASON_AVERAGES_COMBINATIONS:
+            category = combo["category"]
+            type_ = combo["type"]
+            for season_type in SEASON_TYPES:
                 key = f"{category}/{type_}/{season_type}"
                 logger.info(f"Processando: {key}")
                 try:
@@ -68,7 +40,7 @@ def main():
                     results.append({"key": key, "status": "success"})
                 except requests.exceptions.HTTPError as e:
                     status_code = e.response.status_code if e.response is not None else None
-                    if status_code in (400, 404, 422):
+                    if is_http_no_data(e):
                         logger.warning(f"⚠ Sem dados para {key} (HTTP {status_code}) — ignorado")
                         results.append({"key": key, "status": "skipped"})
                     else:

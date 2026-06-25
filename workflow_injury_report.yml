@@ -34,12 +34,21 @@ main:
         try:
             steps:
             - call_extract_player_injuries:
-                call: http.get
-                args:
-                    url: https://extract-player-injuries-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        url: https://extract-player-injuries-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1_success:
                 call: sys.log
                 args:
@@ -85,14 +94,23 @@ main:
                         job_name: ${job_name}
 
             - execute_cloud_run_job:
-                call: googleapis.run.v2.projects.locations.jobs.run
-                args:
-                    name: ${job_full_name}
-                    body:
-                        overrides:
-                            containerOverrides:
-                                - args: ["dbt", "run", "--select", "stg_player_injuries+ dim_teams+", "--project-dir", "/app/dbt_nba", "--profiles-dir", "/app/.dbt", "--target", "prod"]
-                result: job_execution_result
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "stg_player_injuries+ dim_teams+", "--project-dir", "/app/dbt_nba", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: job_execution_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
 
             - log_job_success:
                 call: sys.log
@@ -135,13 +153,22 @@ main:
         try:
             steps:
             - call_sync_injury_prd:
-                call: http.get
-                args:
-                    url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=prd&tables=dim_players,dim_teams,dim_stat_player,dim_daily_opportunities,dim_teammate_impact_360
-                    auth:
-                        type: OIDC
-                        audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
-                    timeout: 600
+                try:
+                    call: http.get
+                    args:
+                        url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=prd&tables=dim_players,dim_teams,dim_stat_player,dim_daily_opportunities,dim_teammate_impact_360
+                        auth:
+                            type: OIDC
+                            audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
+                        timeout: 600
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase3_injury_prd_success:
                 call: sys.log
                 args:
@@ -182,13 +209,22 @@ main:
         try:
             steps:
             - call_sync_injury_dev:
-                call: http.get
-                args:
-                    url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=dev&tables=dim_players,dim_teams,dim_stat_player,dim_daily_opportunities,dim_teammate_impact_360
-                    auth:
-                        type: OIDC
-                        audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
-                    timeout: 600
+                try:
+                    call: http.get
+                    args:
+                        url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=dev&tables=dim_players,dim_teams,dim_stat_player,dim_daily_opportunities,dim_teammate_impact_360
+                        auth:
+                            type: OIDC
+                            audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
+                        timeout: 600
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase3_injury_dev_success:
                 call: sys.log
                 args:

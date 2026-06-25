@@ -15,6 +15,44 @@ _MAX_RETRY_WAIT = 120
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
+class ApiQuotaExceededError(Exception):
+    """Estouro de cota/rate-limit sinalizado no corpo da resposta (HTTP 200 + errors).
+
+    A API-Football não devolve 429 quando a COTA DIÁRIA estoura: ela responde HTTP 200
+    com `errors` preenchido (ex.: {"requests": "You have reached the request limit..."}
+    ou {"rateLimit": "..."}) e `response` vazio. Tratar isso como "sem dados" mascara
+    lacunas (pior nos polls forward-only de odds, que perdem a janela permanentemente).
+    Levantar uma exceção explícita permite ao orquestrador FALHAR o run em vez de gravar
+    coleta parcial/vazia como sucesso.
+    """
+
+
+def is_quota_error(errors: Any) -> bool:
+    """Detecta indicador de estouro de cota/rate-limit no campo `errors` da API-Football.
+
+    `errors` pode vir como dict ({chave: mensagem}) ou, raramente, lista de strings.
+    Consideramos cota quando alguma chave/mensagem menciona rate limit / request limit
+    / quota. Erros de parâmetro (ex.: {"league": "The League field is required."}) NÃO
+    são cota e seguem o tratamento normal do extractor.
+    """
+    if not errors:
+        return False
+
+    _QUOTA_TERMS = ("ratelimit", "rate limit", "request limit", "requests", "quota")
+
+    if isinstance(errors, dict):
+        candidates = []
+        for k, v in errors.items():
+            candidates.append(str(k).lower())
+            candidates.append(str(v).lower())
+    elif isinstance(errors, (list, tuple)):
+        candidates = [str(item).lower() for item in errors]
+    else:
+        candidates = [str(errors).lower()]
+
+    return any(term in text for text in candidates for term in _QUOTA_TERMS)
+
+
 class BaseClient:
     """Cliente base para requisições HTTP."""
 
@@ -142,6 +180,7 @@ class BaseClient:
         all_data = []
         page = 1
         cursor = None
+        total_count = None  # quando a API expõe meta.total_count, validamos no fim
         base_url = (base_url_override or self.base_url).rstrip("/")
 
         # Copia defensiva: não mutar o dict do chamador (acrescentamos per_page/page/cursor).
@@ -183,6 +222,11 @@ class BaseClient:
                 
                 all_data.extend(items)
                 logger.info(f"Coletados {len(items)} itens (total acumulado: {len(all_data)})")
+
+                # Guarda total_count exposto pela API (qualquer modo de paginação) p/
+                # validação final de completude.
+                if meta.get("total_count") is not None:
+                    total_count = meta.get("total_count")
                 
                 # Verifica limite máximo de segurança
                 if max_items and len(all_data) >= max_items:
@@ -217,7 +261,8 @@ class BaseClient:
                 elif total_pages:
                     # API usa page-based pagination com total_pages
                     current_page = meta.get("current_page", page)
-                    total_count = meta.get("total_count")
+                    if meta.get("total_count") is not None:
+                        total_count = meta.get("total_count")
                     logger.info(f"Meta da API: página {current_page}/{total_pages}, total: {total_count}")
                     if page >= total_pages:
                         logger.info(f"Todas as páginas coletadas ({total_pages} páginas)")
@@ -240,7 +285,17 @@ class BaseClient:
                 break
             
             time.sleep(0.5)  # Pequeno delay entre requisições
-        
+
+        # Validação de completude: se a API expôs total_count e coletamos menos itens
+        # (sem ter truncado por max_items), provavelmente perdemos páginas — loga WARNING
+        # p/ não tratar coleta parcial como completa silenciosamente.
+        truncado = bool(max_items) and len(all_data) >= max_items
+        if total_count is not None and not truncado and len(all_data) != total_count:
+            logger.warning(
+                f"Divergência de contagem no endpoint {endpoint}: coletados {len(all_data)} "
+                f"itens, mas a API informou total_count={total_count}. Possível coleta parcial."
+            )
+
         logger.info(f"Total de {len(all_data)} itens coletados do endpoint {endpoint}")
         return all_data
 

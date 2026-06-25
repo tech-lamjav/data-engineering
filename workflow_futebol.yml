@@ -47,14 +47,23 @@ main:
         try:
             steps:
             - call_extract_leagues:
-                call: http.get
-                args:
-                    url: https://extract-leagues-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        url: https://extract-leagues-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1_success:
                 call: sys.log
                 args:
@@ -86,14 +95,23 @@ main:
         try:
             steps:
             - call_extract_teams:
-                call: http.get
-                args:
-                    url: https://extract-teams-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        url: https://extract-teams-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1b_success:
                 call: sys.log
                 args:
@@ -125,14 +143,23 @@ main:
         try:
             steps:
             - call_extract_players:
-                call: http.get
-                args:
-                    url: https://extract-players-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        url: https://extract-players-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1c_success:
                 call: sys.log
                 args:
@@ -164,14 +191,23 @@ main:
         try:
             steps:
             - call_extract_fixtures:
-                call: http.get
-                args:
-                    url: https://extract-fixtures-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        url: https://extract-fixtures-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1d_success:
                 call: sys.log
                 args:
@@ -227,15 +263,24 @@ main:
         try:
             steps:
             - call_extract_fixture_statistics:
-                call: http.get
-                args:
-                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
-                    url: https://extract-fixture-statistics-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                        url: https://extract-fixture-statistics-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1e_success:
                 call: sys.log
                 args:
@@ -268,15 +313,24 @@ main:
         try:
             steps:
             - call_extract_fixture_events:
-                call: http.get
-                args:
-                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
-                    url: https://extract-fixture-events-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                        url: https://extract-fixture-events-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1f_success:
                 call: sys.log
                 args:
@@ -310,15 +364,24 @@ main:
         try:
             steps:
             - call_extract_fixture_lineups:
-                call: http.get
-                args:
-                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
-                    url: https://extract-fixture-lineups-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                        url: https://extract-fixture-lineups-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1g_success:
                 call: sys.log
                 args:
@@ -351,15 +414,24 @@ main:
         try:
             steps:
             - call_extract_fixture_player_stats:
-                call: http.get
-                args:
-                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
-                    url: https://extract-fixture-player-stats-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                        url: https://extract-fixture-player-stats-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1h_success:
                 call: sys.log
                 args:
@@ -393,15 +465,24 @@ main:
         try:
             steps:
             - call_extract_standings:
-                call: http.get
-                args:
-                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
-                    url: https://extract-standings-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                        url: https://extract-standings-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1i_success:
                 call: sys.log
                 args:
@@ -436,15 +517,24 @@ main:
         try:
             steps:
             - call_extract_injuries:
-                call: http.get
-                args:
-                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
-                    url: https://extract-injuries-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    query:
-                        mode: ${mode}
-                    timeout: 1800
+                try:
+                    call: http.get
+                    args:
+                        # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                        url: https://extract-injuries-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: ${mode}
+                        timeout: 1800
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase1j_success:
                 call: sys.log
                 args:
@@ -499,14 +589,23 @@ main:
                         job_name: ${job_name}
 
             - execute_cloud_run_job:
-                call: googleapis.run.v2.projects.locations.jobs.run
-                args:
-                    name: ${job_full_name}
-                    body:
-                        overrides:
-                            containerOverrides:
-                                - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--select", "+fact_standings_snapshot", "--select", "+fact_h2h", "--select", "+fact_injuries_snapshot", "--select", "+fact_odds_snapshot", "--select", "+fact_predictions_api", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
-                result: job_execution_result
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--select", "+fact_standings_snapshot", "--select", "+fact_h2h", "--select", "+fact_injuries_snapshot", "--select", "+fact_odds_snapshot", "--select", "+fact_predictions_api", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: job_execution_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
 
             - log_job_success:
                 call: sys.log

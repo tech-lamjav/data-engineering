@@ -36,6 +36,14 @@ main:
                     type: OIDC
                 timeout: 540
             result: summary_result
+        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+        retry:
+            predicate: ${http.default_retry_predicate}
+            max_retries: 3
+            backoff:
+                initial_delay: 5
+                max_delay: 60
+                multiplier: 2
         except:
             as: e
             steps:

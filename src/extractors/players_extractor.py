@@ -32,8 +32,13 @@ class PlayersExtractor(BaseExtractor):
         self.targets = PLAYERS_CURRENT if mode == "current" else PLAYERS_BACKFILL
 
     def extract(self, **kwargs) -> Dict[str, Any]:
-        """Itera sobre os targets e mescla resposta + metadata da request."""
+        """Itera sobre os targets e mescla resposta + metadata da request.
+
+        `failed_targets` separa 'liga falhou' (errors no envelope) de 'liga sem dados'
+        — extract_and_save usa isso p/ NÃO sobrescrever o arquivo bom com coleta parcial.
+        """
         players = []
+        failed_targets = []
         for league_id, season in self.targets:
             logger.info(f"Extraindo league={league_id} season={season}...")
             envelope = self.client.get_players(league_id, season)
@@ -43,6 +48,7 @@ class PlayersExtractor(BaseExtractor):
                 logger.error(
                     f"API errors para league={league_id} season={season}: {errors}"
                 )
+                failed_targets.append((league_id, season))
                 continue
 
             response = envelope.get("response", []) or []
@@ -66,17 +72,33 @@ class PlayersExtractor(BaseExtractor):
         return {
             "mode": self.mode,
             "total_players": len(players),
+            "failed_targets": failed_targets,
             "players": players,
         }
 
     def extract_and_save(self, **kwargs) -> str:
-        """Override: usa mode no path do GCS em vez de date."""
+        """Override: usa mode no path do GCS em vez de date.
+
+        Latest-only (fonte de verdade p/ dim_players): se algum target obrigatório
+        FALHOU (errors no envelope — inclui estouro de quota a partir da página 2 que o
+        cliente propaga em errors), NÃO sobrescreve o arquivo bom por uma coleta PARCIAL
+        de jogadores — aborta com raise. 'Liga sem dados' (response vazio) é legítimo.
+        """
         logger.info(f"Iniciando extração players (mode={self.mode})")
         data = self.extract(**kwargs)
+
+        failed_targets = data.get("failed_targets") or []
+        if failed_targets:
+            raise RuntimeError(
+                f"players (mode={self.mode}): {len(failed_targets)} target(s) falharam "
+                f"({failed_targets}). Abortando p/ NÃO sobrescrever o catálogo bom no GCS "
+                "com coleta parcial. Re-executar."
+            )
 
         if data.get("total_players", 0) == 0:
             logger.warning("Nenhum jogador coletado — arquivo será uploadado vazio (metadata only)")
 
+        data.pop("failed_targets", None)  # controle interno, fora do payload
         gcs_path = self.storage.upload_json(
             data=data,
             endpoint="players",

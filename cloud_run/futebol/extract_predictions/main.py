@@ -33,6 +33,6 @@ def extract_predictions(request):
             "status": "success",
             "saved_count": len(paths),
             "message": "Pipeline executed successfully",
-        }
+        }, 200
     except Exception as e:
         return {"status": "error", "error": str(e)}, 500

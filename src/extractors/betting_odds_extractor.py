@@ -1,6 +1,13 @@
 """Extractor para betting odds (spread, moneyline, total) por jogo."""
+import time
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 from src.extractors.base_extractor import BaseExtractor
+from src.config import (
+    get_gcs_path,
+    NBA_PER_GAME_REFETCH_WINDOW_DAYS,
+    NBA_PER_GAME_SLEEP_SECONDS,
+)
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -38,6 +45,12 @@ class BettingOddsExtractor(BaseExtractor):
         """
         Extrai odds por game_id, buscando game_ids do storage e salvando imediatamente.
 
+        Aplica skip-if-exists + janela de re-fetch (igual aos per-fixture de futebol):
+        jogos cujo arquivo já existe no GCS são pulados, exceto os dos últimos
+        NBA_PER_GAME_REFETCH_WINDOW_DAYS dias (odds ainda podem mudar). Jogos sem data
+        conhecida são re-buscados por segurança. Distingue 'sem odds' (empty) de
+        'falhou' (exceção) — emite ERROR de RESUMO quando houver falhas.
+
         Returns:
             Lista de caminhos completos dos arquivos salvos no GCS
         """
@@ -52,15 +65,32 @@ class BettingOddsExtractor(BaseExtractor):
 
         logger.info(f"Encontrados {len(game_ids)} game_ids para processar")
 
+        game_dates = self.storage.get_game_dates_from_storage(self.season)
+        cutoff = datetime.now(timezone.utc).date() - timedelta(
+            days=NBA_PER_GAME_REFETCH_WINDOW_DAYS
+        )
+
         saved_paths = []
         skipped_games = []
+        skipped_exists = 0
+        failed_games = []
 
         for game_id in game_ids:
             try:
+                # Skip-if-exists + janela: pula jogos antigos já salvos; re-busca
+                # jogos recentes (ou sem data conhecida) p/ capturar linhas atualizadas.
+                game_date = self._parse_date(game_dates.get(game_id))
+                is_recent = game_date is None or game_date >= cutoff
+                blob_path = get_gcs_path(self.endpoint_name, self.season, game_id=game_id)
+                if not is_recent and self.storage.bucket.blob(blob_path).exists():
+                    skipped_exists += 1
+                    continue
+
                 logger.info("=" * 60)
                 logger.info(f"Processando game_id {game_id}...")
 
                 data = self.extract(game_id=game_id)
+                time.sleep(NBA_PER_GAME_SLEEP_SECONDS)  # cortesia entre chamadas
                 odds = data.get("odds", [])
 
                 if not odds:
@@ -76,19 +106,36 @@ class BettingOddsExtractor(BaseExtractor):
 
             except Exception as e:
                 logger.error(f"Erro ao processar game_id {game_id}: {str(e)}", exc_info=True)
+                failed_games.append(game_id)
                 continue
 
         logger.info("=" * 60)
-        logger.info(f"Extração concluída: {len(saved_paths)} arquivo(s) salvo(s)")
-        if skipped_games:
-            logger.info(f"Games sem dados: {len(skipped_games)}")
-        if not saved_paths:
+        logger.info(
+            f"Extração concluída: {len(saved_paths)} salvos, {skipped_exists} pulados "
+            f"(já existem), {len(skipped_games)} sem odds, {len(failed_games)} com erro."
+        )
+        if failed_games:
+            logger.error(
+                f"RESUMO DE FALHA — {self.endpoint_name}: {len(failed_games)} game(s) "
+                f"falharam ({failed_games[:5]}...). Dados podem estar incompletos — re-executar."
+            )
+        elif not saved_paths and skipped_exists == 0:
             logger.warning(
                 f"Nenhum arquivo salvo para endpoint: {self.endpoint_name}. "
                 "Verifique se há odds disponíveis para os jogos da temporada."
             )
 
         return saved_paths
+
+    @staticmethod
+    def _parse_date(date_str: Optional[str]):
+        """Converte 'YYYY-MM-DD' em date; None se ausente/inválida (re-busca p/ segurança)."""
+        if not date_str:
+            return None
+        try:
+            return datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return None
 
     def save_to_gcs(
         self,

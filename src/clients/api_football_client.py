@@ -1,7 +1,7 @@
 """Cliente para API-Football v3 (https://www.api-football.com)."""
 import time
 from typing import Dict, Any
-from src.clients.base_client import BaseClient
+from src.clients.base_client import BaseClient, ApiQuotaExceededError, is_quota_error
 from src.config import API_FOOTBALL_BASE_URL, API_FOOTBALL_KEY
 from src.utils.logger import setup_logger
 
@@ -21,6 +21,22 @@ class ApiFootballClient(BaseClient):
             auth_headers={"x-apisports-key": API_FOOTBALL_KEY},
         )
 
+    def _raise_if_quota(self, envelope: Dict[str, Any], context: str) -> Dict[str, Any]:
+        """Levanta ApiQuotaExceededError se o envelope sinalizar estouro de cota/rate-limit.
+
+        A API responde HTTP 200 + `errors` (dict/lista) quando a cota DIÁRIA estoura
+        (não 429), com `response` vazio. Tratar isso como "sem dados" mascara lacunas
+        (crítico nos polls forward-only). Erros de parâmetro NÃO disparam aqui — seguem
+        o tratamento normal do extractor (que loga `errors`). Retorna o próprio envelope
+        p/ permitir uso encadeado.
+        """
+        errors = envelope.get("errors")
+        if is_quota_error(errors):
+            raise ApiQuotaExceededError(
+                f"Cota/rate-limit da API-Football estourada ({context}): {errors}"
+            )
+        return envelope
+
     def get_league(self, league_id: int, season: int) -> Dict[str, Any]:
         """GET /leagues?id={league_id}&season={season}.
 
@@ -32,7 +48,7 @@ class ApiFootballClient(BaseClient):
             "leagues",
             params={"id": league_id, "season": season},
         )
-        return response.json()
+        return self._raise_if_quota(response.json(), f"leagues league={league_id} season={season}")
 
     def get_teams(self, league_id: int, season: int) -> Dict[str, Any]:
         """GET /teams?league={league_id}&season={season}.
@@ -45,7 +61,7 @@ class ApiFootballClient(BaseClient):
             "teams",
             params={"league": league_id, "season": season},
         )
-        return response.json()
+        return self._raise_if_quota(response.json(), f"teams league={league_id} season={season}")
 
     def get_standings(self, league_id: int, season: int) -> Dict[str, Any]:
         """GET /standings?league={league_id}&season={season}.
@@ -63,7 +79,7 @@ class ApiFootballClient(BaseClient):
             "standings",
             params={"league": league_id, "season": season},
         )
-        return response.json()
+        return self._raise_if_quota(response.json(), f"standings league={league_id} season={season}")
 
     def get_injuries(self, league_id: int, season: int) -> Dict[str, Any]:
         """GET /injuries?league={league_id}&season={season} (NÃO paginado).
@@ -88,7 +104,7 @@ class ApiFootballClient(BaseClient):
             "injuries",
             params={"league": league_id, "season": season},
         )
-        return response.json()
+        return self._raise_if_quota(response.json(), f"injuries league={league_id} season={season}")
 
     def get_team_season_stats(
         self, league_id: int, season: int, team_id: int
@@ -110,7 +126,10 @@ class ApiFootballClient(BaseClient):
             "teams/statistics",
             params={"league": league_id, "season": season, "team": team_id},
         )
-        return response.json()
+        return self._raise_if_quota(
+            response.json(),
+            f"teams/statistics league={league_id} season={season} team={team_id}",
+        )
 
     def get_players(self, league_id: int, season: int) -> Dict[str, Any]:
         """GET /players?league={league_id}&season={season} (paginado).
@@ -136,9 +155,23 @@ class ApiFootballClient(BaseClient):
                 params={"league": league_id, "season": season, "page": page},
             ).json()
 
+            # Checa cota/rate-limit em TODA página: se a quota estourar a partir da
+            # página N, abortamos em vez de devolver coleta parcial como completa
+            # (que sobrescreveria dim_players com menos jogadores sem sinal de erro).
+            self._raise_if_quota(envelope, f"players league={league_id} season={season} page={page}")
+
             if page == 1:
                 first_errors = envelope.get("errors")
                 total_pages = (envelope.get("paging") or {}).get("total", 1) or 1
+            else:
+                # Erro não-cota a partir da página 2 também invalida a coleta: propaga
+                # em vez de truncar silenciosamente (M1).
+                page_errors = envelope.get("errors")
+                if page_errors:
+                    raise RuntimeError(
+                        f"API-Football retornou errors na página {page} de players "
+                        f"(league={league_id} season={season}): {page_errors}"
+                    )
 
             all_items.extend(envelope.get("response", []) or [])
             page += 1
@@ -171,7 +204,7 @@ class ApiFootballClient(BaseClient):
             "fixtures",
             params={"league": league_id, "season": season},
         )
-        return response.json()
+        return self._raise_if_quota(response.json(), f"fixtures league={league_id} season={season}")
 
     def get_fixture_statistics(self, fixture_id: int) -> Dict[str, Any]:
         """GET /fixtures/statistics?fixture={fixture_id}. 1 chamada por jogo.
@@ -188,7 +221,7 @@ class ApiFootballClient(BaseClient):
             "fixtures/statistics",
             params={"fixture": fixture_id},
         )
-        return response.json()
+        return self._raise_if_quota(response.json(), f"fixtures/statistics fixture={fixture_id}")
 
     def get_fixture_events(self, fixture_id: int) -> Dict[str, Any]:
         """GET /fixtures/events?fixture={fixture_id}. 1 chamada por jogo.
@@ -208,7 +241,7 @@ class ApiFootballClient(BaseClient):
             "fixtures/events",
             params={"fixture": fixture_id},
         )
-        return response.json()
+        return self._raise_if_quota(response.json(), f"fixtures/events fixture={fixture_id}")
 
     def get_fixture_lineups(self, fixture_id: int) -> Dict[str, Any]:
         """GET /fixtures/lineups?fixture={fixture_id}. 1 chamada por jogo.
@@ -226,7 +259,7 @@ class ApiFootballClient(BaseClient):
             "fixtures/lineups",
             params={"fixture": fixture_id},
         )
-        return response.json()
+        return self._raise_if_quota(response.json(), f"fixtures/lineups fixture={fixture_id}")
 
     def get_odds(self, fixture_id: int) -> Dict[str, Any]:
         """GET /odds?fixture={fixture_id} (paginado). 1 jogo por chamada.
@@ -258,9 +291,21 @@ class ApiFootballClient(BaseClient):
                 params={"fixture": fixture_id, "page": page},
             ).json()
 
+            # Cota/rate-limit em qualquer página aborta (forward-only: snapshot parcial
+            # da janela seria gravado como completo e a janela fecharia sem recuperação).
+            self._raise_if_quota(envelope, f"odds fixture={fixture_id} page={page}")
+
             if page == 1:
                 first_errors = envelope.get("errors")
                 total_pages = (envelope.get("paging") or {}).get("total", 1) or 1
+            else:
+                # Erro não-cota a partir da página 2 também invalida o merge de casas: propaga.
+                page_errors = envelope.get("errors")
+                if page_errors:
+                    raise RuntimeError(
+                        f"API-Football retornou errors na página {page} de odds "
+                        f"(fixture={fixture_id}): {page_errors}"
+                    )
 
             response = envelope.get("response", []) or []
             if response:
@@ -306,7 +351,7 @@ class ApiFootballClient(BaseClient):
             "fixtures/players",
             params={"fixture": fixture_id},
         )
-        return response.json()
+        return self._raise_if_quota(response.json(), f"fixtures/players fixture={fixture_id}")
 
     def get_predictions(self, fixture_id: int) -> Dict[str, Any]:
         """GET /predictions?fixture={fixture_id}. 1 jogo por chamada (NÃO paginado).
@@ -328,4 +373,4 @@ class ApiFootballClient(BaseClient):
             "predictions",
             params={"fixture": fixture_id},
         )
-        return response.json()
+        return self._raise_if_quota(response.json(), f"predictions fixture={fixture_id}")

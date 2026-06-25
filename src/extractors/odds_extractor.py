@@ -173,4 +173,12 @@ class OddsExtractor(BaseExtractor):
             f"odds concluído: {len(saved_paths)} salvos, {skipped} pulados (já existem), "
             f"{empty} sem odds, {failed} com erro; {considered} (fixture,janela) na banda."
         )
+        if failed:
+            # Resumo de FALHA distinto de 'sem odds': odds é FORWARD-ONLY — uma falha
+            # aqui pode perder a janela de fechamento permanentemente. Loga ERROR p/ o
+            # resumo diário não confundir com 'jogo sem odds publicadas ainda'.
+            logger.error(
+                f"RESUMO DE FALHA — odds: {failed} (fixture,janela) falharam de {considered} na banda. "
+                "Coleta forward-only — janela pode ter sido perdida. Investigar."
+            )
         return saved_paths

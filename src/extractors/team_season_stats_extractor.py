@@ -136,16 +136,34 @@ class TeamSeasonStatsExtractor(BaseExtractor):
             f"Coletadas {len(rows)} linhas (mode={self.mode}, times={len(teams)}, "
             f"{empty} sem stats, {failed} com erro)."
         )
-        return {"total_teams": len(rows), "team_season_stats": rows}
+        return {
+            "total_teams": len(rows),
+            "failed": failed,
+            "team_season_stats": rows,
+        }
 
     def extract_and_save(self, **kwargs) -> str:
-        """Override: usa mode no path do GCS (latest-only, 1 arquivo por mode)."""
+        """Override: usa mode no path do GCS (latest-only, 1 arquivo por mode).
+
+        Latest-only (input direto do Poisson): se algum time FALHOU (errors no envelope
+        ou exceção — distinto de 'time sem stats', que é legítimo), NÃO sobrescreve o
+        arquivo bom anterior por uma coleta parcial — aborta com raise p/ preservar o
+        snapshot. Re-executar capta os times que faltaram.
+        """
         logger.info(f"Iniciando extração team_season_stats (mode={self.mode})")
         data = self.extract(**kwargs)
+
+        failed = data.get("failed", 0)
+        if failed:
+            raise RuntimeError(
+                f"team_season_stats (mode={self.mode}): {failed} time(s) falharam. "
+                "Abortando p/ NÃO sobrescrever o arquivo bom no GCS com coleta parcial. Re-executar."
+            )
 
         if data.get("total_teams", 0) == 0:
             logger.warning("Nenhuma stat coletada — arquivo será uploadado vazio (metadata only)")
 
+        data.pop("failed", None)  # controle interno, fora do payload
         gcs_path = self.storage.upload_json(
             data=data,
             endpoint="team_season_stats",

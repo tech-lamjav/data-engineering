@@ -262,6 +262,17 @@ def get_season_type_for_date(game_date: str, season: int) -> str:
         return "playin"
     return "regular"
 
+# Per-game NBA (betting_odds / player_props): skip-if-exists + janela de re-fetch.
+# Mesma mecânica dos per-fixture de futebol — odds/props de jogos antigos não mudam,
+# então pula jogos cujo arquivo já existe no GCS, exceto os dos últimos N dias (re-busca
+# correções/linhas que ainda estavam abrindo). Evita reprocessar milhares de jogos a cada
+# run (quota/tempo) perto do fim da temporada. NBA não expõe data por game_id facilmente
+# aqui, então a janela é aplicada por skip-if-exists puro (re-fetch só quando ainda não há
+# arquivo). PER_GAME_SLEEP_SECONDS é a cortesia entre chamadas (rate-limit), adicionada
+# JUNTO do skip-if-exists para não agravar o timeout reprocessando tudo.
+NBA_PER_GAME_REFETCH_WINDOW_DAYS = 2
+NBA_PER_GAME_SLEEP_SECONDS = 0.2
+
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
@@ -319,6 +330,117 @@ ENDPOINT_CONFIGS = {
         "per_page": 100,
     },
 }
+
+# Combinações de season_averages / team_season_averages — FONTE ÚNICA.
+# Tanto os scripts de extração (scripts/extract_season_averages.py,
+# scripts/extract_team_season_averages.py) quanto a criação das external tables
+# (src/bigquery/bigquery_client.py) importam estas listas daqui. Antes estavam
+# duplicadas em ambos os lados, exigindo sincronização manual (um novo type só num
+# lugar gerava tabela apontando p/ arquivo inexistente ou vice-versa).
+SEASON_AVERAGES_COMBINATIONS = [
+    {"category": "general", "type": "base"},
+    {"category": "general", "type": "advanced"},
+    {"category": "shooting", "type": "by_zone"},
+    {"category": "tracking", "type": "passing"},
+]
+
+TEAM_SEASON_AVERAGES_COMBINATIONS = [
+    {"category": "general",   "type": "advanced"},
+    {"category": "general",   "type": "opponent"},
+    {"category": "general",   "type": "defense"},
+    {"category": "tracking",  "type": "rebounding"},
+    # Opp Rankings — Play Types
+    {"category": "playtype",     "type": "isolation"},
+    {"category": "playtype",     "type": "transition"},
+    {"category": "playtype",     "type": "spotup"},
+    {"category": "playtype",     "type": "handoff"},
+    {"category": "playtype",     "type": "cut"},
+    {"category": "playtype",     "type": "offscreen"},
+    {"category": "playtype",     "type": "postup"},
+    {"category": "playtype",     "type": "prballhandler"},
+    {"category": "playtype",     "type": "prrollman"},
+    {"category": "playtype",     "type": "offrebound"},
+    # Opp Rankings — Hustle / Rim Protection
+    {"category": "hustle",       "type": "overall"},
+    {"category": "tracking",     "type": "defense"},
+    # Opp Rankings — C&S / Pull Up (shotdashboard)
+    {"category": "shotdashboard", "type": "catch_and_shoot"},
+    {"category": "shotdashboard", "type": "pullups"},
+    # Opp Rankings — Shooting cedido (defesa por zona / faixa de distância)
+    {"category": "shooting", "type": "by_zone_opponent"},
+    {"category": "shooting", "type": "5ft_range_opponent"},
+]
+
+# Tipos de temporada extraídos para (team_)season_averages.
+SEASON_TYPES = ["regular", "playoffs", "ist"]
+
+
+def require_env(name: str) -> str:
+    """Lê uma env var obrigatória, levantando erro claro se ausente/vazia.
+
+    Helper de uso OPCIONAL (não levanta no import-time deste módulo): os scripts
+    podem chamá-lo quando quiserem falhar cedo com mensagem acionável em vez de
+    propagar um erro obscuro mais adiante.
+    """
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Variável de ambiente obrigatória ausente: {name}")
+    return value
+
+
+def _int_env(name: str, default: int) -> int:
+    """Lê uma env var inteira com fallback, levantando erro claro se inválida.
+
+    Helper de uso OPCIONAL (não chamado no import-time). Útil para janelas/limites
+    configuráveis por ambiente sem espalhar try/except de int() pelos scripts.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as e:
+        raise RuntimeError(f"{name} inválido: {raw!r} (esperado inteiro)") from e
+
+
+def use_backfill_seasons() -> bool:
+    """Centraliza a leitura da flag BACKFILL_SEASONS.
+
+    BACKFILL_SEASONS truthy → iterar todas as SEASONS (uso pontual/backfill).
+    Sem a var (ou vazia) → só a SEASON corrente (padrão Cloud Run).
+    """
+    return bool(os.getenv("BACKFILL_SEASONS"))
+
+
+def get_seasons_to_process() -> list:
+    """Resolve as seasons a processar conforme a flag BACKFILL_SEASONS."""
+    return SEASONS if use_backfill_seasons() else [SEASON]
+
+
+# Status HTTP que, em (team_)season_averages, significam "combinação sem dados"
+# (a balldontlie devolve 400/404/422 p/ combos category/type inexistentes naquela
+# temporada/season_type) e devem ser tratados como skip, não como erro real.
+HTTP_NO_DATA_STATUS = (400, 404, 422)
+
+
+def is_http_no_data(exc) -> bool:
+    """True se a exceção for um HTTPError de "sem dados" (400/404/422).
+
+    Centraliza a classificação antes duplicada entre os scripts de season averages.
+    """
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None) if response is not None else None
+    return status_code in HTTP_NO_DATA_STATUS
+
+
+def get_mode(env_var: str, default: str = "current") -> str:
+    """Centraliza a leitura de env vars de modo dos extractors de futebol.
+
+    Ex.: get_mode("STANDINGS_MODE"). Mantém o default "current" usado hoje pelos
+    scripts; passa a haver um único ponto caso a semântica de modo mude.
+    """
+    return os.getenv(env_var, default)
+
 
 # GCS Path Structure
 def get_gcs_path(

@@ -8,6 +8,8 @@ from src.config import (
     BIGQUERY_DATASET,
     BIGQUERY_LOCATION,
     ENDPOINT_CONFIGS,
+    SEASON_AVERAGES_COMBINATIONS,
+    TEAM_SEASON_AVERAGES_COMBINATIONS,
 )
 from src.utils.logger import setup_logger
 
@@ -35,6 +37,20 @@ class BigQueryClient:
         self.client = bigquery.Client(project=self.project_id)
         logger.info(f"Cliente BigQuery inicializado para projeto: {self.project_id}")
     
+    @staticmethod
+    def get_gcs_prefix(endpoint: str, season: int) -> str:
+        """Diretório-base (sem nome de arquivo) de um endpoint NBA no GCS.
+
+        FONTE ÚNICA da estrutura de DIRETÓRIO de leitura, espelhando o prefixo que
+        get_gcs_path (config) usa na ESCRITA: nba/{endpoint}/{season}. Mantê-lo num
+        único helper evita que escrita e leitura divirjam (antes get_external_table_uri
+        e get_player_props_uris remontavam o caminho manualmente, à mão).
+
+        Returns:
+            Prefixo gs:// SEM barra final (ex.: gs://bucket/nba/games/2025).
+        """
+        return f"gs://{GCS_BUCKET_NAME}/nba/{endpoint}/{season}"
+
     def get_player_props_uris(self, season: int, vendors: list) -> list:
         """
         Gera lista de URIs para player_props (um por vendor).
@@ -47,12 +63,15 @@ class BigQueryClient:
         Returns:
             Lista de URIs do GCS
         """
-        bucket = GCS_BUCKET_NAME
-        return [f"gs://{bucket}/nba/player_props/{season}/{vendor}/*.json" for vendor in vendors]
+        # Estrutura de escrita (get_gcs_path): nba/player_props/{season}/{market}/...json
+        return [f"{self.get_gcs_prefix('player_props', season)}/{vendor}/*.json" for vendor in vendors]
 
     def get_external_table_uri(self, endpoint: str, season: int, has_date: bool = False, category: str = None, type: str = None, market: str = None) -> str:
         """
-        Gera o URI do GCS para a external table.
+        Gera o URI do GCS (glob de LEITURA) para a external table.
+
+        O prefixo de diretório vem de get_gcs_prefix (fonte única, espelha a escrita
+        de get_gcs_path); aqui só se decide o padrão de wildcard/arquivo por endpoint.
 
         Args:
             endpoint: Nome do endpoint
@@ -65,21 +84,24 @@ class BigQueryClient:
         Returns:
             URI do GCS (gs://bucket/path)
         """
-        bucket = GCS_BUCKET_NAME
+        prefix = self.get_gcs_prefix(endpoint, season)
         if endpoint == "player_props":
             # Estrutura: nba/player_props/{season}/{market}/*.json
-            uri = f"gs://{bucket}/nba/{endpoint}/{season}/{market}/*.json"
+            uri = f"{prefix}/{market}/*.json"
         elif has_date:
-            # Para endpoints com data, usa wildcard para ler todos os arquivos
-            uri = f"gs://{bucket}/nba/{endpoint}/{season}/*.json"
+            # Endpoints por data: um único wildcard cobre os arquivos por data E os que
+            # get_gcs_path grava em subdiretório q{period}/ (game_player_stats_period) —
+            # o `*` do BigQuery casa inclusive a barra, então {season}/*.json também
+            # captura {season}/q{period}/...json. Antes este glob omitia o q{period}/.
+            uri = f"{prefix}/*.json"
         elif endpoint in ("season_averages", "team_season_averages") and category and type:
             # Para season_averages e team_season_averages, cria URI específico para cada combinação category-type
             # Formato: raw_nba_{endpoint}_{season}-{category}-{type}.json
-            uri = f"gs://{bucket}/nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}-{category}-{type}-*.json"
+            uri = f"{prefix}/raw_nba_{endpoint}_{season}-{category}-{type}-*.json"
         else:
             # Para endpoints sem data, lê um arquivo específico
-            uri = f"gs://{bucket}/nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}.json"
-        
+            uri = f"{prefix}/raw_nba_{endpoint}_{season}.json"
+
         return uri
     
     def create_dataset_if_not_exists(
@@ -134,28 +156,60 @@ class BigQueryClient:
         dataset_ref = bigquery.DatasetReference(self.client.project, self.dataset_id)
         table_ref = dataset_ref.table(table_id)
 
-        # Deleta e recria sempre para garantir que o autodetect releia o schema atual dos arquivos.
-        # UPDATE de external table com autodetect não força re-detecção, podendo manter schema desatualizado.
+        def _build_table(ref) -> bigquery.Table:
+            """Monta o objeto Table (external config) para um dado table_ref."""
+            tbl = bigquery.Table(ref)
+            external_config = bigquery.ExternalConfig(bigquery.SourceFormat.NEWLINE_DELIMITED_JSON)
+            external_config.source_uris = source_uris
+            external_config.ignore_unknown_values = True
+            if schema:
+                external_config.schema = schema
+            else:
+                external_config.autodetect = True
+            tbl.external_data_configuration = external_config
+            tbl.description = description
+            return tbl
+
+        # External tables precisam ser RECRIADAS (não basta UPDATE): com autodetect o
+        # UPDATE não força re-detecção e mantém schema desatualizado. Antes fazíamos
+        # delete + create direto, mas se o create falhasse (URI sem arquivos, schema
+        # inválido, erro transitório/IAM) a tabela ficava AUSENTE até o próximo run,
+        # quebrando dbt/sync downstream.
+        #
+        # Swap quase-atômico: cria primeiro numa tabela temporária (valida URI/schema
+        # SEM tocar na tabela boa); só então remove a antiga e cria a definitiva. Se o
+        # create temporário falhar, a tabela original permanece intacta e a exceção
+        # propaga (o agregador a marca como False / o script retorna exit 1).
+        tmp_table_id = f"{table_id}__tmp_swap"
+        tmp_ref = dataset_ref.table(tmp_table_id)
+
+        # Garante que não sobrou um temp de uma execução anterior interrompida.
         try:
-            self.client.delete_table(table_ref)
-            logger.info(f"Tabela {self.dataset_id}.{table_id} removida para recriação")
+            self.client.delete_table(tmp_ref)
         except NotFound:
             pass
 
-        table = bigquery.Table(table_ref)
-        external_config = bigquery.ExternalConfig(bigquery.SourceFormat.NEWLINE_DELIMITED_JSON)
-        external_config.source_uris = source_uris
-        external_config.ignore_unknown_values = True
-        if schema:
-            external_config.schema = schema
-        else:
-            external_config.autodetect = True
-        table.external_data_configuration = external_config
-        table.description = description
+        # Passo 1: cria a temporária. Falha aqui NÃO afeta a tabela boa existente.
+        self.client.create_table(_build_table(tmp_ref))
 
-        table = self.client.create_table(table)
-        logger.info(f"✓ Tabela {self.dataset_id}.{table_id} criada")
-        return table
+        try:
+            # Passo 2: remove a antiga (se existir) e cria a definitiva. A janela em que
+            # a tabela "real" fica ausente é mínima (entre o delete e o create abaixo).
+            try:
+                self.client.delete_table(table_ref)
+                logger.info(f"Tabela {self.dataset_id}.{table_id} removida para recriação")
+            except NotFound:
+                pass
+
+            table = self.client.create_table(_build_table(table_ref))
+            logger.info(f"✓ Tabela {self.dataset_id}.{table_id} criada")
+            return table
+        finally:
+            # Limpa a temporária em qualquer caso (sucesso ou falha do passo 2).
+            try:
+                self.client.delete_table(tmp_ref)
+            except NotFound:
+                pass
     
     def create_all_external_tables(
         self,
@@ -179,42 +233,11 @@ class BigQueryClient:
         endpoints_to_process = endpoints or list(ENDPOINT_CONFIGS.keys())
         
         results = {}
-        
-        # Combinações de season_averages
-        SEASON_AVERAGES_COMBINATIONS = [
-            {"category": "general", "type": "base"},
-            {"category": "general", "type": "advanced"},
-            {"category": "shooting", "type": "by_zone"},
-            {"category": "tracking", "type": "passing"},
-        ]
-        # Combinações de team_season_averages
-        TEAM_SEASON_AVERAGES_COMBINATIONS = [
-            {"category": "general",   "type": "advanced"},
-            {"category": "general",   "type": "opponent"},
-            {"category": "general",   "type": "defense"},
-            {"category": "tracking",  "type": "rebounding"},
-            # Opp Rankings — Play Types
-            {"category": "playtype",     "type": "isolation"},
-            {"category": "playtype",     "type": "transition"},
-            {"category": "playtype",     "type": "spotup"},
-            {"category": "playtype",     "type": "handoff"},
-            {"category": "playtype",     "type": "cut"},
-            {"category": "playtype",     "type": "offscreen"},
-            {"category": "playtype",     "type": "postup"},
-            {"category": "playtype",     "type": "prballhandler"},
-            {"category": "playtype",     "type": "prrollman"},
-            {"category": "playtype",     "type": "offrebound"},
-            # Opp Rankings — Hustle / Rim Protection
-            {"category": "hustle",       "type": "overall"},
-            {"category": "tracking",     "type": "defense"},
-            # Opp Rankings — C&S / Pull Up
-            {"category": "shotdashboard", "type": "catch_and_shoot"},
-            {"category": "shotdashboard", "type": "pullups"},
-            # Opp Rankings — Shooting cedido (defesa por zona / faixa de distância)
-            {"category": "shooting", "type": "by_zone_opponent"},
-            {"category": "shooting", "type": "5ft_range_opponent"},
-        ]
-        
+
+        # Combos de (team_)season_averages: FONTE ÚNICA em src.config (importados no
+        # topo). A extração (scripts) e a criação das external tables consomem a mesma
+        # lista — antes estavam duplicadas aqui, exigindo sincronização manual.
+
         for endpoint in endpoints_to_process:
             if endpoint not in ENDPOINT_CONFIGS:
                 logger.warning(f"Endpoint {endpoint} não encontrado na configuração. Pulando...")
@@ -343,7 +366,7 @@ class BigQueryClient:
                             )
                 elif endpoint == "betting_odds":
                     # betting_odds: todos os vendors num único wildcard por game_id
-                    uri = f"gs://{GCS_BUCKET_NAME}/nba/betting_odds/{season}/*.json"
+                    uri = f"{self.get_gcs_prefix('betting_odds', season)}/*.json"
                     table_id = "raw_betting_odds"
                     description = "External table para dados brutos de betting odds (spread, moneyline, total) - todos os vendors"
                     self.create_external_table(
