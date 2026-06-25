@@ -33,7 +33,7 @@ def notify_execution(request):
     msg["From"] = GMAIL_USER
     msg["To"] = NOTIFY_EMAIL
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
         smtp.login(GMAIL_USER, GMAIL_APP_PASSWORD)
         smtp.sendmail(GMAIL_USER, NOTIFY_EMAIL, msg.as_string())
 
