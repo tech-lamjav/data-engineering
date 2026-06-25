@@ -5,12 +5,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.bigquery import BigQueryClient
-from src.config import SEASON, ENDPOINT_CONFIGS
+from src.config import SEASON, ENDPOINT_CONFIGS, BIGQUERY_DATASET_SANDBOX, GCP_PROJECT_ID
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-SANDBOX_DATASET = "sandbox"
+SANDBOX_DATASET = BIGQUERY_DATASET_SANDBOX
 
 
 def main():
@@ -20,7 +20,7 @@ def main():
 
         logger.info("=" * 60)
         logger.info("Criando external tables no dataset sandbox")
-        logger.info(f"Projeto: smartbetting-dados")
+        logger.info(f"Projeto: {GCP_PROJECT_ID}")
         logger.info(f"Dataset: {SANDBOX_DATASET}")
         logger.info(f"Temporada: {season}")
         logger.info("=" * 60)

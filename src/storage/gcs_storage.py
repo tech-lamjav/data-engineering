@@ -22,23 +22,9 @@ class GCSStorage:
         """
         self.bucket_name = bucket_name or GCS_BUCKET_NAME
         
-        # Inicializa cliente do GCS
-        # Usa Application Default Credentials (ADC) se GCS_USE_ADC for True
-        if GCS_USE_ADC:
-            # Se project_id estiver definido, usa explicitamente
-            if GCP_PROJECT_ID:
-                self.client = storage.Client(project=GCP_PROJECT_ID)
-            else:
-                self.client = storage.Client()
-        else:
-            # Alternativa: usar service account key file
-            # self.client = storage.Client.from_service_account_json(
-            #     os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-            # )
-            if GCP_PROJECT_ID:
-                self.client = storage.Client(project=GCP_PROJECT_ID)
-            else:
-                self.client = storage.Client()
+        # Inicializa cliente do GCS via Application Default Credentials (ADC).
+        # (Os dois ramos do antigo GCS_USE_ADC eram idênticos — dead code removido.)
+        self.client = storage.Client(project=GCP_PROJECT_ID) if GCP_PROJECT_ID else storage.Client()
         
         # Obtém ou cria o bucket
         try:

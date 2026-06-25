@@ -142,7 +142,6 @@ class BaseClient:
         all_data = []
         page = 1
         cursor = None
-        use_cursor_pagination = False
         base_url = (base_url_override or self.base_url).rstrip("/")
 
         # Copia defensiva: não mutar o dict do chamador (acrescentamos per_page/page/cursor).
@@ -164,7 +163,14 @@ class BaseClient:
             
             url = f"{base_url}/{endpoint.lstrip('/')}"
             response = self._execute_request("GET", url, params=params)
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError:
+                logger.error(
+                    f"Resposta nao-JSON do endpoint {endpoint} "
+                    f"(status {response.status_code}, corpo[:200]={response.text[:200]!r})"
+                )
+                raise
             
             # A API retorna dados em formato {'data': [...], 'meta': {...}}
             if isinstance(data, dict):
@@ -203,11 +209,7 @@ class BaseClient:
                 total_pages = meta.get("total_pages")
                 
                 if next_cursor is not None:
-                    # API usa cursor-based pagination
-                    if not use_cursor_pagination:
-                        use_cursor_pagination = True
-                        logger.info("API usa paginação por cursor. Mudando para modo cursor-based.")
-                    
+                    # API usa paginação por cursor
                     cursor = next_cursor
                     if not cursor:  # cursor vazio ou None indica fim
                         logger.info("Cursor vazio/nulo. Todas as páginas coletadas.")

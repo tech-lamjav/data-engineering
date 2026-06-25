@@ -1,4 +1,9 @@
 -- ============================================================
+-- [DEPRECATED] NÃO é a fonte de verdade. As external tables são criadas pelos
+-- geradores Python: scripts/create_bigquery_external_tables.py (NBA) e
+-- scripts/futebol/create_external_tables.py (futebol). Este .sql tem
+-- project/dataset/location hardcoded e PODE divergir — mantido só como referência.
+-- ------------------------------------------------------------
 -- Script SQL para criar external tables no BigQuery
 -- Dataset: nba
 -- Project: smartbetting-dados

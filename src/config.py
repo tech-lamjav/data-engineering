@@ -170,10 +170,11 @@ GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 GCS_USE_ADC = True  # Application Default Credentials
 
 # BigQuery Configuration
-BIGQUERY_PROJECT_ID = "smartbetting-dados"
-BIGQUERY_DATASET = "nba"
-BIGQUERY_DATASET_FUTEBOL = "futebol"
-BIGQUERY_LOCATION = "us-east1"
+BIGQUERY_PROJECT_ID = os.getenv("BIGQUERY_PROJECT_ID", "smartbetting-dados")
+BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "nba")
+BIGQUERY_DATASET_FUTEBOL = os.getenv("BIGQUERY_DATASET_FUTEBOL", "futebol")
+BIGQUERY_LOCATION = os.getenv("BIGQUERY_LOCATION", "us-east1")
+BIGQUERY_DATASET_SANDBOX = os.getenv("BIGQUERY_DATASET_SANDBOX", "sandbox")
 
 # Supabase Postgres sync configuration
 # Connection strings DEVEM usar porta 5432 (sessão direta), NÃO 6543 (pgbouncer):
@@ -228,7 +229,10 @@ MART_TABLES_ORDERED = [
 ]
 
 # Season Configuration
-SEASON = int(os.getenv("SEASON", "2025"))
+try:
+    SEASON = int(os.getenv("SEASON", "2025"))
+except (TypeError, ValueError) as e:
+    raise RuntimeError(f"SEASON inválido: {os.getenv('SEASON')!r} (esperado inteiro)") from e
 
 # Temporadas a extrair (backfill + corrente)
 SEASONS = [2023, 2024, 2025]
@@ -342,6 +346,7 @@ def get_gcs_path(
         category: Categoria para season_averages (opcional)
         type: Tipo para season_averages (opcional)
         season_type: Tipo de temporada para season_averages (ex: regular, playoffs, ist)
+        period: Quarto/período (NBA) — grava em subdiretório q{period}/ quando combinado com date
         sport: Identificador do esporte ("nba" default, "futebol" para API-Football)
         mode: Sufixo de modo para endpoints futebol ("current"|"backfill"), opcional
 
