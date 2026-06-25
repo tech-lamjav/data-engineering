@@ -41,14 +41,23 @@ main:
         try:
             steps:
             - call_extract_odds:
-                call: http.get
-                args:
-                    # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
-                    url: https://extract-odds-r52p4w2f2a-ue.a.run.app
-                    auth:
-                        type: OIDC
-                    timeout: 1800
-                result: odds_result
+                try:
+                    call: http.get
+                    args:
+                        # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                        url: https://extract-odds-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        timeout: 1800
+                    result: odds_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - read_saved_count:
                 assign:
                 - saved_count: ${default(map.get(odds_result.body, "saved_count"), 0)}
@@ -107,14 +116,23 @@ main:
                 - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
                 - job_full_name: ${"projects/" + project_id + "/locations/us-east1/jobs/dbt-futebol"}
             - execute_cloud_run_job:
-                call: googleapis.run.v2.projects.locations.jobs.run
-                args:
-                    name: ${job_full_name}
-                    body:
-                        overrides:
-                            containerOverrides:
-                                - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
-                result: job_execution_result
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: job_execution_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_job_success:
                 call: sys.log
                 args:

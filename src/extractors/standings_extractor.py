@@ -102,6 +102,12 @@ class StandingsExtractor(BaseExtractor):
             f"Coletadas {len(rows)} linhas (mode={self.mode}, alvos={len(self.targets)}, "
             f"{empty} sem standings, {failed} com erro)."
         )
+        if failed:
+            # Resumo de FALHA distinto de 'sem standings': sinaliza erro real (quota/5xx/GCS).
+            logger.error(
+                f"RESUMO DE FALHA — standings (mode={self.mode}): {failed} alvo(s) falharam "
+                f"de {len(self.targets)}. Snapshot pode estar incompleto — re-executar."
+            )
         return {"total_rows": len(rows), "standings": rows}
 
     def extract_and_save(self, **kwargs) -> str:

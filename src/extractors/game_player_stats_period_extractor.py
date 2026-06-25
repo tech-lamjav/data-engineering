@@ -1,8 +1,8 @@
 """Extractor para estatísticas de jogadores por jogo por período (quarto)."""
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from src.extractors.base_extractor import BaseExtractor
-from src.config import NBA_SEASON_END_DATES, get_season_type_for_date
+from src.config import get_season_type_for_date
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -88,29 +88,14 @@ class GamePlayerStatsPeriodExtractor(BaseExtractor):
             period=period,
         )
 
-    def _get_season_date_range(self) -> List[str]:
-        """
-        Gera lista de datas da temporada NBA (outubro do mesmo ano até a data de hoje).
-
-        Returns:
-            Lista de datas no formato YYYY-MM-DD
-        """
-        start_date = datetime(self.season, 10, 21)
-        end_str = NBA_SEASON_END_DATES.get(self.season)
-        end_date = datetime.strptime(end_str, "%Y-%m-%d") if end_str else datetime.now(timezone.utc).replace(tzinfo=None)
-
-        dates = []
-        current = start_date
-        while current <= end_date:
-            dates.append(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
-
-        return dates
-
     def extract_and_save(self, **kwargs) -> List[str]:
         """
         Extrai dados por data × período, salvando um arquivo por combinação.
         Skipa combinações sem stats para não criar arquivos vazios.
+
+        Usa o range compartilhado da BaseExtractor (_get_season_date_range). O loop é
+        especializado (data × período), mas distingue 'combinação sem dados' de
+        'combinação falhou': acumula `failed` e emite um ERROR de RESUMO distinto.
 
         Returns:
             Lista de caminhos completos dos arquivos salvos no GCS
@@ -123,6 +108,7 @@ class GamePlayerStatsPeriodExtractor(BaseExtractor):
 
         saved_paths = []
         skipped = []
+        failed = []
 
         for game_date in dates:
             for period in periods:
@@ -157,11 +143,17 @@ class GamePlayerStatsPeriodExtractor(BaseExtractor):
                         f"Erro ao processar {game_date} Q{period}: {str(e)}",
                         exc_info=True,
                     )
+                    failed.append((game_date, period))
                     continue
 
         logger.info("=" * 60)
         logger.info(f"Extração concluída: {len(saved_paths)} arquivo(s) salvo(s)")
         if skipped:
             logger.info(f"Combinações sem dados: {len(skipped)}")
+        if failed:
+            logger.error(
+                f"RESUMO DE FALHA — {self.endpoint_name}: {len(failed)} combinação(ões) "
+                f"data×período falharam ({failed[:5]}...). Dados podem estar incompletos — re-executar."
+            )
 
         return saved_paths

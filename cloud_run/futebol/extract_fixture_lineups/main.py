@@ -38,6 +38,6 @@ def extract_fixture_lineups(request):
             "mode": mode,
             "saved_count": len(paths),
             "message": "Pipeline executed successfully",
-        }
+        }, 200
     except Exception as e:
         return {"status": "error", "error": str(e)}, 500

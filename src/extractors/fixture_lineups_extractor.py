@@ -171,4 +171,11 @@ class FixtureLineupsExtractor(BaseExtractor):
             f"{len(saved_paths)} salvos, {skipped} pulados (já existem), "
             f"{empty} vazios, {failed} com erro (re-tentar)."
         )
+        if failed:
+            # Resumo de FALHA distinto de 'vazio': sinaliza erro real (timeout/5xx/GCS).
+            logger.error(
+                f"RESUMO DE FALHA — fixture_lineups (mode={self.mode}, phase={self.phase}): "
+                f"{failed} fixture(s) falharam de {len(fixtures)}. "
+                "Dados podem estar incompletos — re-executar."
+            )
         return saved_paths

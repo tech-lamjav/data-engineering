@@ -120,4 +120,11 @@ class PerFixtureExtractor(BaseExtractor):
             f"{self.endpoint_name} concluído (mode={self.mode}): {len(saved_paths)} salvos, "
             f"{skipped} pulados (já existem), {empty} vazios, {failed} com erro (re-tentar)."
         )
+        if failed:
+            # Resumo de FALHA distinto de 'vazio': sinaliza erro real (timeout/5xx/GCS),
+            # não jogo sem dados populados ainda — para o resumo diário não confundir os dois.
+            logger.error(
+                f"RESUMO DE FALHA — {self.endpoint_name} (mode={self.mode}): {failed} fixture(s) "
+                f"falharam de {len(fixtures)}. Dados podem estar incompletos — re-executar."
+            )
         return saved_paths

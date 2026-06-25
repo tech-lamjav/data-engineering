@@ -4,7 +4,6 @@ Sem argparse (regra `.cursorrules`). Modo via env var `INJURIES_MODE`:
 - current (default): ano corrente — snapshot diário (schedule)
 - backfill: anos anteriores — one-shot manual
 """
-import os
 import sys
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.extractors.injuries_extractor import InjuriesExtractor
+from src.config import get_mode
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -19,10 +19,13 @@ logger = setup_logger(__name__)
 
 def main():
     try:
-        mode = os.getenv("INJURIES_MODE", "current")
+        mode = get_mode("INJURIES_MODE")
         logger.info(f"Iniciando extract_injuries (mode={mode})")
         gcs_path = InjuriesExtractor(mode=mode).extract_and_save()
-        logger.info(f"✓ Concluído: {gcs_path}")
+        if not gcs_path:
+            logger.warning("extract_injuries: extração retornou vazio (nada gravado).")
+        else:
+            logger.info(f"✓ Concluído: {gcs_path}")
         return 0
     except Exception as e:
         logger.error(f"✗ Erro na extração: {str(e)}", exc_info=True)

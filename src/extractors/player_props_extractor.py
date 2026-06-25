@@ -1,7 +1,13 @@
 """Extractor para props de jogadores."""
+import time
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from src.extractors.base_extractor import BaseExtractor
+from src.config import (
+    get_gcs_path,
+    NBA_PER_GAME_REFETCH_WINDOW_DAYS,
+    NBA_PER_GAME_SLEEP_SECONDS,
+)
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -82,36 +88,56 @@ class PlayerPropsExtractor(BaseExtractor):
             return []
         
         logger.info(f"Encontrados {len(game_ids)} game_ids para processar")
-        
+
         # Se vendors não fornecido, usa todos os vendors configurados
         if not vendors:
             vendors = self.vendors
 
+        # Skip-if-exists + janela de re-fetch (igual aos per-fixture de futebol):
+        # combinações (game_id, vendor) já salvas de jogos antigos são puladas; jogos
+        # recentes (ou sem data conhecida) são re-buscados (props ainda podem mudar).
+        game_dates = self.storage.get_game_dates_from_storage(self.season)
+        cutoff = datetime.now(timezone.utc).date() - timedelta(
+            days=NBA_PER_GAME_REFETCH_WINDOW_DAYS
+        )
+
         saved_paths = []
         skipped_games = []
-        
+        skipped_exists = 0
+        failed_games = []
+
         # Processa cada game_id e cada vendor
         for game_id in game_ids:
+            game_date = self._parse_date(game_dates.get(game_id))
+            is_recent = game_date is None or game_date >= cutoff
             for vendor in vendors:
                 try:
+                    blob_path = get_gcs_path(
+                        self.endpoint_name, self.season, market=vendor, game_id=game_id
+                    )
+                    if not is_recent and self.storage.bucket.blob(blob_path).exists():
+                        skipped_exists += 1
+                        continue
+
                     logger.info(f"=" * 60)
                     logger.info(f"Processando game_id {game_id} - vendor {vendor}...")
-                    
+
                     # Extrai props para este game_id e vendor
                     data = self.extract(
                         game_id=game_id,
                         vendors=[vendor],
                         **{k: v for k, v in kwargs.items() if k != "vendors"}
                     )
+                    time.sleep(NBA_PER_GAME_SLEEP_SECONDS)  # cortesia entre chamadas
                     props = data.get("props", [])
-                    
+
                     if not props:
                         logger.info(f"Nenhuma prop encontrada para game_id {game_id} - vendor {vendor}. Pulando...")
                         skipped_games.append((game_id, vendor))
                         continue
-                    
+
                     logger.info(f"Coletadas {len(props)} props para game_id {game_id} - vendor {vendor}")
-                    
+
                     # Salva imediatamente
                     game_data = {
                         "season": self.season,
@@ -120,21 +146,38 @@ class PlayerPropsExtractor(BaseExtractor):
                         "total_props": len(props),
                         "props": props,
                     }
-                    
+
                     gcs_path = self.save_to_gcs(game_data, market=vendor, game_id=game_id)
                     saved_paths.append(gcs_path)
                     logger.info(f"✓ Arquivo salvo: {gcs_path}")
-                    
+
                 except Exception as e:
                     logger.error(f"Erro ao processar game_id {game_id} - vendor {vendor}: {str(e)}", exc_info=True)
+                    failed_games.append((game_id, vendor))
                     continue
-        
+
         logger.info(f"=" * 60)
-        logger.info(f"Extração concluída: {len(saved_paths)} arquivo(s) salvo(s)")
-        if skipped_games:
-            logger.info(f"Game/vendor sem dados: {len(skipped_games)}")
-        
+        logger.info(
+            f"Extração concluída: {len(saved_paths)} salvos, {skipped_exists} pulados "
+            f"(já existem), {len(skipped_games)} sem props, {len(failed_games)} com erro."
+        )
+        if failed_games:
+            logger.error(
+                f"RESUMO DE FALHA — {self.endpoint_name}: {len(failed_games)} combinação(ões) "
+                f"game/vendor falharam ({failed_games[:5]}...). Dados podem estar incompletos — re-executar."
+            )
+
         return saved_paths
+
+    @staticmethod
+    def _parse_date(date_str: Optional[str]):
+        """Converte 'YYYY-MM-DD' em date; None se ausente/inválida (re-busca p/ segurança)."""
+        if not date_str:
+            return None
+        try:
+            return datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return None
     
     def save_to_gcs(
         self,

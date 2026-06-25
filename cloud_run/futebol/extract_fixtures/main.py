@@ -27,12 +27,21 @@ def extract_fixtures(request):
     """
     try:
         mode = request.args.get("mode", "current")
-        # Propaga via env var (script lê FIXTURES_MODE)
+        # O script lê o modo de FIXTURES_MODE dentro do main(). Setamos a env var
+        # imediatamente antes da chamada e restauramos no finally, evitando que o
+        # valor vaze para requisições subsequentes na mesma instância (warm).
+        # (Eliminar a mutação por completo exigiria main() aceitar `mode` — fora deste escopo.)
+        _prev_mode = os.environ.get("FIXTURES_MODE")
         os.environ["FIXTURES_MODE"] = mode
-
-        result_code = extract_main()
+        try:
+            result_code = extract_main()
+        finally:
+            if _prev_mode is None:
+                os.environ.pop("FIXTURES_MODE", None)
+            else:
+                os.environ["FIXTURES_MODE"] = _prev_mode
         if result_code == 0:
-            return {"status": "success", "mode": mode, "message": "Pipeline executed successfully"}
+            return {"status": "success", "mode": mode, "message": "Pipeline executed successfully"}, 200
         else:
             return {"status": "error", "mode": mode, "message": "Pipeline execution failed"}, 500
     except Exception as e:

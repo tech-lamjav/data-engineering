@@ -1,7 +1,13 @@
 """Cliente específico para a API balldontlie.io."""
 from typing import Dict, Any, Optional, List
 from src.clients.base_client import BaseClient
-from src.config import API_BASE_URL, API_BASE_URL_NBA, API_BASE_URL_NBA_V2, API_KEY
+from src.config import (
+    API_BASE_URL,
+    API_BASE_URL_NBA,
+    API_BASE_URL_NBA_V2,
+    API_BASE_URL_V2,
+    API_KEY,
+)
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -267,68 +273,69 @@ class BallDontLieClient(BaseClient):
         player_id: Optional[int] = None,
         prop_type: Optional[str] = None,
         vendors: Optional[List[str]] = None,
+        per_page: int = 100,
     ) -> List[Dict[str, Any]]:
         """
         Busca props de jogadores para um jogo específico.
-        
+
+        Os endpoints v2 de odds (/odds/player_props e /odds) usam o mesmo envelope
+        paginado ({data, meta}) dos demais endpoints balldontlie. Antes este método
+        fazia UMA chamada e retornava data['data'], truncando silenciosamente props
+        além da 1ª página (achado #4). Agora roteamos por get_paginated, que lê
+        meta.next_cursor/total_pages e envia per_page=100.
+
         Args:
             game_id: ID do jogo (obrigatório)
             player_id: ID do jogador (opcional)
             prop_type: Tipo de prop (opcional)
             vendors: Lista de vendors (opcional, ex: ["draftkings", "betway"])
-        
+            per_page: Itens por página
+
         Returns:
-            Lista de props
+            Lista de props (todas as páginas consolidadas)
         """
-        from src.config import API_BASE_URL_V2
-        
-        params = {"game_id": game_id}
-        
+        params: Dict[str, Any] = {"game_id": game_id}
+
         if player_id:
             params["player_id"] = player_id
-        
+
         if prop_type:
             params["prop_type"] = prop_type
-        
+
         if vendors:
             params["vendors[]"] = vendors
-        
-        url = f"{API_BASE_URL_V2}/odds/player_props"
-        response = self._execute_request("GET", url, params=params)
-        data = response.json()
-        
-        # A API v2 retorna diretamente uma lista ou um objeto com 'data'
-        if isinstance(data, list):
-            return data
-        elif isinstance(data, dict):
-            return data.get("data", [])
-        else:
-            return []
+
+        return self.get_paginated(
+            "odds/player_props",
+            params=params,
+            per_page=per_page,
+            base_url_override=API_BASE_URL_V2,
+        )
 
     def get_betting_odds(
         self,
         game_id: int,
+        per_page: int = 100,
     ) -> List[Dict[str, Any]]:
         """
         Busca odds de apostas para um jogo específico (todos os vendors).
 
+        Como get_player_props, agora pagina via get_paginated (cursor/page + per_page=100)
+        em vez de uma única chamada que truncava odds além da 1ª página (achado #4).
+
         Args:
             game_id: ID do jogo (obrigatório)
+            per_page: Itens por página
 
         Returns:
-            Lista de odds (spread, moneyline, total) por vendor
+            Lista de odds (spread, moneyline, total) por vendor (todas as páginas)
         """
-        from src.config import API_BASE_URL_V2
+        params: Dict[str, Any] = {"game_ids[]": [game_id]}
 
-        params = {"game_ids[]": [game_id]}
-        url = f"{API_BASE_URL_V2}/odds"
-        response = self._execute_request("GET", url, params=params)
-        data = response.json()
-
-        if isinstance(data, list):
-            return data
-        elif isinstance(data, dict):
-            return data.get("data", [])
-        else:
-            return []
+        return self.get_paginated(
+            "odds",
+            params=params,
+            per_page=per_page,
+            base_url_override=API_BASE_URL_V2,
+        )
 

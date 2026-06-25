@@ -4,16 +4,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import os
 from src.extractors.game_player_stats_extractor import GamePlayerStatsExtractor
-from src.config import SEASON, SEASONS
+from src.config import get_seasons_to_process
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-# BACKFILL_SEASONS=1 → itera todas as seasons (uso pontual/backfill)
+# BACKFILL_SEASONS truthy → itera todas as seasons (uso pontual/backfill)
 # Sem a var → usa apenas SEASON do .env (comportamento padrão para Cloud Run)
-_seasons = SEASONS if os.getenv("BACKFILL_SEASONS") else [SEASON]
+_seasons = get_seasons_to_process()
 
 
 def main():

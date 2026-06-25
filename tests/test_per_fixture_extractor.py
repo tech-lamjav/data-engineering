@@ -3,6 +3,7 @@
 Usa FixtureStatisticsExtractor como representante (os 3 compartilham o mesmo loop).
 Infra (GCS/API) é mockada — nenhum acesso de rede.
 """
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -86,3 +87,34 @@ def test_erro_por_fixture_nao_aborta_os_demais(ext):
     paths = ext.extract_and_save()
 
     assert len(paths) == 1
+
+
+def test_falha_emite_resumo_error_distinto_de_vazio(ext, caplog):
+    """Achado #3: falha por fixture é contabilizada e gera ERROR de RESUMO."""
+    ext.storage.get_fixture_ids_from_storage.return_value = [
+        {"fixture_id": 1, "date_utc": "2025-01-01"},
+        {"fixture_id": 2, "date_utc": "2025-01-02"},
+    ]
+    ext.storage.bucket.blob.return_value.exists.return_value = False
+    ext.client.get_fixture_statistics.side_effect = [RuntimeError("503"), _envelope_com_dados()]
+    ext.storage.upload_json.side_effect = lambda **kw: f"gs://b/{kw['game_id']}.json"
+
+    with caplog.at_level(logging.ERROR):
+        paths = ext.extract_and_save()
+
+    assert len(paths) == 1
+    assert any("RESUMO DE FALHA" in r.message for r in caplog.records if r.levelno == logging.ERROR)
+
+
+def test_sem_falha_nao_emite_resumo_error(ext, caplog):
+    """Vazio (jogo sem dados ainda) NÃO deve gerar ERROR de RESUMO."""
+    ext.storage.get_fixture_ids_from_storage.return_value = [
+        {"fixture_id": 1, "date_utc": "2025-01-01"},
+    ]
+    ext.storage.bucket.blob.return_value.exists.return_value = False
+    ext.client.get_fixture_statistics.return_value = {"errors": None, "response": []}
+
+    with caplog.at_level(logging.ERROR):
+        ext.extract_and_save()
+
+    assert not any("RESUMO DE FALHA" in r.message for r in caplog.records)

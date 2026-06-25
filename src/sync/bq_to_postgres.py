@@ -9,11 +9,11 @@ Decisões de design (ver PLANO_OTIMIZACAO_BQ_SUPABASE.md fase 2):
   config.py) para minimizar janela de inconsistência cross-table.
 - TRUNCATE + COPY dentro de uma única transação por tabela: leitores veem dados
   velhos ou novos, nunca parciais.
+- COPY TIPADO do psycopg3 (`cur.copy(...).write_row(row)`): serializa tipos e NULL
+  nativamente. Distingue None (NULL) de '' (string vazia real) — resolve o M11, em
+  que o CSV textual com `NULL ''` colapsava ambos no mesmo token. Também faz
+  streaming linha-a-linha (sem materializar a tabela inteira em StringIO).
 """
-import csv
-import io
-from datetime import date, datetime
-from decimal import Decimal
 from typing import Iterable
 
 import psycopg
@@ -192,24 +192,24 @@ def check_schema_parity(
 
 
 # ============================================================
-# Formatação de valor para CSV (COPY FROM STDIN)
+# Normalização de valor para COPY tipado (psycopg3)
 # ============================================================
-def _format_value(v) -> str:
-    """Formata valor Python para célula CSV compatível com COPY ... NULL ''.
+def _format_value(v):
+    """Normaliza valor vindo do BQ para o COPY TIPADO do psycopg3.
 
-    None -> string vazia (vira NULL no Postgres via NULL '').
-    bool -> 'true'/'false'.
-    date/datetime -> ISO.
+    O COPY tipado (`copy.write_row`) serializa tipos Python e NULL nativamente,
+    então a única responsabilidade aqui é repassar o valor preservando a
+    distinção semântica entre None e string vazia (M11):
+
+    - None  -> None  (vira NULL no Postgres).
+    - ''    -> ''    (string vazia REAL, distinta de NULL).
+    - demais tipos (bool, int, float, Decimal, date/datetime, str) são repassados
+      como estão; o psycopg3 cuida da serialização para o tipo da coluna.
+
+    Antes (M11): o CSV textual com `NULL ''` mapeava tanto None quanto '' para o
+    mesmo token vazio, corrompendo strings vazias para NULL no destino.
     """
-    if v is None:
-        return ""
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, (datetime, date)):
-        return v.isoformat()
-    if isinstance(v, Decimal):
-        return str(v)
-    return str(v)
+    return v
 
 
 # ============================================================
@@ -255,21 +255,29 @@ def _sync_one_table(
     bq: bigquery.Client,
     pg_conn,
     table_name: str,
+    force: bool = False,
 ) -> dict:
     """Sincroniza uma mart: TRUNCATE + COPY dentro de uma única transação.
 
     Skip-if-unchanged: se bq.get_table().modified <= last_synced_bq_modified_time
     em _sync_state, pula essa tabela (sem TRUNCATE, sem locking).
+
+    force=True (modo full-resync) ignora o skip-if-unchanged e re-sincroniza a
+    tabela mesmo que o BQ não tenha mudado — útil quando o Postgres sofreu drift
+    fora do sync (ex.: truncate manual) e o state ficaria pulando indefinidamente.
     """
     # Invariante de segurança: table_name vem SEMPRE da allowlist MART_TABLES_ORDERED
     # (via resolve_tables). O assert torna explícita a segurança das f-strings de SQL.
     assert table_name in MART_TABLES_ORDERED, f"tabela fora da allowlist: {table_name!r}"
     table_ref = f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{table_name}"
-    bq_table = bq.get_table(table_ref)
-    bq_modified = bq_table.modified  # timezone-aware datetime
+
+    # list_rows usa tabledata.list (grátis), não cria query job. O .table devolvido
+    # já carrega o schema, evitando uma segunda chamada bq.get_table só pelo modified.
+    rows_iter = bq.list_rows(table_ref)
+    bq_modified = rows_iter.table.modified  # timezone-aware datetime
 
     last_synced = _read_last_synced(pg_conn, table_name)
-    if last_synced is not None and bq_modified <= last_synced:
+    if not force and last_synced is not None and bq_modified <= last_synced:
         logger.info(
             f"Skip {table_name}: BQ não mudou (modified={bq_modified.isoformat()}, "
             f"last_synced={last_synced.isoformat()})"
@@ -277,21 +285,11 @@ def _sync_one_table(
         return {"table": table_name, "rows": 0, "skipped": True}
 
     logger.info(
-        f"Sincronizando {table_name} (BQ modified={bq_modified.isoformat()})"
+        f"Sincronizando {table_name} (BQ modified={bq_modified.isoformat()}"
+        f"{', force=True' if force else ''})"
     )
 
-    # list_rows usa tabledata.list (grátis), não cria query job.
-    rows_iter = bq.list_rows(table_ref)
     columns = [field.name for field in rows_iter.schema]
-
-    buf = io.StringIO()
-    writer = csv.writer(buf, lineterminator="\n")
-    row_count = 0
-    for row in rows_iter:
-        writer.writerow([_format_value(row[c]) for c in columns])
-        row_count += 1
-
-    buf.seek(0)
     column_list = ", ".join(f'"{c}"' for c in columns)
 
     with pg_conn.cursor() as cur:
@@ -299,11 +297,15 @@ def _sync_one_table(
         # ficam numa única transação. Se qualquer passo falhar, rollback total
         # mantém o state consistente com o dado.
         cur.execute(f'TRUNCATE TABLE "{MART_PG_SCHEMA}"."{table_name}"')
+        # COPY TIPADO: write_row recebe a tupla nativa (None vira NULL, '' fica '').
+        # Streaming linha-a-linha — não materializa a tabela inteira em memória.
+        row_count = 0
         with cur.copy(
-            f'COPY "{MART_PG_SCHEMA}"."{table_name}" ({column_list}) '
-            f"FROM STDIN WITH (FORMAT csv, NULL '')"
+            f'COPY "{MART_PG_SCHEMA}"."{table_name}" ({column_list}) FROM STDIN'
         ) as copy:
-            copy.write(buf.getvalue())
+            for row in rows_iter:
+                copy.write_row([_format_value(row[c]) for c in columns])
+                row_count += 1
         cur.execute(
             f"""
             INSERT INTO {_SYNC_STATE_TABLE}
@@ -327,6 +329,7 @@ def _sync_one_table(
 def run_sync(
     tables: str | Iterable[str] | None = None,
     env: str = "prd",
+    force: bool = False,
 ) -> dict:
     """Executa o sync. Roda pre-flight de schema parity antes de qualquer TRUNCATE.
 
@@ -334,6 +337,8 @@ def run_sync(
         tables: 'all' (default), CSV string, ou lista. Filtragem preserva
                 ordem canônica (dim -> fact -> derivada).
         env: 'prd' (default) ou 'dev'. Determina qual SUPABASE_PG_URL_* usar.
+        force: True ignora o skip-if-unchanged e força full-resync de todas as
+               tabelas resolvidas (recupera de drift no Postgres feito fora do sync).
 
     Returns:
         {status, env, synced: [...], drift: [...]}
@@ -344,6 +349,7 @@ def run_sync(
     resolved = resolve_tables(tables)
     logger.info(
         f"Sync solicitado env={env} para {len(resolved)} tabela(s): {resolved}"
+        f"{' (force/full-resync)' if force else ''}"
     )
 
     bq = bigquery.Client(project=BIGQUERY_PROJECT_ID)
@@ -368,7 +374,7 @@ def run_sync(
 
         synced: list[dict] = []
         for table in resolved:
-            result = _sync_one_table(bq, pg_conn, table)
+            result = _sync_one_table(bq, pg_conn, table, force=force)
             synced.append(result)
 
         n_synced = sum(1 for r in synced if not r.get("skipped"))

@@ -33,8 +33,14 @@ class FixturesExtractor(BaseExtractor):
         self.targets = FIXTURES_CURRENT if mode == "current" else FIXTURES_BACKFILL
 
     def extract(self, **kwargs) -> Dict[str, Any]:
-        """Itera sobre os targets e mescla resposta + metadata da request."""
+        """Itera sobre os targets e mescla resposta + metadata da request.
+
+        `failed_targets` separa 'liga falhou' (errors no envelope) de 'liga sem dados
+        legitimamente' (response vazio sem errors) — extract_and_save usa isso p/ NÃO
+        sobrescrever o arquivo bom no GCS quando um target obrigatório falha.
+        """
         fixtures = []
+        failed_targets = []
         for league_id, season in self.targets:
             logger.info(f"Extraindo league={league_id} season={season}...")
             envelope = self.client.get_fixtures(league_id, season)
@@ -44,6 +50,7 @@ class FixturesExtractor(BaseExtractor):
                 logger.error(
                     f"API errors para league={league_id} season={season}: {errors}"
                 )
+                failed_targets.append((league_id, season))
                 continue
 
             response = envelope.get("response", []) or []
@@ -67,17 +74,34 @@ class FixturesExtractor(BaseExtractor):
         return {
             "mode": self.mode,
             "total_fixtures": len(fixtures),
+            "failed_targets": failed_targets,
             "fixtures": fixtures,
         }
 
     def extract_and_save(self, **kwargs) -> str:
-        """Override: usa mode no path do GCS em vez de date."""
+        """Override: usa mode no path do GCS em vez de date.
+
+        fixtures é a TABELA MÃE (alimenta odds/predictions/stats/lineups, forward-only).
+        Se algum target obrigatório FALHOU (errors no envelope), NÃO sobrescreve o
+        snapshot bom anterior por um parcial — aborta com raise (o workflow marca
+        PARTIAL_FAILURE e o arquivo antigo é preservado). 'Liga sem dados' (response
+        vazio sem errors) é legítimo e não impede o save.
+        """
         logger.info(f"Iniciando extração fixtures (mode={self.mode})")
         data = self.extract(**kwargs)
+
+        failed_targets = data.get("failed_targets") or []
+        if failed_targets:
+            raise RuntimeError(
+                f"fixtures (mode={self.mode}): {len(failed_targets)} target(s) falharam "
+                f"({failed_targets}). Abortando p/ NÃO sobrescrever o arquivo bom no GCS "
+                "com coleta parcial (fixtures é tabela mãe). Re-executar."
+            )
 
         if data.get("total_fixtures", 0) == 0:
             logger.warning("Nenhuma fixture coletada — arquivo será uploadado vazio (metadata only)")
 
+        data.pop("failed_targets", None)  # controle interno, fora do payload
         gcs_path = self.storage.upload_json(
             data=data,
             endpoint="fixtures",

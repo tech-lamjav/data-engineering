@@ -47,9 +47,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_active_players_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-active-players failed"
+                                        error: ${e.message}
                             - handle_active_players_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -64,9 +79,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_game_player_stats_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-game-player-stats failed"
+                                        error: ${e.message}
                             - handle_game_player_stats_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -81,9 +111,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_game_player_stats_period_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-game-player-stats-period failed"
+                                        error: ${e.message}
                             - handle_game_player_stats_period_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -98,9 +143,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_games_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-games failed"
+                                        error: ${e.message}
                             - handle_games_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -115,9 +175,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_player_injuries_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-player-injuries failed"
+                                        error: ${e.message}
                             - handle_player_injuries_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -132,9 +207,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_player_props_draftkings_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-player-props-draftkings failed"
+                                        error: ${e.message}
                             - handle_player_props_draftkings_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -159,9 +249,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_player_props_caesars_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-player-props-caesars failed"
+                                        error: ${e.message}
                             - handle_player_props_caesars_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -176,9 +281,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_player_props_betrivers_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-player-props-betrivers failed"
+                                        error: ${e.message}
                             - handle_player_props_betrivers_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -193,9 +313,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_season_averages_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-season-averages failed"
+                                        error: ${e.message}
                             - handle_season_averages_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -210,9 +345,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_team_standings_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-team-standings failed"
+                                        error: ${e.message}
                             - handle_team_standings_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -227,9 +377,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_team_season_averages_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-team-season-averages failed"
+                                        error: ${e.message}
                             - handle_team_season_averages_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -244,9 +409,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_betting_odds_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-betting-odds failed"
+                                        error: ${e.message}
                             - handle_betting_odds_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -261,9 +441,24 @@ main:
                                 auth:
                                     type: OIDC
                                 timeout: 1800
+                        # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                        retry:
+                            predicate: ${http.default_retry_predicate}
+                            max_retries: 3
+                            backoff:
+                                initial_delay: 5
+                                max_delay: 60
+                                multiplier: 2
                         except:
                             as: e
                             steps:
+                            - log_game_player_advanced_stats_error:
+                                call: sys.log
+                                args:
+                                    severity: ERROR
+                                    data:
+                                        message: "extract-game-player-advanced-stats failed"
+                                        error: ${e.message}
                             - handle_game_player_advanced_stats_error:
                                 assign:
                                 - workflow_status: "PARTIAL_FAILURE"
@@ -291,10 +486,19 @@ main:
                         job_name: ${job_name}
 
             - execute_cloud_run_job:
-                call: googleapis.run.v2.projects.locations.jobs.run
-                args:
-                    name: ${job_full_name}
-                result: job_execution_result
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                    result: job_execution_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
 
             - log_job_success:
                 call: sys.log
@@ -338,13 +542,22 @@ main:
         try:
             steps:
             - call_sync_prd:
-                call: http.get
-                args:
-                    url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=prd
-                    auth:
-                        type: OIDC
-                        audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
-                    timeout: 900
+                try:
+                    call: http.get
+                    args:
+                        url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=prd
+                        auth:
+                            type: OIDC
+                            audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
+                        timeout: 900
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase3_prd_success:
                 call: sys.log
                 args:
@@ -385,13 +598,22 @@ main:
         try:
             steps:
             - call_sync_dev:
-                call: http.get
-                args:
-                    url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=dev
-                    auth:
-                        type: OIDC
-                        audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
-                    timeout: 900
+                try:
+                    call: http.get
+                    args:
+                        url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app?env=dev
+                        auth:
+                            type: OIDC
+                            audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
+                        timeout: 900
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
             - log_phase3_dev_success:
                 call: sys.log
                 args:

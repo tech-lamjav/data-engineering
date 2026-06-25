@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import requests
 from src.extractors.season_averages_extractor import SeasonAveragesExtractor
-from src.config import SEASON
+from src.config import SEASON, SEASON_AVERAGES_COMBINATIONS, SEASON_TYPES, is_http_no_data
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -17,14 +17,9 @@ def main():
     Extrai médias da temporada para diferentes combinações de category e type.
     Gera arquivos separados para cada combinação.
     """
-    # Combinações de category e type a serem extraídas
-    combinations = [
-        {"category": "general", "type": "base"},
-        {"category": "general", "type": "advanced"},
-        {"category": "shooting", "type": "by_zone"},
-        {"category": "tracking", "type": "passing"},
-    ]
-    season_types = ["regular", "playoffs", "ist"]
+    # Combinações de category e type a serem extraídas (fonte única em src/config.py)
+    combinations = SEASON_AVERAGES_COMBINATIONS
+    season_types = SEASON_TYPES
 
     try:
         logger.info(f"Iniciando extração de médias para temporada {SEASON}")
@@ -49,7 +44,7 @@ def main():
                     results.append({"season_type": season_type, "category": category, "type": type_param, "path": gcs_path, "status": "success"})
                 except requests.exceptions.HTTPError as e:
                     status_code = e.response.status_code if e.response is not None else None
-                    if status_code in (400, 404, 422):
+                    if is_http_no_data(e):
                         logger.warning(f"⚠ Sem dados para {season_type}-{category}-{type_param} (HTTP {status_code}): {str(e)}")
                         results.append({"season_type": season_type, "category": category, "type": type_param, "status": "skipped", "error": str(e)})
                     else:

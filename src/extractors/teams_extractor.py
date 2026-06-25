@@ -29,8 +29,13 @@ class TeamsExtractor(BaseExtractor):
         self.targets = TEAMS_CURRENT if mode == "current" else TEAMS_BACKFILL
 
     def extract(self, **kwargs) -> Dict[str, Any]:
-        """Itera sobre os targets e mescla resposta + metadata da request."""
+        """Itera sobre os targets e mescla resposta + metadata da request.
+
+        `failed_targets` separa 'liga falhou' (errors no envelope) de 'liga sem dados'
+        — extract_and_save usa isso p/ NÃO sobrescrever o arquivo bom com coleta parcial.
+        """
         teams = []
+        failed_targets = []
         for league_id, season in self.targets:
             logger.info(f"Extraindo league={league_id} season={season}...")
             envelope = self.client.get_teams(league_id, season)
@@ -40,6 +45,7 @@ class TeamsExtractor(BaseExtractor):
                 logger.error(
                     f"API errors para league={league_id} season={season}: {errors}"
                 )
+                failed_targets.append((league_id, season))
                 continue
 
             response = envelope.get("response", []) or []
@@ -63,17 +69,31 @@ class TeamsExtractor(BaseExtractor):
         return {
             "mode": self.mode,
             "total_teams": len(teams),
+            "failed_targets": failed_targets,
             "teams": teams,
         }
 
     def extract_and_save(self, **kwargs) -> str:
-        """Override: usa mode no path do GCS em vez de date."""
+        """Override: usa mode no path do GCS em vez de date.
+
+        Latest-only (fonte p/ /teams/statistics → Poisson): se algum target obrigatório
+        FALHOU (errors no envelope), NÃO sobrescreve o arquivo bom por coleta parcial —
+        aborta com raise. 'Liga sem dados' (response vazio sem errors) é legítimo.
+        """
         logger.info(f"Iniciando extração teams (mode={self.mode})")
         data = self.extract(**kwargs)
+
+        failed_targets = data.get("failed_targets") or []
+        if failed_targets:
+            raise RuntimeError(
+                f"teams (mode={self.mode}): {len(failed_targets)} target(s) falharam "
+                f"({failed_targets}). Abortando p/ NÃO sobrescrever o arquivo bom no GCS. Re-executar."
+            )
 
         if data.get("total_teams", 0) == 0:
             logger.warning("Nenhum time coletado — arquivo será uploadado vazio (metadata only)")
 
+        data.pop("failed_targets", None)  # controle interno, fora do payload
         gcs_path = self.storage.upload_json(
             data=data,
             endpoint="teams",
