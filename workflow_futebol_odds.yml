@@ -123,7 +123,7 @@ main:
                         body:
                             overrides:
                                 containerOverrides:
-                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "int_futebol_premissas_dc", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                     result: job_execution_result
                 # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
                 retry:
@@ -147,13 +147,53 @@ main:
             - log_job_error:
                 call: sys.log
                 args:
-                    severity: ERROR
+                    severity: WARNING
                     data:
-                        message: "dbt odds rebuild failed"
+                        message: "dbt odds rebuild falhou — recovery com --full-refresh"
                         error: ${e.message}
-            - handle_job_errors:
-                assign:
-                - workflow_status: "PARTIAL_FAILURE"
+            # RECOVERY: roda o MESMO select com --full-refresh. Resolve o caso DETERMINÍSTICO de
+            # drift table<->view (a relação existe no BQ como table mas o modelo virou view, ou
+            # vice-versa) — que o retry acima não conserta por reexecutar o comando idêntico.
+            # Custo ~0: os 10 modelos são todos table/view (nenhum incremental), então já fazem
+            # rebuild completo a cada run; --full-refresh só permite o DROP+CREATE do tipo certo.
+            - recover_full_refresh:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "int_futebol_premissas_dc", "fact_value_opportunities", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: recover_result
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+                except:
+                    as: e2
+                    steps:
+                    - log_recover_failed:
+                        call: sys.log
+                        args:
+                            severity: ERROR
+                            data:
+                                message: "dbt recovery (--full-refresh) também falhou"
+                                error: ${e2.message}
+                    - handle_job_errors:
+                        assign:
+                        - workflow_status: "PARTIAL_FAILURE"
+            - log_recover_done:
+                call: sys.log
+                args:
+                    severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+                    data:
+                        message: ${if(workflow_status == "SUCCESS", "dbt odds rebuild recuperado via --full-refresh", "dbt odds rebuild falhou mesmo após --full-refresh")}
+                        status: ${workflow_status}
+                        saved_count: ${saved_count}
 
     - finalize:
         assign:

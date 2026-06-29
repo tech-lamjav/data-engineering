@@ -141,15 +141,53 @@ main:
             - log_job_error:
                 call: sys.log
                 args:
-                    severity: ERROR
+                    severity: WARNING
                     data:
-                        message: "Cloud Run Job execution failed"
+                        message: "dbt team_stats rebuild falhou — recovery com --full-refresh"
                         job_name: "dbt-futebol"
                         error: ${e.message}
-            - handle_job_errors:
-                assign:
-                - workflow_status: "PARTIAL_FAILURE"
-                - failed_services: ${list.concat(failed_services, ["dbt-futebol"])}
+            # RECOVERY: reexecuta o MESMO select com --full-refresh. Resolve o caso DETERMINÍSTICO de
+            # drift table<->view (relação existe no BQ como table mas o modelo virou view, ou vice-versa)
+            # — que o retry acima não conserta por reexecutar o comando idêntico. Custo ~0: dbt_futebol
+            # não tem modelo incremental, então todo table/view já faz rebuild completo a cada run.
+            - recover_full_refresh:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "+fact_team_season_stats", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: recover_result
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+                except:
+                    as: e2
+                    steps:
+                    - log_recover_failed:
+                        call: sys.log
+                        args:
+                            severity: ERROR
+                            data:
+                                message: "dbt recovery (--full-refresh) também falhou"
+                                error: ${e2.message}
+                    - handle_job_errors:
+                        assign:
+                        - workflow_status: "PARTIAL_FAILURE"
+                        - failed_services: ${list.concat(failed_services, ["dbt-futebol"])}
+            - log_recover_done:
+                call: sys.log
+                args:
+                    severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+                    data:
+                        message: ${if(workflow_status == "SUCCESS", "dbt team_stats rebuild recuperado via --full-refresh", "dbt team_stats rebuild falhou mesmo após --full-refresh")}
+                        status: ${workflow_status}
 
     # ========================================================================
     # FINALIZAÇÃO
