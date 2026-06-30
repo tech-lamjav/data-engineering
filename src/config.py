@@ -121,23 +121,52 @@ FUTEBOL_ODDS_WINDOWS = {
 FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID]
 
 # Predictions (/predictions) — BASELINE de comparação (a previsão do algoritmo da própria
-# API). Não é produto: serve p/ avaliar se um modelo nosso bate a API consistentemente
-# (= edge real). 1 chamada por jogo numa única janela T-2h (a API atualiza de hora em
-# hora; pegamos perto do kickoff). FORWARD-ONLY (previsão de jogo passado não é
-# reconstruível — a API recomputa com o resultado já conhecido), poll ~15min dedicado
-# (workflow_futebol_predictions.yml). 1 arquivo por fixture (janela única, sem sufixo):
-# raw_futebol_predictions_{fixture}.json; skip-if-exists = 1 captura/jogo.
+# API) E fonte da corroboração `modelo_api_concorda` (+7) do Motor de Score. Não é produto:
+# serve p/ avaliar se um modelo nosso bate a API consistentemente (= edge real). FORWARD-ONLY
+# (previsão de jogo passado não é reconstruível — a API recomputa com o resultado conhecido),
+# poll ~15min dedicado (workflow_futebol_predictions.yml).
+#
+# DUAS janelas (a API atualiza ~1x/h):
+#   - "daily": varre TODO jogo NS de ~2h até 14 dias à frente → garante que jogos futuros
+#     tenham previsão (sem isso, `modelo_api_concorda` quase nunca dispara). Recaptura 1x/dia
+#     porque o path é date-stampado (raw_futebol_predictions_{fixture}_daily_{YYYY-MM-DD}.json)
+#     → skip-if-exists é por (fixture, janela, DIA). A 1ª passada do poll no dia captura; as
+#     demais pulam. Bandas DISJUNTAS de t2h (≥131 vs ≤130) p/ não capturar 2x no mesmo poll.
+#   - "t2h": refresh perto do kickoff (linha mais fresca p/ o jogo do dia).
+# O fato dedup latest-wins por loaded_at → o snapshot mais fresco (t2h no dia, ou o diário
+# mais recente) vence; os snapshots acumulam no GCS (padrão de standings/injuries).
 #
 # FUTEBOL_PREDICTIONS_WINDOWS: banda (lead_min, lead_max) em MINUTOS até o kickoff (mesma
-# mecânica de FUTEBOL_ODDS_WINDOWS). A captura cai perto de lead_max; banda > intervalo de
-# poll p/ não furar. Tunável/extensível.
+# mecânica de FUTEBOL_ODDS_WINDOWS). Banda > intervalo de poll p/ não furar. Horizonte de 14d
+# alinha com a janela de odds (1–14d): a previsão só corrobora quando há odds. Tunável.
 FUTEBOL_PREDICTIONS_WINDOWS = {
-    "t2h": (100, 130),  # 100–130min antes (alvo ~2h; captura cai perto de 130)
+    "daily": (131, 20160),  # ~2h até 14 dias — varre todo NS futuro; 1 captura/dia (date-stamp)
+    "t2h":   (100, 130),    # 100–130min antes (refresh perto do jogo; captura cai perto de 130)
 }
 
 # coverage.predictions=TRUE p/ Brasileirão (71) E Copa do Mundo (1) — validado em
 # dim_leagues (2026-06-17). Diferente de /injuries (Copa excluída): ambos incluídos.
 FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID]
+
+# Injuries PRÉ-JOGO (/injuries?fixture) — coleta FORWARD-ONLY por fixture (modo "pregame"),
+# complementando o snapshot season-log diário (INJURIES_CURRENT, /injuries?league&season).
+# Motivo (S7 do Motor de Score): o season-log fica congelado quando não há rodada recente
+# (ex.: pausa FIFA) — não traz desfalques dos JOGOS FUTUROS. O endpoint por fixture devolve
+# os lesionados/suspensos ligados àquele jogo específico, então varremos os NS futuros.
+#
+# Mesma mecânica date-stampada de predictions (raw_futebol_injuries_{fixture}_daily_{data}.json):
+# skip-if-exists por (fixture, janela, DIA) → 1 captura/dia; o fato dedup latest-wins por
+# loaded_at. Janela ÚNICA "daily" cobre de agora (0) a 14 dias. Por que SÓ "daily" (sem banda
+# near-kickoff): injuries são estáveis intra-dia (jogador descartado de manhã segue fora) E o
+# fact_injuries_snapshot é daily-grained (dedup por snapshot_date) → re-poll horário não
+# adiciona resolução; a notícia final de escalação vem da fonte de lineups (confirmed, ~T-30min).
+FUTEBOL_INJURIES_WINDOWS = {
+    "daily": (0, 20160),  # 0 até 14 dias (minutos) — varre todo NS futuro; 1 captura/dia
+}
+
+# coverage.injuries=TRUE só p/ Brasileirão (71); Copa do Mundo (1) EXCLUÍDA (igual a
+# INJURIES_CURRENT — a API não fornece lesões da Copa; incluí-la gastaria quota e voltaria vazia).
+FUTEBOL_INJURIES_LEAGUE_IDS = [BRASILEIRAO_ID]
 
 # Fixture statistics (/fixtures/statistics) — 1 chamada por fixture, só após FT.
 # No modo current, re-busca jogos cujo kickoff foi nos últimos N dias (captura
@@ -183,6 +212,9 @@ BIGQUERY_DATASET_SANDBOX = os.getenv("BIGQUERY_DATASET_SANDBOX", "sandbox")
 SUPABASE_PG_URL_PRD = os.getenv("SUPABASE_PG_URL_PRD")
 SUPABASE_PG_URL_DEV = os.getenv("SUPABASE_PG_URL_DEV")
 MART_PG_SCHEMA = "nba_mart"
+# Futebol grava no schema nativo `futebol` (mesmas RPCs get_futebol_* já leem ele).
+# Mesmo Supabase PRD/DEV do NBA — só muda dataset BQ de origem e schema destino.
+FUTEBOL_MART_PG_SCHEMA = "futebol"
 
 
 def get_pg_url(env: str) -> str:
@@ -227,6 +259,55 @@ MART_TABLES_ORDERED = [
     "dim_teammate_impact_360",
     "dim_daily_opportunities",
 ]
+
+# Futebol — as 21 tabelas que o app (RPCs get_futebol_*) consome, na ordem
+# dim -> fact -> intermediário -> mart-produto (mesma lógica de janela mínima de
+# inconsistência do NBA). NÃO é só "marts": as RPCs de valor reconstroem
+# evidências/avisos a partir dos booleans das int_futebol_premissas_*, então elas
+# entram no sync. Espelha o array de futebol.sync_all() que o FDW+pg_cron rodava.
+# Colunas BQ complexas (coverage RECORD, evidencias/avisos ARRAY) são puladas pelo
+# engine (Postgres nativo é escalar) — ver _is_complex_field em sync/bq_to_postgres.py.
+FUTEBOL_SYNC_TABLES_ORDERED = [
+    # dimensões
+    "dim_leagues",
+    "dim_teams",
+    # fatos base
+    "fact_fixtures",
+    "fact_fixture_stats",
+    "fact_fixture_events",
+    "fact_fixture_lineups",
+    "fact_fixture_lineups_players",
+    "fact_fixture_player_stats",
+    "fact_h2h",
+    "fact_injuries_snapshot",
+    "fact_standings_snapshot",
+    "fact_team_season_stats",
+    "fact_odds_snapshot",
+    "fact_predictions_api",
+    # camada de valor (intermediários -> mart-produto por último)
+    "int_futebol_odds_devig",
+    "int_futebol_premissas_1x2",
+    "int_futebol_premissas_ou",
+    "int_futebol_premissas_ah",
+    "int_futebol_premissas_btts",
+    "int_futebol_premissas_dc",
+    "fact_value_opportunities",
+]
+
+
+def get_sync_target(sport: str = "nba") -> tuple:
+    """Resolve (dataset BQ, schema Postgres, tabelas ordenadas) por esporte.
+
+    O engine de sync (sync/bq_to_postgres.py) é sport-agnostic; cada esporte amarra
+    um dataset BQ a um schema Postgres + a allowlist ordenada (dim -> fact -> mart).
+    Mantém o NBA como default → comportamento idêntico ao anterior.
+    """
+    sport = (sport or "nba").lower()
+    if sport == "nba":
+        return BIGQUERY_DATASET, MART_PG_SCHEMA, list(MART_TABLES_ORDERED)
+    if sport == "futebol":
+        return BIGQUERY_DATASET_FUTEBOL, FUTEBOL_MART_PG_SCHEMA, list(FUTEBOL_SYNC_TABLES_ORDERED)
+    raise ValueError(f"sport inválido: {sport!r}. Use 'nba' ou 'futebol'.")
 
 # Season Configuration
 try:
@@ -489,10 +570,19 @@ def get_gcs_path(
         # no nome do arquivo p/ guardar os dois snapshots (T-30min e pós-jogo).
         # odds grava em três janelas (mode "t24h"|"t1h"|"t15m") → mesmo mecanismo de sufixo.
         if game_id is not None:
-            # Fases válidas derivadas das janelas de odds (fonte única: FUTEBOL_ODDS_WINDOWS)
-            # + as fases de lineups ("confirmed"|"real"). Novas janelas funcionam sem editar aqui.
-            phase = f"_{mode}" if mode in {"confirmed", "real", *FUTEBOL_ODDS_WINDOWS} else ""
-            filename = f"raw_futebol_{endpoint}_{game_id}{phase}.json"
+            # Fases válidas: janelas de odds + de predictions (fonte única: as constantes
+            # FUTEBOL_*_WINDOWS) + fases de lineups ("confirmed"|"real"). Novas janelas
+            # funcionam sem editar aqui.
+            phase = (
+                f"_{mode}"
+                if mode in {"confirmed", "real", *FUTEBOL_ODDS_WINDOWS, *FUTEBOL_PREDICTIONS_WINDOWS, *FUTEBOL_INJURIES_WINDOWS}
+                else ""
+            )
+            # `date` opcional: predictions date-stampa o snapshot por (fixture, janela, dia)
+            # p/ recapturar 1x/dia (varredura de jogos futuros) — o fato dedup latest-wins por
+            # loaded_at. Odds/lineups não passam date → datepart vazio → nomes atuais intactos.
+            datepart = f"_{date}" if date else ""
+            filename = f"raw_futebol_{endpoint}_{game_id}{phase}{datepart}.json"
             return f"futebol/{endpoint}/{filename}"
         # `date` opcional: endpoints de snapshot diário (ex.: standings) date-stampam
         # o arquivo p/ acumular histórico no GCS (1 arquivo/dia; re-run no mesmo dia

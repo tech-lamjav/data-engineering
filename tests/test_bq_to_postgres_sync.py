@@ -2,7 +2,11 @@
 
 Mock total de infra (BigQuery client e conexão psycopg) — não toca rede/DB.
 Foca no M11 (None vs '' preservados no write_row), no streaming linha-a-linha
-(write_row chamado por linha, sem StringIO) e no modo force/full-resync.
+(write_row chamado por linha, sem StringIO), no modo force/full-resync e no
+skip de colunas complexas (REPEATED/RECORD) introduzido p/ o sync de futebol.
+
+_sync_one_table agora é sport-agnostic: recebe (dataset, schema, tables_ordered)
+explícitos. Os testes usam o alvo NBA (dataset 'nba', schema 'nba_mart').
 """
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
@@ -15,11 +19,18 @@ except Exception as e:  # pragma: no cover
     pytest.skip(f"src.sync.bq_to_postgres não importável: {e}", allow_module_level=True)
 
 
+def _field(name, mode="NULLABLE", field_type="STRING"):
+    """SchemaField mockado com name/mode/field_type concretos (p/ _is_complex_field)."""
+    f = MagicMock()
+    f.name = name
+    f.mode = mode
+    f.field_type = field_type
+    return f
+
+
 def _make_bq(rows, columns, modified):
     """Cria um mock de bigquery.Client cujo list_rows devolve rows/colunas/modified."""
-    schema = [MagicMock(name=c) for c in columns]
-    for field, name in zip(schema, columns):
-        field.name = name
+    schema = [_field(c) for c in columns]
 
     # Cada "row" do BQ é indexável por nome de coluna (row[c]).
     bq_rows = []
@@ -91,9 +102,21 @@ class _FakeConn:
         self.committed = True
 
 
+# Alvo NBA resolvido — _sync_one_table recebe dataset/schema/tables_ordered explícitos.
+_NBA = dict(dataset="nba", schema="nba_mart")
+
+
 @pytest.fixture
 def table_name():
-    return mod.MART_TABLES_ORDERED[0]
+    from src.config import MART_TABLES_ORDERED
+    return MART_TABLES_ORDERED[0]
+
+
+def _sync(bq, conn, table_name, **kw):
+    """Helper: chama _sync_one_table com o alvo NBA e a allowlist = [table_name]."""
+    return mod._sync_one_table(
+        bq, conn, table_name, tables_ordered=[table_name], **_NBA, **kw
+    )
 
 
 def test_sync_preserva_none_e_string_vazia(table_name):
@@ -104,7 +127,7 @@ def test_sync_preserva_none_e_string_vazia(table_name):
     fake_copy = _FakeCopy()
     conn = _FakeConn(fake_copy, last_synced=None)
 
-    result = mod._sync_one_table(bq, conn, table_name)
+    result = _sync(bq, conn, table_name)
 
     assert result["rows"] == 1
     assert result["skipped"] is False
@@ -127,7 +150,7 @@ def test_sync_streaming_uma_chamada_por_linha(table_name):
     fake_copy = _FakeCopy()
     conn = _FakeConn(fake_copy, last_synced=None)
 
-    result = mod._sync_one_table(bq, conn, table_name)
+    result = _sync(bq, conn, table_name)
 
     assert result["rows"] == 5
     assert len(fake_copy.rows) == 5
@@ -143,7 +166,7 @@ def test_skip_if_unchanged(table_name):
     # last_synced igual a modified -> deve pular.
     conn = _FakeConn(fake_copy, last_synced=modified)
 
-    result = mod._sync_one_table(bq, conn, table_name)
+    result = _sync(bq, conn, table_name)
 
     assert result["skipped"] is True
     assert result["rows"] == 0
@@ -159,7 +182,7 @@ def test_force_ignora_skip_if_unchanged(table_name):
     fake_copy = _FakeCopy()
     conn = _FakeConn(fake_copy, last_synced=modified)
 
-    result = mod._sync_one_table(bq, conn, table_name, force=True)
+    result = _sync(bq, conn, table_name, force=True)
 
     assert result["skipped"] is False
     assert result["rows"] == 1
@@ -173,7 +196,43 @@ def test_nao_chama_get_table(table_name):
     bq = _make_bq([{"a": 1}], columns, datetime(2025, 1, 1, tzinfo=timezone.utc))
     conn = _FakeConn(_FakeCopy(), last_synced=None)
 
-    mod._sync_one_table(bq, conn, table_name)
+    _sync(bq, conn, table_name)
 
     bq.get_table.assert_not_called()
     bq.list_rows.assert_called_once()
+
+
+def test_pula_colunas_complexas_repeated_record(table_name):
+    """Colunas REPEATED (array) e RECORD (struct) são puladas do COPY (futebol).
+
+    Espelha dim_leagues.coverage (RECORD) e evidencias/avisos (ARRAY<STRING>): só
+    as escalares entram no column_list e no write_row; o Postgres nativo é escalar.
+    """
+    schema = [
+        _field("fixture_id", field_type="INTEGER"),
+        _field("nome", field_type="STRING"),
+        _field("evidencias", mode="REPEATED", field_type="STRING"),
+        _field("coverage", field_type="RECORD"),
+    ]
+    row = {"fixture_id": 7, "nome": "x", "evidencias": ["a"], "coverage": {"k": 1}}
+    rm = MagicMock()
+    rm.__getitem__.side_effect = lambda c: row[c]
+    row_iter = MagicMock()
+    row_iter.schema = schema
+    row_iter.table.modified = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    row_iter.__iter__.return_value = iter([rm])
+    bq = MagicMock()
+    bq.list_rows.return_value = row_iter
+    fake_copy = _FakeCopy()
+    conn = _FakeConn(fake_copy, last_synced=None)
+
+    result = _sync(bq, conn, table_name)
+
+    assert result["rows"] == 1
+    # só as 2 escalares no COPY; evidencias/coverage NÃO aparecem
+    assert '"fixture_id"' in fake_copy.sql
+    assert '"nome"' in fake_copy.sql
+    assert "evidencias" not in fake_copy.sql
+    assert "coverage" not in fake_copy.sql
+    # write_row recebe só os valores escalares, na ordem
+    assert fake_copy.rows[0] == [7, "x"]
