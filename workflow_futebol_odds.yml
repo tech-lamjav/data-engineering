@@ -123,7 +123,7 @@ main:
                         body:
                             overrides:
                                 containerOverrides:
-                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "int_futebol_premissas_dc", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_player_importance", "int_futebol_desfalques", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "int_futebol_premissas_dc", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                     result: job_execution_result
                 # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
                 retry:
@@ -164,7 +164,7 @@ main:
                         body:
                             overrides:
                                 containerOverrides:
-                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "int_futebol_premissas_dc", "fact_value_opportunities", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_player_importance", "int_futebol_desfalques", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "int_futebol_premissas_dc", "fact_value_opportunities", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                     result: recover_result
                 retry:
                     predicate: ${http.default_retry_predicate}

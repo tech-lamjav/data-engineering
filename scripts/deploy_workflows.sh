@@ -29,6 +29,8 @@ WORKFLOWS=(
     "workflow-futebol-team-stats:workflow_futebol_team_stats.yml"
     "workflow-futebol-odds:workflow_futebol_odds.yml"
     "workflow-futebol-predictions:workflow_futebol_predictions.yml"
+    "workflow-futebol-injuries:workflow_futebol_injuries.yml"
+    "workflow-futebol-sync:workflow_futebol_sync.yml"
     "workflow-daily-summary:workflow_daily_summary.yml"
 )
 
