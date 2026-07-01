@@ -106,6 +106,30 @@ class ApiFootballClient(BaseClient):
         )
         return self._raise_if_quota(response.json(), f"injuries league={league_id} season={season}")
 
+    def get_injuries_by_fixture(self, fixture_id: int) -> Dict[str, Any]:
+        """GET /injuries?fixture={fixture_id} (NÃO paginado).
+
+        Lesionados/suspensos ligados a UM fixture — snapshot pré-jogo do momento da
+        chamada. Estrutura de item IDÊNTICA a get_injuries(league, season):
+        {player, team, fixture, league, type, reason} (type/reason aninhados em `player`
+        no flatten do dbt). Usado na coleta FORWARD-ONLY pré-jogo (jogos NS futuros, modo
+        "pregame" do InjuriesExtractor), que complementa o snapshot season-log diário —
+        este não popula desfalques de jogos futuros fora do horizonte curto da temporada.
+
+        ⚠️ Só fixtures de ligas com coverage.injuries=TRUE (Brasileirão 71) retornam dados;
+        fixture futuro sem lesão registrada ainda → `response` vazio (degradação graciosa:
+        re-tenta no próximo poll).
+
+        Returns:
+            Envelope cru: {response: [{player, team, fixture, league, type, reason}], errors, ...}
+        """
+        response = self._make_request(
+            "GET",
+            "injuries",
+            params={"fixture": fixture_id},
+        )
+        return self._raise_if_quota(response.json(), f"injuries fixture={fixture_id}")
+
     def get_team_season_stats(
         self, league_id: int, season: int, team_id: int
     ) -> Dict[str, Any]:

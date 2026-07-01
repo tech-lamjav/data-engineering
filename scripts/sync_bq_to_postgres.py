@@ -1,8 +1,10 @@
 """Script para sincronizar marts BigQuery -> Supabase Postgres.
 
 Para testar localmente:
-    SYNC_ENV=dev python scripts/sync_bq_to_postgres.py
-    SYNC_ENV=prd python scripts/sync_bq_to_postgres.py  (default)
+    SYNC_ENV=dev python scripts/sync_bq_to_postgres.py                 (NBA, default)
+    SYNC_ENV=dev SYNC_SPORT=futebol python scripts/sync_bq_to_postgres.py
+    SYNC_ENV=prd python scripts/sync_bq_to_postgres.py
+    # subset: SYNC_TABLES=fact_value_opportunities,fact_fixtures
 """
 import os
 import sys
@@ -18,8 +20,10 @@ logger = setup_logger(__name__)
 
 def main():
     env = os.getenv("SYNC_ENV", "prd")
+    sport = os.getenv("SYNC_SPORT", "nba")
+    tables = os.getenv("SYNC_TABLES", "all")
     try:
-        result = run_sync(env=env)
+        result = run_sync(tables=tables, env=env, sport=sport)
         if result["status"] == "aborted_schema_drift":
             logger.error(f"Sync abortado por schema drift: {result['drift']}")
             return 2

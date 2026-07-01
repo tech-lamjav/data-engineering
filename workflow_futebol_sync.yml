@@ -1,0 +1,141 @@
+# ============================================================
+# WORKFLOW FUTEBOL SYNC
+# Sync das marts BigQuery (dataset `futebol`) -> Supabase Postgres (schema `futebol`),
+# PRD e DEV sequencialmente, via o serviço Cloud Run `sync-bq-to-postgres?sport=futebol`.
+#
+# Substitui o pg_cron `futebol-sync-daily` (CALL futebol.sync_all() via FDW BigQuery),
+# que foi removido no cutover. Disparado por Cloud Scheduler (horário; SA schedulerde@).
+# skip-if-unchanged no engine torna o run barato quando o BQ não mudou desde o último sync.
+#
+# try/except independentes: falha num ambiente não bloqueia o outro.
+# ============================================================
+
+main:
+    params: [args]
+    steps:
+    - init:
+        assign:
+        - workflow_start_time: ${sys.now()}
+        - workflow_status: "SUCCESS"
+        - failed_services: []
+
+    - log_start:
+        call: sys.log
+        args:
+            severity: INFO
+            data:
+                message: "Workflow futebol-sync iniciado"
+                workflow_name: "workflow_futebol_sync"
+
+    # ── Sync PRD ──────────────────────────────────────────────────────────────
+    - sync_prd:
+        try:
+            steps:
+            - call_sync_prd:
+                try:
+                    call: http.get
+                    args:
+                        url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                            audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
+                        query:
+                            sport: futebol
+                            env: prd
+                        timeout: 900
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - log_sync_prd_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Sync futebol PRD concluído"
+        except:
+            as: e
+            steps:
+            - log_sync_prd_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Sync futebol PRD falhou"
+                        error: ${e.message}
+            - handle_sync_prd_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[futebol/prd]"])}
+
+    # ── Sync DEV ──────────────────────────────────────────────────────────────
+    - sync_dev:
+        try:
+            steps:
+            - call_sync_dev:
+                try:
+                    call: http.get
+                    args:
+                        url: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                            audience: https://sync-bq-to-postgres-r52p4w2f2a-ue.a.run.app
+                        query:
+                            sport: futebol
+                            env: dev
+                        timeout: 900
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - log_sync_dev_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Sync futebol DEV concluído"
+        except:
+            as: e
+            steps:
+            - log_sync_dev_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Sync futebol DEV falhou"
+                        error: ${e.message}
+            - handle_sync_dev_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[futebol/dev]"])}
+
+    # ── Finalização ───────────────────────────────────────────────────────────
+    - finalize:
+        assign:
+        - workflow_end_time: ${sys.now()}
+        - duration_seconds: ${workflow_end_time - workflow_start_time}
+        - failed_count: ${len(failed_services)}
+
+    - log_completion:
+        call: sys.log
+        args:
+            severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+            data:
+                message: "Workflow futebol-sync concluído"
+                status: ${workflow_status}
+                duration_seconds: ${duration_seconds}
+                failed_services: ${failed_services}
+                failed_count: ${failed_count}
+
+    - return_result:
+        return:
+            status: ${workflow_status}
+            duration_seconds: ${duration_seconds}
+            failed_services: ${failed_services}

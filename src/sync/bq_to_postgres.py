@@ -5,7 +5,7 @@ Decisões de design (ver PLANO_OTIMIZACAO_BQ_SUPABASE.md fase 2):
   evitar custo de scan recorrente.
 - Usa `bq.get_table().schema` para parity check (API tables.get, gratuita) em vez
   de query em INFORMATION_SCHEMA.
-- Sync serial table-by-table, dim -> fact -> derived (ver MART_TABLES_ORDERED em
+- Sync serial table-by-table, dim -> fact -> derived (ver *_TABLES_ORDERED em
   config.py) para minimizar janela de inconsistência cross-table.
 - TRUNCATE + COPY dentro de uma única transação por tabela: leitores veem dados
   velhos ou novos, nunca parciais.
@@ -13,6 +13,13 @@ Decisões de design (ver PLANO_OTIMIZACAO_BQ_SUPABASE.md fase 2):
   nativamente. Distingue None (NULL) de '' (string vazia real) — resolve o M11, em
   que o CSV textual com `NULL ''` colapsava ambos no mesmo token. Também faz
   streaming linha-a-linha (sem materializar a tabela inteira em StringIO).
+
+Multi-esporte: o engine é sport-agnostic. `run_sync(sport=...)` resolve via
+`config.get_sync_target()` o trio (dataset BQ, schema Postgres, allowlist ordenada).
+'nba' -> dataset `nba` / schema `nba_mart`; 'futebol' -> dataset `futebol` /
+schema `futebol`. Colunas BQ complexas (REPEATED/RECORD) são puladas: o Postgres
+nativo é escalar (no futebol, dim_leagues.coverage é RECORD e os arrays de
+evidências/avisos são reconstruídos nas RPCs a partir de colunas boolean).
 """
 from typing import Iterable
 
@@ -20,11 +27,9 @@ import psycopg
 from google.cloud import bigquery
 
 from src.config import (
-    BIGQUERY_DATASET,
     BIGQUERY_PROJECT_ID,
-    MART_PG_SCHEMA,
-    MART_TABLES_ORDERED,
     get_pg_url,
+    get_sync_target,
 )
 from src.utils.logger import setup_logger
 
@@ -78,25 +83,40 @@ def _canon_pg(t: str) -> str:
     return _PG_TYPE_TO_CANONICAL.get(t.lower(), t.lower())
 
 
+def _is_complex_field(field) -> bool:
+    """True se o campo BQ é REPEATED (array) ou RECORD/STRUCT.
+
+    Esses campos NÃO vão para o Postgres nativo (que é escalar): são pulados tanto
+    no parity check quanto no COPY. Ex.: futebol `dim_leagues.coverage` (RECORD) e
+    `fact_value_opportunities.evidencias`/`.avisos` (ARRAY<STRING>) — no app as
+    evidências/avisos são reconstruídas nas RPCs a partir de colunas boolean.
+    O caminho NBA não tem colunas complexas, então o comportamento dele é inalterado.
+    """
+    return field.mode == "REPEATED" or field.field_type in ("RECORD", "STRUCT")
+
+
 # ============================================================
 # Resolução de tabelas
 # ============================================================
-def resolve_tables(tables: str | Iterable[str] | None) -> list[str]:
-    """Resolve seletor 'all' / lista de nomes para a ordem canônica do config."""
+def resolve_tables(
+    tables: str | Iterable[str] | None,
+    tables_ordered: list[str],
+) -> list[str]:
+    """Resolve seletor 'all' / lista de nomes para a ordem canônica do esporte."""
     if tables is None or tables == "all" or tables == ["all"]:
-        return list(MART_TABLES_ORDERED)
+        return list(tables_ordered)
     if isinstance(tables, str):
         requested = [t.strip() for t in tables.split(",") if t.strip()]
     else:
         requested = [t.strip() for t in tables if t and t.strip()]
-    unknown = [t for t in requested if t not in MART_TABLES_ORDERED]
+    unknown = [t for t in requested if t not in tables_ordered]
     if unknown:
         raise ValueError(
             f"Tabelas desconhecidas: {unknown}. "
-            f"Tabelas válidas: {MART_TABLES_ORDERED}"
+            f"Tabelas válidas: {tables_ordered}"
         )
     # Preserva ordem canônica (dim -> fact -> derivada)
-    return [t for t in MART_TABLES_ORDERED if t in requested]
+    return [t for t in tables_ordered if t in requested]
 
 
 # ============================================================
@@ -106,12 +126,15 @@ def check_schema_parity(
     bq: bigquery.Client,
     pg_conn,
     tables: list[str],
+    dataset: str,
+    schema: str,
 ) -> list[dict]:
     """Compara schema BQ vs Postgres por coluna. Retorna lista de drifts.
 
     Lista vazia = parity OK, seguro sincronizar.
     Cada drift: {table, kind, detail}, com kind in {missing_in_pg, missing_in_bq,
-    type_mismatch}.
+    type_mismatch}. Colunas BQ complexas (REPEATED/RECORD) são ignoradas — não são
+    esperadas no Postgres escalar.
     """
     drifts: list[dict] = []
 
@@ -122,7 +145,7 @@ def check_schema_parity(
             FROM information_schema.columns
             WHERE table_schema = %s AND table_name = ANY(%s)
             """,
-            (MART_PG_SCHEMA, tables),
+            (schema, tables),
         )
         pg_rows = cur.fetchall()
 
@@ -133,7 +156,7 @@ def check_schema_parity(
     for table in tables:
         try:
             bq_table = bq.get_table(
-                f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{table}"
+                f"{BIGQUERY_PROJECT_ID}.{dataset}.{table}"
             )
         except Exception as e:
             drifts.append(
@@ -141,7 +164,12 @@ def check_schema_parity(
             )
             continue
 
-        bq_cols = {f.name: f.field_type for f in bq_table.schema}
+        # Só colunas escalares contam para parity (complexas são puladas no COPY).
+        bq_cols = {
+            f.name: f.field_type
+            for f in bq_table.schema
+            if not _is_complex_field(f)
+        }
         pg_cols = pg_by_table.get(table)
 
         if pg_cols is None:
@@ -149,7 +177,7 @@ def check_schema_parity(
                 {
                     "table": table,
                     "kind": "missing_in_pg",
-                    "detail": "tabela não existe em nba_mart",
+                    "detail": f"tabela não existe em {schema}",
                 }
             )
             continue
@@ -160,7 +188,7 @@ def check_schema_parity(
                     {
                         "table": table,
                         "kind": "missing_in_pg",
-                        "detail": f"coluna '{col}' não existe em nba_mart.{table}",
+                        "detail": f"coluna '{col}' não existe em {schema}.{table}",
                     }
                 )
                 continue
@@ -184,7 +212,10 @@ def check_schema_parity(
                     {
                         "table": table,
                         "kind": "missing_in_bq",
-                        "detail": f"coluna '{col}' existe em PG mas não em BQ",
+                        "detail": (
+                            f"coluna '{col}' existe em PG mas não em BQ "
+                            f"(ou é coluna complexa REPEATED/RECORD, pulada)"
+                        ),
                     }
                 )
 
@@ -217,16 +248,18 @@ def _format_value(v):
 # ============================================================
 # Cada Postgres tem seu próprio _sync_state (PRD e DEV são DBs independentes),
 # por isso não precisa de coluna env. Tabela auto-criada na primeira execução
-# após a Fase 3 migration (que cria o schema nba_mart).
-_SYNC_STATE_TABLE = f'"{MART_PG_SCHEMA}"."_sync_state"'
+# após a migration que cria o schema destino. É por-schema (nba_mart._sync_state,
+# futebol._sync_state) para não misturar o estado dos esportes.
+def _sync_state_table(schema: str) -> str:
+    return f'"{schema}"."_sync_state"'
 
 
-def _ensure_sync_state_table(pg_conn) -> None:
+def _ensure_sync_state_table(pg_conn, schema: str) -> None:
     """CREATE TABLE IF NOT EXISTS pro state. Idempotente."""
     with pg_conn.cursor() as cur:
         cur.execute(
             f"""
-            CREATE TABLE IF NOT EXISTS {_SYNC_STATE_TABLE} (
+            CREATE TABLE IF NOT EXISTS {_sync_state_table(schema)} (
                 table_name text PRIMARY KEY,
                 last_synced_bq_modified_time timestamptz NOT NULL,
                 last_synced_at timestamptz NOT NULL DEFAULT now()
@@ -236,11 +269,11 @@ def _ensure_sync_state_table(pg_conn) -> None:
     pg_conn.commit()
 
 
-def _read_last_synced(pg_conn, table_name: str):
+def _read_last_synced(pg_conn, table_name: str, schema: str):
     """Retorna last_synced_bq_modified_time ou None se nunca sincronizado."""
     with pg_conn.cursor() as cur:
         cur.execute(
-            f"SELECT last_synced_bq_modified_time FROM {_SYNC_STATE_TABLE} "
+            f"SELECT last_synced_bq_modified_time FROM {_sync_state_table(schema)} "
             f"WHERE table_name = %s",
             (table_name,),
         )
@@ -255,6 +288,9 @@ def _sync_one_table(
     bq: bigquery.Client,
     pg_conn,
     table_name: str,
+    dataset: str,
+    schema: str,
+    tables_ordered: list[str],
     force: bool = False,
 ) -> dict:
     """Sincroniza uma mart: TRUNCATE + COPY dentro de uma única transação.
@@ -265,18 +301,28 @@ def _sync_one_table(
     force=True (modo full-resync) ignora o skip-if-unchanged e re-sincroniza a
     tabela mesmo que o BQ não tenha mudado — útil quando o Postgres sofreu drift
     fora do sync (ex.: truncate manual) e o state ficaria pulando indefinidamente.
+
+    Colunas BQ complexas (REPEATED/RECORD) são puladas — o Postgres nativo é
+    escalar. O column_list do COPY usa só as escalares, casando com o DDL nativo.
     """
-    # Invariante de segurança: table_name vem SEMPRE da allowlist MART_TABLES_ORDERED
+    # Invariante de segurança: table_name vem SEMPRE da allowlist resolvida
     # (via resolve_tables). O assert torna explícita a segurança das f-strings de SQL.
-    assert table_name in MART_TABLES_ORDERED, f"tabela fora da allowlist: {table_name!r}"
-    table_ref = f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{table_name}"
+    assert table_name in tables_ordered, f"tabela fora da allowlist: {table_name!r}"
+    table_ref = f"{BIGQUERY_PROJECT_ID}.{dataset}.{table_name}"
 
-    # list_rows usa tabledata.list (grátis), não cria query job. O .table devolvido
-    # já carrega o schema, evitando uma segunda chamada bq.get_table só pelo modified.
+    # list_rows usa tabledata.list (grátis), não cria query job. Em versões antigas
+    # do client (<=3.27) o RowIterator expõe `.table` (reaproveita o schema e evita
+    # um get_table); em 3.40+ esse atributo sumiu. Fallback robusto p/ get_table
+    # (API tables.get, também grátis). NBA mantém o caminho rápido onde `.table` existe.
     rows_iter = bq.list_rows(table_ref)
-    bq_modified = rows_iter.table.modified  # timezone-aware datetime
+    _iter_table = getattr(rows_iter, "table", None)
+    bq_modified = (
+        _iter_table.modified
+        if _iter_table is not None
+        else bq.get_table(table_ref).modified
+    )  # timezone-aware datetime
 
-    last_synced = _read_last_synced(pg_conn, table_name)
+    last_synced = _read_last_synced(pg_conn, table_name, schema)
     if not force and last_synced is not None and bq_modified <= last_synced:
         logger.info(
             f"Skip {table_name}: BQ não mudou (modified={bq_modified.isoformat()}, "
@@ -289,26 +335,34 @@ def _sync_one_table(
         f"{', force=True' if force else ''})"
     )
 
-    columns = [field.name for field in rows_iter.schema]
+    # Pula colunas complexas (REPEATED/RECORD); só escalares vão pro COPY.
+    all_fields = list(rows_iter.schema)
+    columns = [f.name for f in all_fields if not _is_complex_field(f)]
+    skipped_cols = [f.name for f in all_fields if _is_complex_field(f)]
+    if skipped_cols:
+        logger.info(
+            f"{table_name}: {len(skipped_cols)} coluna(s) complexa(s) pulada(s) "
+            f"(REPEATED/RECORD): {skipped_cols}"
+        )
     column_list = ", ".join(f'"{c}"' for c in columns)
 
     with pg_conn.cursor() as cur:
         # BEGIN é implícito quando autocommit=False; TRUNCATE + COPY + state-update
         # ficam numa única transação. Se qualquer passo falhar, rollback total
         # mantém o state consistente com o dado.
-        cur.execute(f'TRUNCATE TABLE "{MART_PG_SCHEMA}"."{table_name}"')
+        cur.execute(f'TRUNCATE TABLE "{schema}"."{table_name}"')
         # COPY TIPADO: write_row recebe a tupla nativa (None vira NULL, '' fica '').
         # Streaming linha-a-linha — não materializa a tabela inteira em memória.
         row_count = 0
         with cur.copy(
-            f'COPY "{MART_PG_SCHEMA}"."{table_name}" ({column_list}) FROM STDIN'
+            f'COPY "{schema}"."{table_name}" ({column_list}) FROM STDIN'
         ) as copy:
             for row in rows_iter:
                 copy.write_row([_format_value(row[c]) for c in columns])
                 row_count += 1
         cur.execute(
             f"""
-            INSERT INTO {_SYNC_STATE_TABLE}
+            INSERT INTO {_sync_state_table(schema)}
                 (table_name, last_synced_bq_modified_time, last_synced_at)
             VALUES (%s, %s, now())
             ON CONFLICT (table_name) DO UPDATE
@@ -330,6 +384,7 @@ def run_sync(
     tables: str | Iterable[str] | None = None,
     env: str = "prd",
     force: bool = False,
+    sport: str = "nba",
 ) -> dict:
     """Executa o sync. Roda pre-flight de schema parity antes de qualquer TRUNCATE.
 
@@ -339,16 +394,20 @@ def run_sync(
         env: 'prd' (default) ou 'dev'. Determina qual SUPABASE_PG_URL_* usar.
         force: True ignora o skip-if-unchanged e força full-resync de todas as
                tabelas resolvidas (recupera de drift no Postgres feito fora do sync).
+        sport: 'nba' (default) ou 'futebol'. Resolve dataset BQ + schema Postgres +
+               allowlist via config.get_sync_target().
 
     Returns:
-        {status, env, synced: [...], drift: [...]}
+        {status, sport, env, synced: [...], drift: [...]}
         Em caso de drift detectada no pre-flight, NÃO faz TRUNCATE em nenhuma
         tabela; retorna status='aborted_schema_drift' com o detalhe.
     """
+    dataset, schema, tables_ordered = get_sync_target(sport)
     pg_url = get_pg_url(env)
-    resolved = resolve_tables(tables)
+    resolved = resolve_tables(tables, tables_ordered)
     logger.info(
-        f"Sync solicitado env={env} para {len(resolved)} tabela(s): {resolved}"
+        f"Sync solicitado sport={sport} env={env} para {len(resolved)} "
+        f"tabela(s) [{dataset} -> {schema}]: {resolved}"
         f"{' (force/full-resync)' if force else ''}"
     )
 
@@ -357,35 +416,39 @@ def run_sync(
     pg_conn.autocommit = False
 
     try:
-        drifts = check_schema_parity(bq, pg_conn, resolved)
+        drifts = check_schema_parity(bq, pg_conn, resolved, dataset, schema)
         if drifts:
             logger.error(
-                f"Schema drift detectado (env={env}), abortando sync ANTES de "
-                f"qualquer TRUNCATE. Drifts: {drifts}"
+                f"Schema drift detectado (sport={sport}, env={env}), abortando sync "
+                f"ANTES de qualquer TRUNCATE. Drifts: {drifts}"
             )
             return {
                 "status": "aborted_schema_drift",
+                "sport": sport,
                 "env": env,
                 "drift": drifts,
                 "synced": [],
             }
 
-        _ensure_sync_state_table(pg_conn)
+        _ensure_sync_state_table(pg_conn, schema)
 
         synced: list[dict] = []
         for table in resolved:
-            result = _sync_one_table(bq, pg_conn, table, force=force)
+            result = _sync_one_table(
+                bq, pg_conn, table, dataset, schema, tables_ordered, force=force
+            )
             synced.append(result)
 
         n_synced = sum(1 for r in synced if not r.get("skipped"))
         n_skipped = sum(1 for r in synced if r.get("skipped"))
         logger.info(
-            f"Sync env={env} concluído: {n_synced} tabela(s) sincronizada(s), "
-            f"{n_skipped} pulada(s) por BQ inalterado"
+            f"Sync sport={sport} env={env} concluído: {n_synced} tabela(s) "
+            f"sincronizada(s), {n_skipped} pulada(s) por BQ inalterado"
         )
 
         return {
             "status": "success",
+            "sport": sport,
             "env": env,
             "synced": synced,
             "drift": [],
