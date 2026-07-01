@@ -1,0 +1,226 @@
+# ============================================================
+# WORKFLOW FUTEBOL INJURIES (pré-jogo / por fixture)
+# Poll dos DESFALQUES pré-jogo (/injuries?fixture) dos jogos NS futuros — habilita as
+# premissas desfalque_adversario (+8) / desfalque_proprio (−15) do Motor de Score (S7).
+# Complementa o snapshot season-log diário (workflow_futebol.yml fase 1j), que congela
+# quando não há rodada recente (pausa FIFA) e não traz desfalques de jogos futuros. Uma
+# passada varre os NS na janela "daily" (0–14d): o extractor (mode=pregame) bucketa cada
+# jogo pela proximidade do kickoff (FUTEBOL_INJURIES_WINDOWS) e grava 1 arquivo date-stampado
+# por (fixture, dia) com skip-if-exists (1 captura/dia). Se algo novo foi coletado, rebuild
+# ENXUTO dos modelos do lado injuries.
+#
+# Disparado pelo Cloud Scheduler ~horário (SA schedulerde@, tem workflows.invoker). Cadência
+# CUSTO-ÓTIMA (não 4×/h): o fact_injuries_snapshot é daily-grained (dedup por snapshot_date) ->
+# re-poll sub-diário só escolhe QUAL passada do dia tira o snapshot; a notícia final de
+# escalação vem da fonte de lineups (confirmed). Sem notificação por email no sucesso.
+#
+# WRITER DISJUNTO: este workflow refresca SÓ os modelos do lado injuries (até
+# int_futebol_desfalques); o Motor de Score (premissas_1x2 -> fact_value_opportunities) é
+# reconstruído pelo workflow_futebol_odds (~15min), que absorve os desfalques frescos no
+# próximo poll. Assim não há dois workflows escrevendo as mesmas tabelas do Score.
+#
+# O dbt usa --select SEM '+' (enxuto): a external table raw_futebol_injuries é a fonte; o gate
+# saved_count>0 garante que só roda com arquivo novo no GCS.
+# ============================================================
+
+main:
+    steps:
+    - init:
+        assign:
+        - workflow_start_time: ${sys.now()}
+        - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
+        - workflow_status: "SUCCESS"
+        - saved_count: 0
+
+    - log_start:
+        call: sys.log
+        args:
+            severity: INFO
+            data:
+                message: "Workflow injuries (pregame) started"
+                workflow_name: "workflow_futebol_injuries"
+                execution_id: ${execution_id}
+
+    # ========================================================================
+    # FASE 1: Extração dos desfalques pré-jogo (mode=pregame, janela numa passada)
+    # ========================================================================
+    - phase1_extract_injuries:
+        try:
+            steps:
+            - call_extract_injuries:
+                try:
+                    call: http.get
+                    args:
+                        # URL segue o padrão dos demais serviços futebol (confirmar pós-deploy)
+                        url: https://extract-injuries-r52p4w2f2a-ue.a.run.app
+                        query:
+                            mode: pregame
+                        auth:
+                            type: OIDC
+                        timeout: 1800
+                    result: injuries_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - read_saved_count:
+                assign:
+                - saved_count: ${default(map.get(injuries_result.body, "saved_count"), 0)}
+            - log_phase1_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Injuries (pregame) extraction completed"
+                        saved_count: ${saved_count}
+        except:
+            as: e
+            steps:
+            - log_phase1_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Injuries (pregame) extraction failed"
+                        error: ${e.message}
+            - handle_phase1_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+
+    # ========================================================================
+    # GATE: só roda o dbt se algo novo foi coletado (saved_count > 0).
+    # ========================================================================
+    - check_new_injuries:
+        switch:
+            - condition: ${saved_count > 0}
+              next: phase2_dbt
+        next: skip_dbt
+
+    - skip_dbt:
+        steps:
+        - log_skip:
+            call: sys.log
+            args:
+                severity: INFO
+                data:
+                    message: "Nenhum desfalque novo — dbt pulado"
+                    saved_count: ${saved_count}
+        - skip_to_finalize:
+            next: finalize
+
+    # ========================================================================
+    # FASE 2: dbt enxuto — só os modelos do lado injuries (NÃO toca no Score; ver header).
+    # int_futebol_player_importance/desfalques são views: dbt ordena pelo ref() (importance ->
+    # desfalques) e recria a DDL; o dado de desfalque vem do fact_injuries_snapshot recém-buildado.
+    # Cai em finalize ao terminar.
+    # ========================================================================
+    - phase2_dbt:
+        try:
+            steps:
+            - init_job_config:
+                assign:
+                - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+                - job_full_name: ${"projects/" + project_id + "/locations/us-east1/jobs/dbt-futebol"}
+            - execute_cloud_run_job:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "stg_futebol_injuries", "fact_injuries_snapshot", "int_futebol_player_importance", "int_futebol_desfalques", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: job_execution_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - log_job_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "dbt injuries rebuild completed"
+                        saved_count: ${saved_count}
+                        execution_name: ${job_execution_result.name}
+        except:
+            as: e
+            steps:
+            - log_job_error:
+                call: sys.log
+                args:
+                    severity: WARNING
+                    data:
+                        message: "dbt injuries rebuild falhou — recovery com --full-refresh"
+                        error: ${e.message}
+            # RECOVERY: roda o MESMO select com --full-refresh. Resolve o caso DETERMINÍSTICO de
+            # drift table<->view (a relação existe no BQ como table mas o modelo virou view, ou
+            # vice-versa) — que o retry acima não conserta por reexecutar o comando idêntico.
+            # Custo ~0: os modelos são todos table/view (nenhum incremental).
+            - recover_full_refresh:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "stg_futebol_injuries", "fact_injuries_snapshot", "int_futebol_player_importance", "int_futebol_desfalques", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: recover_result
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+                except:
+                    as: e2
+                    steps:
+                    - log_recover_failed:
+                        call: sys.log
+                        args:
+                            severity: ERROR
+                            data:
+                                message: "dbt recovery (--full-refresh) também falhou"
+                                error: ${e2.message}
+                    - handle_job_errors:
+                        assign:
+                        - workflow_status: "PARTIAL_FAILURE"
+            - log_recover_done:
+                call: sys.log
+                args:
+                    severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+                    data:
+                        message: ${if(workflow_status == "SUCCESS", "dbt injuries rebuild recuperado via --full-refresh", "dbt injuries rebuild falhou mesmo após --full-refresh")}
+                        status: ${workflow_status}
+
+    - finalize:
+        assign:
+        - workflow_end_time: ${sys.now()}
+        - duration_seconds: ${workflow_end_time - workflow_start_time}
+
+    - log_completion:
+        call: sys.log
+        args:
+            severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+            data:
+                message: "Workflow injuries (pregame) completed"
+                workflow_name: "workflow_futebol_injuries"
+                status: ${workflow_status}
+                saved_count: ${saved_count}
+                duration_seconds: ${duration_seconds}
+
+    - return_result:
+        return:
+            status: ${workflow_status}
+            saved_count: ${saved_count}
+            duration_seconds: ${duration_seconds}
