@@ -15,18 +15,25 @@ logger = setup_logger(__name__)
 
 
 class PredictionsExtractor(BaseExtractor):
-    """Extrai a previsão da própria API via /predictions?fixture={id} em 1 janela (T-2h).
+    """Extrai a previsão da própria API via /predictions?fixture={id} em 2 janelas.
 
-    BASELINE DE COMPARAÇÃO (não é produto): guarda as probabilidades (predictions.percent)
-    e a comparação de força (comparison.*) que o algoritmo da API calcula por jogo, p/
-    avaliar depois se um modelo próprio bate a API consistentemente (= edge real).
+    BASELINE DE COMPARAÇÃO + fonte da corroboração `modelo_api_concorda` (+7) do Motor de
+    Score: guarda as probabilidades (predictions.percent) e a comparação de força
+    (comparison.*) que o algoritmo da API calcula por jogo.
 
     Coleta FORWARD-ONLY (previsão de jogo passado não é reconstruível — a API recomputa
-    com o resultado já conhecido). Um poll (~15min) faz UMA passada nos jogos NS das
-    próximas ~2h, calcula o lead (minutos até o kickoff) e, p/ a janela cuja banda
-    (FUTEBOL_PREDICTIONS_WINDOWS) contém o lead, bate /predictions 1x e grava 1 arquivo
-    por fixture. skip-if-exists trava recaptura (1 snapshot/jogo). NÃO grava vazio (jogo
-    sem previsão ainda → re-tenta no próximo poll; gravar vazio travaria o skip-if-exists).
+    com o resultado já conhecido). Um poll (~15min) faz UMA passada nos jogos NS dentro do
+    horizonte (FUTEBOL_PREDICTIONS_WINDOWS; hoje "daily" = ~2h a 14 dias + "t2h" perto do
+    jogo), calcula o lead (min até o kickoff) e, p/ a janela cuja banda contém o lead,
+    bate /predictions 1x.
+
+    O path é DATE-STAMPADO por (fixture, janela, dia):
+    raw_futebol_predictions_{fixture}_{janela}_{YYYY-MM-DD}.json. Logo skip-if-exists é por
+    DIA → a janela "daily" recaptura 1x/dia (mantém os jogos futuros atualizados); a "t2h"
+    dá o refresh perto do kickoff. O fato dedup latest-wins por loaded_at → o snapshot mais
+    fresco vence; os arquivos acumulam no GCS (padrão de standings/injuries). NÃO grava vazio
+    (jogo sem previsão ainda — ex.: liga sem coverage ou mata-mata com times TBD → degradação
+    graciosa: re-tenta no próximo poll; gravar vazio travaria o skip-if-exists).
 
     1 linha NDJSON por fixture; predictions/comparison ficam aninhados (flatten no dbt,
     sem UNNEST — 1 previsão por jogo).
@@ -99,6 +106,7 @@ class PredictionsExtractor(BaseExtractor):
             return []
 
         now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")  # date-stamp do snapshot (recaptura 1x/dia por janela)
         saved_paths = []
         skipped = 0
         empty = 0
@@ -124,10 +132,11 @@ class PredictionsExtractor(BaseExtractor):
                     continue
                 considered += 1
 
-                # 1 arquivo por fixture (janela única, sem sufixo de mode):
-                # raw_futebol_predictions_{fixture}.json
+                # 1 arquivo por (fixture, janela, dia) — date-stampado p/ recaptura diária:
+                # raw_futebol_predictions_{fixture}_{janela}_{YYYY-MM-DD}.json
                 blob_path = get_gcs_path(
                     "predictions", 0, sport="futebol", game_id=fixture_id,
+                    mode=window, date=today,
                 )
 
                 # Erros transitórios (timeout de API/GCS) não abortam o run: loga, conta
@@ -160,6 +169,8 @@ class PredictionsExtractor(BaseExtractor):
                         season=0,  # ignorado pelo branch sport='futebol' do get_gcs_path
                         sport="futebol",
                         game_id=fixture_id,
+                        mode=window,
+                        date=today,
                     )
                     saved_paths.append(gcs_path)
                 except Exception as e:
