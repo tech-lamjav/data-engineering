@@ -52,6 +52,8 @@ ALL_WORKFLOWS = [
     "workflow-futebol-team-stats",
     "workflow-futebol-odds",
     "workflow-futebol-predictions",
+    "workflow-futebol-injuries",
+    "workflow-futebol-sync",
     "workflow-daily-summary",
 ]
 

@@ -129,6 +129,7 @@ main:
             severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
             data:
                 message: "Workflow futebol-sync concluído"
+                workflow_name: "workflow_futebol_sync"
                 status: ${workflow_status}
                 duration_seconds: ${duration_seconds}
                 failed_services: ${failed_services}
