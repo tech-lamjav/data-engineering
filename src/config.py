@@ -22,35 +22,45 @@ API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
 # Ligas alvo do pipeline futebol
 BRASILEIRAO_ID = 71
 COPA_MUNDO_ID = 1  # validar no primeiro run
+SERIE_B_ID = 72  # odds/predictions TRUE, injuries FALSE (coverage validado 2026-07)
 
 # Split entre backfill (one-shot, anos anteriores) e current (diário, ano corrente)
 LEAGUES_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
+    (SERIE_B_ID, 2024),
+    (SERIE_B_ID, 2025),
 ]
 LEAGUES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
+    (SERIE_B_ID, 2026),
 ]
 
 # Idem leagues — 4 chamadas distribuídas entre backfill (one-shot) e current (diário).
 TEAMS_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
+    (SERIE_B_ID, 2024),
+    (SERIE_B_ID, 2025),
 ]
 TEAMS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
+    (SERIE_B_ID, 2026),
 ]
 
 # Idem teams — catálogo de jogadores via /players?league=&season= (paginado).
 PLAYERS_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
+    (SERIE_B_ID, 2024),
+    (SERIE_B_ID, 2025),
 ]
 PLAYERS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
+    (SERIE_B_ID, 2026),
 ]
 
 # Fixtures (jogos) — tabela mãe via /fixtures?league=&season= (paginado).
@@ -58,10 +68,13 @@ PLAYERS_CURRENT = [
 FIXTURES_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
+    (SERIE_B_ID, 2024),
+    (SERIE_B_ID, 2025),
 ]
 FIXTURES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
+    (SERIE_B_ID, 2026),
 ]
 
 # Standings (/standings) — snapshot diário da tabela do campeonato (1 chamada por
@@ -73,10 +86,13 @@ FIXTURES_CURRENT = [
 STANDINGS_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
+    (SERIE_B_ID, 2024),
+    (SERIE_B_ID, 2025),
 ]
 STANDINGS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
+    (SERIE_B_ID, 2026),
 ]
 
 # Injuries (/injuries) — snapshot diário de lesionados/suspensos (1 chamada/liga×season,
@@ -86,7 +102,8 @@ STANDINGS_CURRENT = [
 # mesmo dia sobrescreve (idempotente). ⚠️ A API repete linhas EXATAS — dedup no fato.
 # ⚠️ Coverage validado em dim_leagues (2026-06-15): coverage.injuries = TRUE só p/
 # Brasileirão (71) 2024/25/26. Copa do Mundo (1) 2026 = FALSE → EXCLUÍDA (a API não
-# fornece lesões da Copa; incluí-la gastaria quota e voltaria vazia).
+# fornece lesões da Copa; incluí-la gastaria quota e voltaria vazia). Série B (72)
+# também EXCLUÍDA: coverage.injuries=FALSE em 2024/25/26 (validado 2026-07).
 INJURIES_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
@@ -118,7 +135,7 @@ FUTEBOL_ODDS_WINDOWS = {
 # Ligas com coverage.odds=TRUE (validado em dim_leagues). O poll filtra os jogos NS
 # por esses league_ids. Diferente de /injuries (Copa excluída), odds de Copa do Mundo
 # normalmente existem — manter 1 aqui se a validação confirmar coverage.odds=TRUE.
-FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID]
+FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID]
 
 # Predictions (/predictions) — BASELINE de comparação (a previsão do algoritmo da própria
 # API) E fonte da corroboração `modelo_api_concorda` (+7) do Motor de Score. Não é produto:
@@ -146,7 +163,7 @@ FUTEBOL_PREDICTIONS_WINDOWS = {
 
 # coverage.predictions=TRUE p/ Brasileirão (71) E Copa do Mundo (1) — validado em
 # dim_leagues (2026-06-17). Diferente de /injuries (Copa excluída): ambos incluídos.
-FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID]
+FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID]
 
 # Injuries PRÉ-JOGO (/injuries?fixture) — coleta FORWARD-ONLY por fixture (modo "pregame"),
 # complementando o snapshot season-log diário (INJURIES_CURRENT, /injuries?league&season).
@@ -166,6 +183,7 @@ FUTEBOL_INJURIES_WINDOWS = {
 
 # coverage.injuries=TRUE só p/ Brasileirão (71); Copa do Mundo (1) EXCLUÍDA (igual a
 # INJURIES_CURRENT — a API não fornece lesões da Copa; incluí-la gastaria quota e voltaria vazia).
+# Série B (72) também EXCLUÍDA: coverage.injuries=FALSE (validado 2026-07).
 FUTEBOL_INJURIES_LEAGUE_IDS = [BRASILEIRAO_ID]
 
 # Fixture statistics (/fixtures/statistics) — 1 chamada por fixture, só após FT.
