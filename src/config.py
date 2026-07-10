@@ -23,6 +23,7 @@ API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
 BRASILEIRAO_ID = 71
 COPA_MUNDO_ID = 1  # validar no primeiro run
 SERIE_B_ID = 72  # odds/predictions TRUE, injuries FALSE (coverage validado 2026-07)
+COPA_DO_BRASIL_ID = 73  # mata-mata: standings/injuries FALSE; predictions TRUE; odds sazonal -> FASE 2 (validado 2026-07-10)
 
 # Split entre backfill (one-shot, anos anteriores) e current (diário, ano corrente)
 LEAGUES_BACKFILL = [
@@ -30,11 +31,14 @@ LEAGUES_BACKFILL = [
     (BRASILEIRAO_ID, 2025),
     (SERIE_B_ID, 2024),
     (SERIE_B_ID, 2025),
+    (COPA_DO_BRASIL_ID, 2024),
+    (COPA_DO_BRASIL_ID, 2025),
 ]
 LEAGUES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (SERIE_B_ID, 2026),
+    (COPA_DO_BRASIL_ID, 2026),
 ]
 
 # Idem leagues — 4 chamadas distribuídas entre backfill (one-shot) e current (diário).
@@ -43,11 +47,14 @@ TEAMS_BACKFILL = [
     (BRASILEIRAO_ID, 2025),
     (SERIE_B_ID, 2024),
     (SERIE_B_ID, 2025),
+    (COPA_DO_BRASIL_ID, 2024),
+    (COPA_DO_BRASIL_ID, 2025),
 ]
 TEAMS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (SERIE_B_ID, 2026),
+    (COPA_DO_BRASIL_ID, 2026),
 ]
 
 # Idem teams — catálogo de jogadores via /players?league=&season= (paginado).
@@ -56,11 +63,14 @@ PLAYERS_BACKFILL = [
     (BRASILEIRAO_ID, 2025),
     (SERIE_B_ID, 2024),
     (SERIE_B_ID, 2025),
+    (COPA_DO_BRASIL_ID, 2024),
+    (COPA_DO_BRASIL_ID, 2025),
 ]
 PLAYERS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (SERIE_B_ID, 2026),
+    (COPA_DO_BRASIL_ID, 2026),
 ]
 
 # Fixtures (jogos) — tabela mãe via /fixtures?league=&season= (paginado).
@@ -70,11 +80,14 @@ FIXTURES_BACKFILL = [
     (BRASILEIRAO_ID, 2025),
     (SERIE_B_ID, 2024),
     (SERIE_B_ID, 2025),
+    (COPA_DO_BRASIL_ID, 2024),
+    (COPA_DO_BRASIL_ID, 2025),
 ]
 FIXTURES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (SERIE_B_ID, 2026),
+    (COPA_DO_BRASIL_ID, 2026),
 ]
 
 # Standings (/standings) — snapshot diário da tabela do campeonato (1 chamada por
@@ -83,6 +96,8 @@ FIXTURES_CURRENT = [
 # snapshot por dia (histórico de evolução da tabela) e re-rodar no mesmo dia
 # sobrescreve o mesmo arquivo (idempotente). A API não tem histórico diário — o
 # backfill captura a tabela FINAL de 2024/2025 com snapshot_date do dia da coleta.
+# ⚠️ Copa do Brasil (73) EXCLUÍDA (backfill E current): mata-mata puro, coverage.standings=FALSE
+# (validado 2026-07-10) — o extractor itera SÓ estas tuplas; incluí-la gastaria quota e voltaria vazia.
 STANDINGS_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
@@ -104,6 +119,7 @@ STANDINGS_CURRENT = [
 # Brasileirão (71) 2024/25/26. Copa do Mundo (1) 2026 = FALSE → EXCLUÍDA (a API não
 # fornece lesões da Copa; incluí-la gastaria quota e voltaria vazia). Série B (72)
 # também EXCLUÍDA: coverage.injuries=FALSE em 2024/25/26 (validado 2026-07).
+# Copa do Brasil (73) idem: coverage.injuries=FALSE em 2024/25/26 (validado 2026-07-10).
 INJURIES_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
@@ -135,6 +151,9 @@ FUTEBOL_ODDS_WINDOWS = {
 # Ligas com coverage.odds=TRUE (validado em dim_leagues). O poll filtra os jogos NS
 # por esses league_ids. Diferente de /injuries (Copa excluída), odds de Copa do Mundo
 # normalmente existem — manter 1 aqui se a validação confirmar coverage.odds=TRUE.
+# ⚠️ Copa do Brasil (73) entra SÓ na FASE 2 (~última semana de julho, janela das oitavas
+# de 01/08): coverage.odds é sazonal (FALSE entre fases, validado 2026-07-10) — ligar
+# somente após confirmar coverage.odds=TRUE + Pinnacle (id=4) no feed da liga.
 FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID]
 
 # Predictions (/predictions) — BASELINE de comparação (a previsão do algoritmo da própria
@@ -163,7 +182,9 @@ FUTEBOL_PREDICTIONS_WINDOWS = {
 
 # coverage.predictions=TRUE p/ Brasileirão (71) E Copa do Mundo (1) — validado em
 # dim_leagues (2026-06-17). Diferente de /injuries (Copa excluída): ambos incluídos.
-FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID]
+# Copa do Brasil (73): predictions TRUE e REAIS já nas oitavas (validado 2026-07-10,
+# ex.: 35/35/30 + advice — não é o placeholder 45/45/10 de mata-mata da Copa do Mundo).
+FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID]
 
 # Injuries PRÉ-JOGO (/injuries?fixture) — coleta FORWARD-ONLY por fixture (modo "pregame"),
 # complementando o snapshot season-log diário (INJURIES_CURRENT, /injuries?league&season).
