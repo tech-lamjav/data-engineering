@@ -24,6 +24,7 @@ BRASILEIRAO_ID = 71
 COPA_MUNDO_ID = 1  # validar no primeiro run
 SERIE_B_ID = 72  # odds/predictions TRUE, injuries FALSE (coverage validado 2026-07)
 COPA_DO_BRASIL_ID = 73  # mata-mata: standings/injuries FALSE; predictions TRUE; odds sazonal -> FASE 2 (validado 2026-07-10)
+LIBERTADORES_ID = 13  # grupos+mata-mata: standings/predictions TRUE; injuries FALSE em 2026 (2025 foi TRUE — rechecar em ago); odds armada dia 0, dormente até 10/08 (validado 2026-07-13)
 
 # Split entre backfill (one-shot, anos anteriores) e current (diário, ano corrente)
 LEAGUES_BACKFILL = [
@@ -33,12 +34,15 @@ LEAGUES_BACKFILL = [
     (SERIE_B_ID, 2025),
     (COPA_DO_BRASIL_ID, 2024),
     (COPA_DO_BRASIL_ID, 2025),
+    (LIBERTADORES_ID, 2024),
+    (LIBERTADORES_ID, 2025),
 ]
 LEAGUES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (SERIE_B_ID, 2026),
     (COPA_DO_BRASIL_ID, 2026),
+    (LIBERTADORES_ID, 2026),
 ]
 
 # Idem leagues — 4 chamadas distribuídas entre backfill (one-shot) e current (diário).
@@ -49,12 +53,15 @@ TEAMS_BACKFILL = [
     (SERIE_B_ID, 2025),
     (COPA_DO_BRASIL_ID, 2024),
     (COPA_DO_BRASIL_ID, 2025),
+    (LIBERTADORES_ID, 2024),
+    (LIBERTADORES_ID, 2025),
 ]
 TEAMS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (SERIE_B_ID, 2026),
     (COPA_DO_BRASIL_ID, 2026),
+    (LIBERTADORES_ID, 2026),
 ]
 
 # Idem teams — catálogo de jogadores via /players?league=&season= (paginado).
@@ -65,12 +72,15 @@ PLAYERS_BACKFILL = [
     (SERIE_B_ID, 2025),
     (COPA_DO_BRASIL_ID, 2024),
     (COPA_DO_BRASIL_ID, 2025),
+    (LIBERTADORES_ID, 2024),
+    (LIBERTADORES_ID, 2025),
 ]
 PLAYERS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (SERIE_B_ID, 2026),
     (COPA_DO_BRASIL_ID, 2026),
+    (LIBERTADORES_ID, 2026),
 ]
 
 # Fixtures (jogos) — tabela mãe via /fixtures?league=&season= (paginado).
@@ -82,12 +92,15 @@ FIXTURES_BACKFILL = [
     (SERIE_B_ID, 2025),
     (COPA_DO_BRASIL_ID, 2024),
     (COPA_DO_BRASIL_ID, 2025),
+    (LIBERTADORES_ID, 2024),
+    (LIBERTADORES_ID, 2025),
 ]
 FIXTURES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (SERIE_B_ID, 2026),
     (COPA_DO_BRASIL_ID, 2026),
+    (LIBERTADORES_ID, 2026),
 ]
 
 # Standings (/standings) — snapshot diário da tabela do campeonato (1 chamada por
@@ -98,16 +111,22 @@ FIXTURES_CURRENT = [
 # backfill captura a tabela FINAL de 2024/2025 com snapshot_date do dia da coleta.
 # ⚠️ Copa do Brasil (73) EXCLUÍDA (backfill E current): mata-mata puro, coverage.standings=FALSE
 # (validado 2026-07-10) — o extractor itera SÓ estas tuplas; incluí-la gastaria quota e voltaria vazia.
+# Libertadores (13) INCLUÍDA (≠ Copa do Brasil): a fase de grupos tem tabela (coverage.standings=TRUE,
+# validado 2026-07-13) e o extractor já achata os N grupos (Group A–H, rank 1-4 por grupo). No
+# mata-mata (ago+) a API serve a tabela final dos grupos congelada — snapshot diário segue barato.
 STANDINGS_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
     (SERIE_B_ID, 2024),
     (SERIE_B_ID, 2025),
+    (LIBERTADORES_ID, 2024),
+    (LIBERTADORES_ID, 2025),
 ]
 STANDINGS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (SERIE_B_ID, 2026),
+    (LIBERTADORES_ID, 2026),
 ]
 
 # Injuries (/injuries) — snapshot diário de lesionados/suspensos (1 chamada/liga×season,
@@ -120,6 +139,9 @@ STANDINGS_CURRENT = [
 # fornece lesões da Copa; incluí-la gastaria quota e voltaria vazia). Série B (72)
 # também EXCLUÍDA: coverage.injuries=FALSE em 2024/25/26 (validado 2026-07).
 # Copa do Brasil (73) idem: coverage.injuries=FALSE em 2024/25/26 (validado 2026-07-10).
+# Libertadores (13): coverage.injuries=FALSE em 2026 (e 2024), mas 2025 FOI TRUE — RECHECAR em
+# agosto via dim_leagues antes de decidir; se virar TRUE: 13 em INJURIES_CURRENT +
+# FUTEBOL_INJURIES_LEAGUE_IDS + deploy cirúrgico extract-injuries (validado 2026-07-13).
 INJURIES_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
@@ -151,10 +173,15 @@ FUTEBOL_ODDS_WINDOWS = {
 # Ligas com coverage.odds=TRUE (validado em dim_leagues). O poll filtra os jogos NS
 # por esses league_ids. Diferente de /injuries (Copa excluída), odds de Copa do Mundo
 # normalmente existem — manter 1 aqui se a validação confirmar coverage.odds=TRUE.
-# ⚠️ Copa do Brasil (73) entra SÓ na FASE 2 (~última semana de julho, janela das oitavas
-# de 01/08): coverage.odds é sazonal (FALSE entre fases, validado 2026-07-10) — ligar
-# somente após confirmar coverage.odds=TRUE + Pinnacle (id=4) no feed da liga.
-FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID]
+# Copa do Brasil (73) e Libertadores (13) ARMADAS em 2026-07-13 (decisão: quitar a "Fase 2"
+# no dia 0 da 13, sem deploy futuro p/ não esquecer). Ficam DORMENTES com custo 0 — o poll
+# só chama /odds p/ NS com lead <=24h — até o t24h abrir: CdB ~31/07 (oitavas 01/08),
+# Libertadores 10/08 (ida 11/08, volta 18/08). coverage.odds é sazonal (FALSE fora da janela
+# 1-14d); a checagem de Pinnacle (id=4) virou verificação pós-coleta: sem Pinnacle o board
+# não abre 1X2/AH/OU (de-vig ancora nele; consenso só BTTS/HT-FT/DC) → feed ruim = board
+# fechado, nunca sinal lixo. ⚠️ RENOVAR O PLANO PRO ATÉ 10/08 (expira 11/08 12:21 UTC):
+# sem renovar, t1h/t15m de 11/08, a volta de 18/08 e TODO o pipeline diário param.
+FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID]
 
 # Predictions (/predictions) — BASELINE de comparação (a previsão do algoritmo da própria
 # API) E fonte da corroboração `modelo_api_concorda` (+7) do Motor de Score. Não é produto:
@@ -184,7 +211,11 @@ FUTEBOL_PREDICTIONS_WINDOWS = {
 # dim_leagues (2026-06-17). Diferente de /injuries (Copa excluída): ambos incluídos.
 # Copa do Brasil (73): predictions TRUE e REAIS já nas oitavas (validado 2026-07-10,
 # ex.: 35/35/30 + advice — não é o placeholder 45/45/10 de mata-mata da Copa do Mundo).
-FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID]
+# Libertadores (13): coverage.predictions=TRUE (validado 2026-07-13). A janela daily de 14d
+# só alcança as oitavas ~28/07 (ida 11/08) — 0 linhas até lá é esperado; na 1ª captura
+# conferir REAL (padrão CdB) vs placeholder 45/45/10 (padrão Copa do Mundo, viraria ruído
+# no modelo_api_concorda).
+FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID]
 
 # Injuries PRÉ-JOGO (/injuries?fixture) — coleta FORWARD-ONLY por fixture (modo "pregame"),
 # complementando o snapshot season-log diário (INJURIES_CURRENT, /injuries?league&season).
