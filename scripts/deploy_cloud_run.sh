@@ -345,9 +345,10 @@ deploy_service() {
             --set-secrets "GMAIL_USER=GMAIL_USER:latest,GMAIL_APP_PASSWORD=GMAIL_APP_PASSWORD:latest,NOTIFY_EMAIL=NOTIFY_EMAIL:latest" \
             --project "$GCP_PROJECT_ID" || DEPLOY_EXIT_CODE=$?
     elif [ "$SERVICE_NAME" = "sync-bq-to-postgres" ]; then
-        # Sync precisa de 1Gi (carrega CSV em memória) + dois secrets (PRD e DEV).
-        # Workflow agendado bate em ?env=prd e depois ?env=dev sequencialmente.
-        # Timeout 900s (~15 min) é suficiente p/ volume atual (~250k linhas total).
+        # Sync precisa de 2Gi: o COPY é streaming, mas o RSS do processo acumula
+        # entre os requests PRD e DEV na mesma instância (max-instances=1) e com
+        # 1Gi houve OOM kill em 10-12/07/2026 (pico 1,1Gi; ~700k linhas no total).
+        # Dois secrets (PRD e DEV); workflow bate em ?env=prd e depois ?env=dev.
         # max-instances=1: sync é serial, evitar concorrência destrutiva.
         # Python 3.13 pinado: psycopg[binary]==3.2.3 não tem wheels pra cp314 ainda.
         gcloud run deploy "$SERVICE_NAME" \
@@ -356,7 +357,7 @@ deploy_service() {
             --platform managed \
             --no-allow-unauthenticated \
             --service-account "$SERVICE_ACCOUNT" \
-            --memory "1Gi" \
+            --memory "2Gi" \
             --cpu "$CPU" \
             --timeout "900" \
             --max-instances "1" \

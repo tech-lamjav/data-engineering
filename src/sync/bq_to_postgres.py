@@ -13,6 +13,11 @@ Decisões de design (ver PLANO_OTIMIZACAO_BQ_SUPABASE.md fase 2):
   nativamente. Distingue None (NULL) de '' (string vazia real) — resolve o M11, em
   que o CSV textual com `NULL ''` colapsava ambos no mesmo token. Também faz
   streaming linha-a-linha (sem materializar a tabela inteira em StringIO).
+- Sessão Postgres com `SET statement_timeout = '900s'`: o default do Supabase no
+  nível do database é 2min, insuficiente p/ COPY de marts grandes em compute
+  pequeno (DEV cancelou fact_fixture_player_stats em 10/07 com QueryCanceled).
+  E `connect_timeout=15`: fail-fast quando o pooler não completa o handshake
+  (incidente Supavisor 05-06/07 prendia o connect ~381s); retry fica no workflow.
 
 Multi-esporte: o engine é sport-agnostic. `run_sync(sport=...)` resolve via
 `config.get_sync_target()` o trio (dataset BQ, schema Postgres, allowlist ordenada).
@@ -412,10 +417,19 @@ def run_sync(
     )
 
     bq = bigquery.Client(project=BIGQUERY_PROJECT_ID)
-    pg_conn = psycopg.connect(pg_url)
+    # connect_timeout é por host tentado (o DNS do pooler tem múltiplos A records);
+    # sem ele, pooler degradado = connect preso por minutos em vez de falhar rápido.
+    pg_conn = psycopg.connect(pg_url, connect_timeout=15)
     pg_conn.autocommit = False
 
     try:
+        # Override por sessão do statement_timeout=2min que o Supabase seta no
+        # database: COPY de marts grandes excede 2min (sobretudo no compute menor
+        # do DEV). 900s alinha com o timeout do Cloud Run; não altera nada global.
+        with pg_conn.cursor() as cur:
+            cur.execute("SET statement_timeout = '900s'")
+        pg_conn.commit()
+
         drifts = check_schema_parity(bq, pg_conn, resolved, dataset, schema)
         if drifts:
             logger.error(
