@@ -1,4 +1,5 @@
 """Extractor para /teams da API-Football v3."""
+import time
 from typing import Dict, Any
 from src.utils.helpers import utcnow_iso
 from src.extractors.base_extractor import BaseExtractor
@@ -39,6 +40,7 @@ class TeamsExtractor(BaseExtractor):
         for league_id, season in self.targets:
             logger.info(f"Extraindo league={league_id} season={season}...")
             envelope = self.client.get_teams(league_id, season)
+            time.sleep(0.4)  # cortesia entre chamadas (rate-limit API-Football)
 
             errors = envelope.get("errors")
             if errors:
