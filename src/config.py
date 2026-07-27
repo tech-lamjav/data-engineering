@@ -440,6 +440,7 @@ FUTEBOL_SYNC_TABLES_ORDERED = [
     "int_futebol_premissas_btts",
     "int_futebol_premissas_dc",
     "fact_value_opportunities",
+    "fact_value_opportunities_hist",
 ]
 
 

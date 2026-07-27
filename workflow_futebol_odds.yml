@@ -14,6 +14,10 @@
 #
 # O dbt usa --select SEM '+' (enxuto): a external table raw_futebol_odds é a fonte; o gate
 # saved_count>0 garante que só roda com arquivo novo no GCS (external table não-vazia).
+#
+# FASE 3 (dbt snapshot, só se a fase 2 deu certo): versiona fact_value_opportunities_hist —
+# histórico append-only por janela (t24h/t1h/t15m), pra não perder o pick de manhã quando a
+# linha fecha e o mart (full-refresh) sobrescreve com o pick de t15m.
 # ============================================================
 
 main:
@@ -194,6 +198,65 @@ main:
                         message: ${if(workflow_status == "SUCCESS", "dbt odds rebuild recuperado via --full-refresh", "dbt odds rebuild falhou mesmo após --full-refresh")}
                         status: ${workflow_status}
                         saved_count: ${saved_count}
+
+    # ========================================================================
+    # GATE: só roda o snapshot histórico se o rebuild do mart deu certo (direto
+    # ou via recovery --full-refresh). Se as duas tentativas falharam, não faz
+    # sentido versionar o mart potencialmente stale — pula direto pro finalize.
+    # ========================================================================
+    - check_dbt_success:
+        switch:
+            - condition: ${workflow_status == "SUCCESS"}
+              next: phase3_dbt_snapshot
+        next: finalize
+
+    # ========================================================================
+    # FASE 3: dbt snapshot — versiona fact_value_opportunities_hist (histórico
+    # append-only por janela t24h/t1h/t15m). strategy=check só insere uma linha
+    # nova quando algo em check_cols mudou (ex.: janela_usada avançou ou o
+    # score/edge mudaram); senão não duplica. Mesmo Cloud Run Job dbt-futebol.
+    # ========================================================================
+    - phase3_dbt_snapshot:
+        try:
+            steps:
+            - execute_snapshot_job:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "snapshot", "--select", "fact_value_opportunities_hist", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: snapshot_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - log_snapshot_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Snapshot histórico fact_value_opportunities_hist atualizado"
+                        execution_name: ${snapshot_result.name}
+        except:
+            as: e
+            steps:
+            - log_snapshot_error:
+                call: sys.log
+                args:
+                    severity: WARNING
+                    data:
+                        message: "dbt snapshot (fact_value_opportunities_hist) falhou — não bloqueia o workflow"
+                        error: ${e.message}
+            - handle_snapshot_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
 
     - finalize:
         assign:
