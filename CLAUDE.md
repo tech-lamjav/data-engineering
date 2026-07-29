@@ -79,3 +79,13 @@ def main():
 if __name__ == "__main__":
     sys.exit(main())
 ```
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (tech-lamjav/data-engineering), via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context layout — `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
