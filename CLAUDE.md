@@ -82,9 +82,15 @@ if __name__ == "__main__":
 
 ## Agent skills
 
+Some installed skills are user-invocable only — Claude cannot trigger them itself: `/triage`, `/to-tickets`, `/to-spec`, `/implement`, `/wayfinder`, `/grill-with-docs`, `/improve-codebase-architecture`, `/grill-me`, `/handoff`. Whenever the task at hand matches one of these workflows (a feature idea worth ticketing, issues to triage, a plan or spec worth grilling, work worth handing off), proactively recommend the matching command to the user.
+
 ### Issue tracker
 
 Issues live in GitHub Issues (tech-lamjav/data-engineering), via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
