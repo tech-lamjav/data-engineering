@@ -29,6 +29,19 @@ SUDAMERICANA_ID = 11  # par da Libertadores (grupos+mata-mata): standings/predic
 LA_LIGA_ID = 140  # 1ª europeia (top-5, pontos corridos 20 times): Tier A completo — standings/players/predictions/injuries + xG. Probe 2026-07-15: 2024/2025 c/ injuries/players/stats_fixtures=TRUE (coverage estrutural sólida); 2026 mostra FALSE por PRÉ-TEMPORADA (abertura 16/08), flipam ao começar. Split-year: season 2026 = 2026/27. Odds armada dia 0, dormente até t24h ~15/08 (opener 16/08)
 PREMIER_LEAGUE_ID = 39  # 2ª europeia (top-5, pontos corridos 20 times): Tier A completo, espelho da La Liga. Probe 2026-07-17: 2024/2025 c/ injuries/players/stats_fixtures/events/lineups/standings/predictions=TRUE; 2026 mostra FALSE em xg/events/lineups/players/injuries por PRÉ-TEMPORADA (abertura 21/08), flipam ao começar — standings/predictions já TRUE. Split-year: season 2026 = 2026/27 (start 2026-08-21, end 2027-05-30, 380 jogos/20 times). Cobre a baixa do futebol BR (dez–mar). Odds armada dia 0, dormente até t24h ~20/08 (opener 21/08 19:00 UTC, Arsenal x Coventry; rodada 22/08)
 
+# Onda 2 (interesse médio, iniciada 2026-07-28): europeias adicionais, conforme a
+# temporada/odds de cada uma abre. Mesmo playbook da Onda 1 — ver
+# data-engineering/docs/EXPANSAO_CAMPEONATOS_APIFOOTBALL.md §6.
+UCL_ID = 2  # UEFA Champions League: formato liga única (36 times) desde 2024/25 + mata-mata.
+# Probe 2026-07-28: 2026/27 (season=2026) já em fase classificatória desde 07/07 —
+# odds=TRUE JÁ AO VIVO (13 casas incl. Pinnacle confirmadas em jogos de hoje, ver
+# fixtures 1556505/1556507/1556508); predictions=TRUE. standings/injuries=FALSE
+# ainda (fase liga de 36 times só forma tabela a partir de ~set/2026) — RECHECAR
+# quando a fase de liga começar (mesmo caveat da Libertadores: pode flipar TRUE).
+# 2024 (2024/25) e 2025 (2025/26) — ambas encerradas — confirmam standings/injuries/
+# predictions/xG=TRUE, odds=FALSE (temporada encerrada, esperado). Split-year: season
+# 2026 = 2026/27.
+
 # Split entre backfill (one-shot, anos anteriores) e current (diário, ano corrente)
 LEAGUES_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
@@ -45,6 +58,8 @@ LEAGUES_BACKFILL = [
     (LA_LIGA_ID, 2025),  # 2025/26
     (PREMIER_LEAGUE_ID, 2024),  # 2024/25 (split-year europeu)
     (PREMIER_LEAGUE_ID, 2025),  # 2025/26
+    (UCL_ID, 2024),  # 2024/25 (split-year europeu)
+    (UCL_ID, 2025),  # 2025/26
 ]
 LEAGUES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -55,6 +70,7 @@ LEAGUES_CURRENT = [
     (SUDAMERICANA_ID, 2026),
     (LA_LIGA_ID, 2026),  # 2026/27 (opener 16/08)
     (PREMIER_LEAGUE_ID, 2026),  # 2026/27 (opener 21/08)
+    (UCL_ID, 2026),  # 2026/27, EM CURSO desde 07/07 (fase classificatória)
 ]
 
 # Idem leagues — 4 chamadas distribuídas entre backfill (one-shot) e current (diário).
@@ -73,6 +89,8 @@ TEAMS_BACKFILL = [
     (LA_LIGA_ID, 2025),  # 2025/26
     (PREMIER_LEAGUE_ID, 2024),  # 2024/25 (split-year europeu)
     (PREMIER_LEAGUE_ID, 2025),  # 2025/26
+    (UCL_ID, 2024),  # 2024/25 (split-year europeu)
+    (UCL_ID, 2025),  # 2025/26
 ]
 TEAMS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -83,6 +101,7 @@ TEAMS_CURRENT = [
     (SUDAMERICANA_ID, 2026),
     (LA_LIGA_ID, 2026),  # 2026/27 (opener 16/08)
     (PREMIER_LEAGUE_ID, 2026),  # 2026/27 (opener 21/08)
+    (UCL_ID, 2026),  # 2026/27, EM CURSO desde 07/07
 ]
 
 # Idem teams — catálogo de jogadores via /players?league=&season= (paginado).
@@ -101,6 +120,8 @@ PLAYERS_BACKFILL = [
     (LA_LIGA_ID, 2025),  # 2025/26
     (PREMIER_LEAGUE_ID, 2024),  # 2024/25 (split-year europeu)
     (PREMIER_LEAGUE_ID, 2025),  # 2025/26
+    (UCL_ID, 2024),  # 2024/25 (split-year europeu)
+    (UCL_ID, 2025),  # 2025/26
 ]
 PLAYERS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -111,6 +132,7 @@ PLAYERS_CURRENT = [
     (SUDAMERICANA_ID, 2026),
     (LA_LIGA_ID, 2026),  # 2026/27 (opener 16/08)
     (PREMIER_LEAGUE_ID, 2026),  # 2026/27 (opener 21/08)
+    (UCL_ID, 2026),  # 2026/27, EM CURSO desde 07/07
 ]
 
 # Fixtures (jogos) — tabela mãe via /fixtures?league=&season= (paginado).
@@ -130,6 +152,8 @@ FIXTURES_BACKFILL = [
     (LA_LIGA_ID, 2025),  # 2025/26
     (PREMIER_LEAGUE_ID, 2024),  # 2024/25 (split-year europeu)
     (PREMIER_LEAGUE_ID, 2025),  # 2025/26
+    (UCL_ID, 2024),  # 2024/25 (split-year europeu)
+    (UCL_ID, 2025),  # 2025/26
 ]
 FIXTURES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -140,6 +164,7 @@ FIXTURES_CURRENT = [
     (SUDAMERICANA_ID, 2026),
     (LA_LIGA_ID, 2026),  # 2026/27 (opener 16/08)
     (PREMIER_LEAGUE_ID, 2026),  # 2026/27 (opener 21/08, 380 jogos)
+    (UCL_ID, 2026),  # 2026/27, EM CURSO desde 07/07 (classificatória, jogos hoje)
 ]
 
 # Standings (/standings) — snapshot diário da tabela do campeonato (1 chamada por
@@ -159,6 +184,10 @@ FIXTURES_CURRENT = [
 # igual Brasileirão/Série B. coverage.standings=TRUE mesmo pré-temporada.
 # Premier League (39) INCLUÍDA (probe 2026-07-17): idêntica à La Liga — tabela ÚNICA de 20 times
 # (rank 1-20), sem grupos. coverage.standings=TRUE nas 3 seasons, inclusive 2026 pré-temporada.
+# UCL (2) INCLUÍDA (probe 2026-07-28): 2024/2025 (encerradas) com standings=TRUE — formato liga
+# única de 36 times desde 2024/25. 2026 mostra FALSE por estar em fase classificatória (a tabela
+# de 36 times só existe a partir da fase de liga, ~set/2026) — arma dia 0 (custo ~0 até lá),
+# mesmo padrão de "armar dormente" já usado em odds da Libertadores/Sudamericana.
 STANDINGS_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
@@ -172,6 +201,8 @@ STANDINGS_BACKFILL = [
     (LA_LIGA_ID, 2025),  # 2025/26
     (PREMIER_LEAGUE_ID, 2024),  # 2024/25 (split-year europeu)
     (PREMIER_LEAGUE_ID, 2025),  # 2025/26
+    (UCL_ID, 2024),  # 2024/25 (split-year europeu)
+    (UCL_ID, 2025),  # 2025/26
 ]
 STANDINGS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -181,6 +212,7 @@ STANDINGS_CURRENT = [
     (SUDAMERICANA_ID, 2026),
     (LA_LIGA_ID, 2026),  # 2026/27 (opener 16/08)
     (PREMIER_LEAGUE_ID, 2026),  # 2026/27 (opener 21/08)
+    (UCL_ID, 2026),  # 2026/27, FALSE até a fase de liga começar (~set/2026); armada dia 0
 ]
 
 # Injuries (/injuries) — snapshot diário de lesionados/suspensos (1 chamada/liga×season,
@@ -202,6 +234,11 @@ STANDINGS_CURRENT = [
 # com injuries LIGADO (season-log + pregame). 2026 mostra FALSE só por pré-temporada; flipa ao começar.
 # Premier League (39): coverage.injuries=TRUE em 2024 E 2025 (probe 2026-07-17) — mesma leitura da
 # La Liga, 2026 FALSE só por pré-temporada (abertura 21/08).
+# UCL (2): coverage.injuries=TRUE em 2024 E 2025 (probe 2026-07-28, temporadas encerradas) — só
+# backfill por ora. 2026 (EM CURSO desde 07/07) mostra FALSE — mesmo caveat da Libertadores
+# (13): NÃO entra em INJURIES_CURRENT/FUTEBOL_INJURIES_LEAGUE_IDS ainda; RECHECAR quando a fase
+# de liga (36 times) começar (~set/2026) via dim_leagues antes de ligar (senão chamada
+# desperdiçada + tabela vazia).
 INJURIES_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
     (BRASILEIRAO_ID, 2025),
@@ -209,11 +246,15 @@ INJURIES_BACKFILL = [
     (LA_LIGA_ID, 2025),  # coverage.injuries=TRUE em 2025 (probe)
     (PREMIER_LEAGUE_ID, 2024),  # Premier League: coverage.injuries=TRUE em 2024 (probe 2026-07-17)
     (PREMIER_LEAGUE_ID, 2025),  # coverage.injuries=TRUE em 2025 (probe)
+    (UCL_ID, 2024),  # UCL: coverage.injuries=TRUE em 2024 (probe 2026-07-28)
+    (UCL_ID, 2025),  # coverage.injuries=TRUE em 2025 (probe)
 ]
 INJURIES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (LA_LIGA_ID, 2026),  # season-log 2026/27: injuries=FALSE pré-temporada (probe), flipa ao começar; iterar já é barato (0 linhas até lá)
     (PREMIER_LEAGUE_ID, 2026),  # idem La Liga: FALSE pré-temporada (probe), flipa em 21/08; 0 linhas até lá
+    # UCL (2026) NÃO incluída ainda — coverage.injuries=FALSE na fase classificatória (probe
+    # 2026-07-28); recheck quando a fase de liga começar (~set/2026), igual ao caveat da 13.
 ]
 
 # Odds (/odds) — coração do value betting. Snapshot pré-jogo de TODAS as casas em 2
@@ -250,7 +291,11 @@ FUTEBOL_ODDS_WINDOWS = {
 # BTTS/HT-FT/DC) → feed ruim = board fechado, nunca sinal lixo. ⚠️ RENOVAR O PLANO PRO ATÉ
 # 10/08 (expira 11/08 12:21 UTC): sem renovar, t1h/t15m de 11/08, as voltas de 18–20/08 e
 # TODO o pipeline diário param — na 11, até o t24h das oitavas de 12–13/08 cai APÓS a expiração.
-FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID]
+# UCL (2) — início Onda 2 — ARMADA 2026-07-28: DIFERENTE das demais desta lista, já está
+# ATIVA agora (coverage.odds=TRUE, fase classificatória em curso desde 07/07; confirmado
+# 13 casas incl. Pinnacle em jogos de hoje 28/07). Não é dormente — o poll já vai capturar
+# t24h/t1h/t15m dos próximos jogos classificatórios a partir do próximo ciclo pós-deploy.
+FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, UCL_ID]
 
 # Predictions (/predictions) — BASELINE de comparação (a previsão do algoritmo da própria
 # API) E fonte da corroboração `modelo_api_concorda` (+7) do Motor de Score. Não é produto:
@@ -291,7 +336,11 @@ FUTEBOL_PREDICTIONS_WINDOWS = {
 # pré-temporada. A janela daily de 14d só alcança o opener (21/08) ~07/08 — 0 linhas até lá é
 # esperado. Liga de pontos corridos com histórico cheio → esperado REAL (padrão La Liga/Brasileirão),
 # não o placeholder 45/45/10 de mata-mata da Copa do Mundo.
-FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID]
+# UCL (2): coverage.predictions=TRUE (probe 2026-07-28) — JÁ ATIVA (fase classificatória em curso
+# desde 07/07); ao contrário de PL/La Liga, a janela daily de 14d já alcança jogos reais hoje.
+# Mata-mata (repescagem/playoff) — conferir REAL vs placeholder 45/45/10 na 1ª captura pós-deploy
+# (mesmo padrão de checagem já usado em Libertadores/Sudamericana/Copa do Brasil).
+FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, UCL_ID]
 
 # Injuries PRÉ-JOGO (/injuries?fixture) — coleta FORWARD-ONLY por fixture (modo "pregame"),
 # complementando o snapshot season-log diário (INJURIES_CURRENT, /injuries?league&season).
