@@ -2,6 +2,7 @@
 import json
 from typing import Dict, Any, Optional, List
 from google.cloud import storage
+from google.cloud.storage.retry import DEFAULT_RETRY
 from src.config import GCS_BUCKET_NAME, GCP_PROJECT_ID, GCS_USE_ADC, get_gcs_path
 from src.utils.logger import setup_logger
 from src.utils.helpers import normalize_dict_keys
@@ -90,9 +91,14 @@ class GCSStorage:
         # Faz upload
         try:
             blob = self.bucket.blob(blob_path)
+            # retry explícito: a lib trata upload como não-idempotente e NÃO re-tenta por
+            # padrão, então um BrokenPipe transitório descartava a extração inteira (ex.:
+            # 713 chamadas de API já gastas no team_season_stats). Reescrever o mesmo
+            # blob é idempotente aqui — os extractors sempre sobrescrevem o arquivo cheio.
             blob.upload_from_string(
                 json_data,
                 content_type="application/json",
+                retry=DEFAULT_RETRY,
             )
             # upload_from_string levanta em caso de falha; sem verificação exists() extra
             # (round-trip desnecessário a cada upload — eram milhares por execução).
