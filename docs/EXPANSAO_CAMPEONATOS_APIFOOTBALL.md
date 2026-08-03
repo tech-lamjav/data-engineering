@@ -95,7 +95,7 @@ Europa, 1ª divisão — **estruturalmente idênticas ao Brasileirão**:
 |---|---|:--:|:--:|:--:|:--:|:--:|---|
 | Premier League (ING) | 39 | T | T | T | T | T | 21/08/2026 |
 | La Liga (ESP) | 140 | T | T | T | T | T | ~ago/2026 |
-| Serie A (ITA) | 135 | T | T | T | T | T | 23/08/2026 |
+| Serie A (ITA) | 135 | T | T | T | T | T | 22/08/2026 ✅ LIVE 03/08 |
 | Bundesliga (ALE) | 78 | T | T | T | T | T | ~ago/2026 |
 | Ligue 1 (FRA) | 61 | T | T | T | T | T | 22/08/2026 |
 | Primeira Liga (POR) | 94 | T | T | T | T | T | ~ago/2026 |
@@ -171,17 +171,37 @@ ago–mai; **estaduais** jan–abr. Combinar Brasil + Europa fecha o ano.
 | Onda | Quando | Ligas | Por quê |
 |---|---|---|---|
 | **1 — agora** | imediato | **Série B (72)**, **Libertadores (13)**, **Sudamericana (11)** | ao vivo/calendário-ano; alto interesse BR; tapa o buraco da pausa da Série A e do fim da Copa do Mundo. Paridade forte (sem injuries). |
-| **2 — pré-agosto** | jul/2026 | **Premier League (39)**, **La Liga (140)**, **Serie A ITA (135)**, **Bundesliga (78)**, **Ligue 1 (61)**, **Primeira Liga (94)**, **Champions League (2)** | paridade **TOTAL** (com injuries); cobrem a baixa do futebol brasileiro (dez–mar). Primeira Liga = público lusófono. |
+| **2 — pré-agosto** | jul/2026 | ~~Premier League (39)~~ ✅, ~~La Liga (140)~~ ✅, ~~Champions League (2)~~ ✅, ~~**Serie A ITA (135)**~~ ✅ **03/08**, **Bundesliga (78)**, **Ligue 1 (61)**, **Primeira Liga (94)** | paridade **TOTAL** (com injuries); cobrem a baixa do futebol brasileiro (dez–mar). Primeira Liga = público lusófono. |
 | **3 — opcional** | conforme demanda | Eredivisie (88), 2ª divisões europeias, Copa do Brasil (73, verificar odds), Europa/Conference League (3/848) | profundidade de catálogo |
 
 ---
 
 ## 7. Riscos e cuidados
 
-- **Recalibrar limiares das premissas (importante).** Os thresholds (médias de gols etc.) foram
-  calibrados na Série A brasileira. Bundesliga (muitos gols) vs Serie A ITA (poucos gols) deslocam
-  as premissas de **O/U** e força. Antes de confiar nos scores de uma liga nova, rodar backtest
-  RPS/CLV (Fase 5 do Motor) e ajustar por liga/tier nos modelos `int_futebol_premissas_*`.
+- **Recalibrar limiares das premissas (importante) — mas guiado por dado, não por reputação.**
+  Os thresholds absolutos de `int_futebol_premissas_ou` (clean sheet 35%/40%, failed-to-score 35%,
+  offsets ±0,3 sobre a linha) foram calibrados na Série A brasileira. Uma liga com ambiente de gols
+  deslocado faz TODAS as premissas de um lado dispararem mais, inflando o `pts_premissas` de um
+  outcome que **o mercado já precifica** — ou seja, vira dupla contagem, não edge.
+
+  Ambiente de gols medido em 760 jogos FT por liga-temporada (`/fixtures`, seasons 2024 e 2025,
+  medição de 2026-08-03):
+
+  | liga | gols/jogo | Δ vs Brasileirão | Over 2.5 | Δ | clean sheet |
+  |---|---|---|---|---|---|
+  | Premier League (39) | 2,84 | **+0,36** | 55,8% | **+9,1pp** | 43,3% |
+  | La Liga (140) | 2,66 | +0,17 | 49,3% | +2,6pp | 44,6% |
+  | Serie A ITA (135) | 2,49 | +0,01 | 47,0% | +0,3pp | 51,6% |
+  | Brasileirão (71) — *baseline* | 2,48 | — | 46,7% | — | 49,7% |
+  | Série B (72) | 2,20 | **−0,28** | 38,6% | **−8,2pp** | 53,3% |
+
+  ⚠️ **A intuição de que a Serie A ITA é "liga de poucos gols" não se sustenta** — é folclore do
+  catenaccio. A Serie A moderna é a liga do portfólio **mais próxima da baseline de calibração**
+  (Δ +0,01 gols/jogo); baixar os limiares nela introduziria viés pró-Under onde não há desvio.
+  Quem está de fato descalibrada é a **Premier League** (superpontua Over) e a **Série B**
+  (superpontua Under), ambas já em produção. Item aberto: tornar os thresholds relativos à mediana
+  da liga — mesmo padrão do `league_pace_median`, que já existe no próprio modelo e autocalibra o
+  ritmo. Fazer com backtest RPS/CLV (Fase 5 do Motor) antes de mexer em liga em produção.
 - **Pinnacle por liga.** O de-vig usa **Pinnacle (bookmaker_id=4)**. Confirmar que Pinnacle aparece
   nas odds de cada liga **dentro da janela** (Série B tem 13 casas → provável; validar). Sem
   Pinnacle, o núcleo de valor precisa de casa sharp alternativa.
