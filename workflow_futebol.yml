@@ -596,7 +596,7 @@ main:
                         body:
                             overrides:
                                 containerOverrides:
-                                    - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--select", "+fact_standings_snapshot", "--select", "+fact_h2h", "--select", "+fact_injuries_snapshot", "--select", "+fact_odds_snapshot", "--select", "+fact_predictions_api", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                    - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--select", "+fact_standings_snapshot", "--select", "+fact_h2h", "--select", "+fact_injuries_snapshot", "--select", "+fact_odds_snapshot", "--select", "+fact_predictions_api", "--select", "int_futebol_odds_devig", "--select", "int_futebol_corroboracao", "--select", "int_futebol_player_importance", "--select", "int_futebol_desfalques", "--select", "int_futebol_team_form_pit", "--select", "int_futebol_premissas_1x2", "--select", "int_futebol_premissas_ou", "--select", "int_futebol_premissas_ah", "--select", "int_futebol_premissas_btts", "--select", "int_futebol_premissas_dc", "--select", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                     result: job_execution_result
                 # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
                 retry:
@@ -638,7 +638,7 @@ main:
                         body:
                             overrides:
                                 containerOverrides:
-                                    - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--select", "+fact_standings_snapshot", "--select", "+fact_h2h", "--select", "+fact_injuries_snapshot", "--select", "+fact_odds_snapshot", "--select", "+fact_predictions_api", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                    - args: ["dbt", "run", "--select", "+dim_leagues", "--select", "+dim_teams", "--select", "+dim_players", "--select", "+fact_fixtures", "--select", "+fact_fixture_stats", "--select", "+fact_fixture_events", "--select", "+fact_fixture_lineups", "--select", "+fact_fixture_lineups_players", "--select", "+fact_fixture_player_stats", "--select", "+fact_standings_snapshot", "--select", "+fact_h2h", "--select", "+fact_injuries_snapshot", "--select", "+fact_odds_snapshot", "--select", "+fact_predictions_api", "--select", "int_futebol_odds_devig", "--select", "int_futebol_corroboracao", "--select", "int_futebol_player_importance", "--select", "int_futebol_desfalques", "--select", "int_futebol_team_form_pit", "--select", "int_futebol_premissas_1x2", "--select", "int_futebol_premissas_ou", "--select", "int_futebol_premissas_ah", "--select", "int_futebol_premissas_btts", "--select", "int_futebol_premissas_dc", "--select", "fact_value_opportunities", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                     result: recover_result
                 retry:
                     predicate: ${http.default_retry_predicate}
@@ -668,7 +668,7 @@ main:
                     data:
                         message: ${if(workflow_status == "SUCCESS", "dbt-futebol rebuild recuperado via --full-refresh", "dbt-futebol rebuild falhou mesmo após --full-refresh")}
                         status: ${workflow_status}
-        next: finalize
+        next: check_dbt_success_for_snapshot
 
     # Alcançado apenas quando o gate desvia (extract-fixtures falhou): registra o skip.
     - skip_phase2_dbt:
@@ -683,6 +683,70 @@ main:
         - mark_phase2_dbt_skipped:
             assign:
             - failed_services: ${list.concat(failed_services, ["dbt-futebol:skipped(fixtures-failed)"])}
+        next: finalize
+
+    # ============================================================================
+    # GATE: só roda o snapshot da manhã se a fase 2 (dbt) teve sucesso (direto ou via
+    # recovery --full-refresh) — não versionar um mart potencialmente stale/parcial.
+    # ============================================================================
+    - check_dbt_success_for_snapshot:
+        switch:
+            - condition: ${workflow_status == "SUCCESS"}
+              next: phase3_morning_snapshot
+        next: finalize
+
+    # ============================================================================
+    # FASE 3: dbt snapshot da manhã — versiona fact_value_opportunities_hist logo
+    # após a carga diária (job "workflow-futebol-daily", 9h BRT / 12:00 UTC),
+    # ANTES do cron do Telegram (notify-opportunities, 10h BRT / 13:00 UTC).
+    # Motivo: workflow_futebol_odds.yml só versiona esse hist quando saved_count>0
+    # (odds nova), e as janelas t24h/t1h/t15m raramente caem de manhã (kickoffs BR
+    # são de tarde/noite) — então o estado que o alerta usa nunca era capturado
+    # (validação Victor 2026-07-28). strategy=check só insere linha nova se algo em
+    # check_cols mudou desde a última captura; roda no mesmo Cloud Run Job dbt-futebol.
+    # ============================================================================
+    - phase3_morning_snapshot:
+        try:
+            steps:
+            - execute_morning_snapshot_job:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "snapshot", "--select", "fact_value_opportunities_hist", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: morning_snapshot_result
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - log_morning_snapshot_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Snapshot da manhã (fact_value_opportunities_hist) capturado antes do alerta 10h BRT"
+                        execution_name: ${morning_snapshot_result.name}
+        except:
+            as: e
+            steps:
+            - log_morning_snapshot_error:
+                call: sys.log
+                args:
+                    severity: WARNING
+                    data:
+                        message: "dbt snapshot da manhã (fact_value_opportunities_hist) falhou — não bloqueia o workflow"
+                        error: ${e.message}
+            - handle_morning_snapshot_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+                - failed_services: ${list.concat(failed_services, ["dbt-snapshot-morning"])}
+        next: finalize
 
     # ============================================================================
     # FINALIZAÇÃO
