@@ -34,3 +34,11 @@ cloud_run/**/scripts/
 *credentials*.json
 service-account*.json
 sa-*.json
+# Claude Code: config local + pack de skills vendorizado do Google (não versionar).
+# As skills PRÓPRIAS do repo, em .claude/skills/, são versionadas.
+.claude/settings.local.json
+.agents/
+.claude/skills/*-basics
+.claude/skills/google-cloud-*
+.claude/skills/gemini-*
+.claude/skills/agent-platform-skill-registry
