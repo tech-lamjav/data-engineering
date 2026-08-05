@@ -10,8 +10,10 @@
 ## 1. TL;DR
 
 - **A arquitetura já está pronta.** A pipeline é 100% parametrizada por `(league_id, season)`
-  em `src/config.py`. Adicionar um campeonato = editar listas de config + **2 linhas de
-  `CASE`** no dbt. Zero código novo de extrator.
+  em `src/config.py`. Adicionar um campeonato = editar listas de config + o `CASE` de slug nos
+  marts do dbt + o slug nas listas de `accepted_values`. Zero código novo de extrator.
+  (Eram 2 `CASE` quando este doc foi escrito; em 2026-08 são **6 marts + 6 `accepted_values`** —
+  conferir com `grep -rn "WHEN <id_da_liga_anterior>" models/` antes de confiar no número.)
 - **Cobertura de dados é praticamente idêntica à do Brasileirão para TODAS as grandes ligas.**
   Premier League, La Liga, Serie A (ITA), Bundesliga, Ligue 1, Primeira Liga, Eredivisie,
   Champions/Europa/Conference League e Libertadores/Sudamericana têm `statistics_fixtures`
@@ -59,11 +61,15 @@ Tudo confirmado no código:
    `INJURIES_*` **só se `coverage.injuries=TRUE`**; `FUTEBOL_ODDS_LEAGUE_IDS` e
    `FUTEBOL_PREDICTIONS_LEAGUE_IDS` **só se os respectivos flags forem TRUE**. Os extratores
    iteram as tuplas automaticamente — **nenhum extrator muda**.
-2. **dbt — 2 lugares apenas** (mapeiam `league_id → competition`):
-   - `analytics-engineering/dbt_futebol/models/marts/fact_fixtures.sql:11-14`
-   - `analytics-engineering/dbt_futebol/models/marts/fact_team_season_stats.sql:15-19`
-   Acrescentar um `WHEN <id> THEN '<slug>'` em cada. Todo o resto do dbt flui pela coluna
-   `competition` (sem hardcode).
+2. **dbt — os marts que mapeiam `league_id → competition`** (eram 2 quando este doc foi escrito;
+   em 2026-08 são 6: `fact_fixtures`, `fact_odds_snapshot`, `fact_standings_snapshot`,
+   `fact_injuries_snapshot`, `fact_predictions_api`, `fact_team_season_stats`).
+   Acrescentar `WHEN <id> THEN '<slug>'` em cada **e** o slug nas 6 listas de `accepted_values`
+   de `models.yml` — é o `accepted_values` que pega o `CASE` esquecido; sem ele o mart devolve
+   `'unknown'` com linhas, em silêncio. Sempre reconferir a contagem com
+   `grep -rn "WHEN <id_da_liga_anterior>" models/`, porque este número já cresceu duas vezes.
+   Fora isso, o resto do dbt flui pela coluna `competition` — exceção conhecida: a allowlist de
+   `sem_rodizio` em `int_futebol_premissas_ah` (decisão por liga, não automática).
 3. **Tabelas externas BQ**: globam `*.json` no GCS — novos arquivos entram sozinhos.
 4. **Workflows/scheduler**: já orquestram todas as tuplas de config; nada a mudar para a coleta
    diária. (Backfill é disparo manual `mode=backfill`.)
@@ -96,7 +102,7 @@ Europa, 1ª divisão — **estruturalmente idênticas ao Brasileirão**:
 | Premier League (ING) | 39 | T | T | T | T | T | 21/08/2026 |
 | La Liga (ESP) | 140 | T | T | T | T | T | ~ago/2026 |
 | Serie A (ITA) | 135 | T | T | T | T | T | 22/08/2026 ✅ LIVE 03/08 |
-| Bundesliga (ALE) | 78 | T | T | T | T | T | ~ago/2026 |
+| Bundesliga (ALE) | 78 | T | T | T | T | T | **28/08/2026** (confirmado em `/leagues` 2026-08-05; season 2026 = 2026-08-28 → 2027-05-22) |
 | Ligue 1 (FRA) | 61 | T | T | T | T | T | 22/08/2026 |
 | Primeira Liga (POR) | 94 | T | T | T | T | T | ~ago/2026 |
 | Eredivisie (HOL) | 88 | T | T | T | T | T | 07/08/2026 |
@@ -184,11 +190,13 @@ ago–mai; **estaduais** jan–abr. Combinar Brasil + Europa fecha o ano.
   deslocado faz TODAS as premissas de um lado dispararem mais, inflando o `pts_premissas` de um
   outcome que **o mercado já precifica** — ou seja, vira dupla contagem, não edge.
 
-  Ambiente de gols medido em 760 jogos FT por liga-temporada (`/fixtures`, seasons 2024 e 2025,
+  Ambiente de gols medido por liga-temporada (`/fixtures`, seasons 2024 e 2025 — 760 jogos FT nas
+  ligas de 20 times, 616 na Bundesliga, que tem 18,
   medição de 2026-08-03):
 
   | liga | gols/jogo | Δ vs Brasileirão | Over 2.5 | Δ | clean sheet |
   |---|---|---|---|---|---|
+  | **Bundesliga (78)** | **3,18** | **+0,70** | **61,9%** | **+15,2pp** | 40,4% |
   | Premier League (39) | 2,84 | **+0,36** | 55,8% | **+9,1pp** | 43,3% |
   | La Liga (140) | 2,66 | +0,17 | 49,3% | +2,6pp | 44,6% |
   | Serie A ITA (135) | 2,49 | +0,01 | 47,0% | +0,3pp | 51,6% |
@@ -226,7 +234,13 @@ ago–mai; **estaduais** jan–abr. Combinar Brasil + Europa fecha o ano.
    `/odds`+`/leagues` por `(id, season)`); em especial `odds` e Pinnacle dentro de 1–14 dias do jogo.
 2. `mode=backfill` para 1 liga-temporada e conferir arquivos em
    `gs://smartbetting-landingzone/futebol/<endpoint>/`.
-3. Acrescentar o `WHEN` nos 2 modelos dbt; `dbt build --select +fact_value_opportunities`
+3. Acrescentar o `WHEN` nos **6** modelos dbt que traduzem `competition_id` -> slug
+   (`fact_fixtures`, `fact_odds_snapshot`, `fact_standings_snapshot`, `fact_injuries_snapshot`,
+   `fact_predictions_api`, `fact_team_season_stats`) **e o slug novo nas 6 listas de
+   `accepted_values`** de `models.yml` — é esse teste que pega o `CASE` esquecido (o mart devolve
+   `'unknown'` em silêncio). Eram 2 modelos quando este doc foi escrito; verificar com
+   `grep -rn "WHEN <id_da_liga_anterior>" models/` antes de confiar no número.
+   Depois `dbt build --select +fact_value_opportunities`
    (via `.venv` do analytics-engineering) e validar amostras: `competition` correta, evidências
    das premissas disparando, e `faixa` coerente.
 4. Backtest RPS/CLV em ≥1 rodada antes de sinalizar oportunidades da liga ao usuário.
