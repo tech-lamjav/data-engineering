@@ -226,7 +226,13 @@ ago–mai; **estaduais** jan–abr. Combinar Brasil + Europa fecha o ano.
    `/odds`+`/leagues` por `(id, season)`); em especial `odds` e Pinnacle dentro de 1–14 dias do jogo.
 2. `mode=backfill` para 1 liga-temporada e conferir arquivos em
    `gs://smartbetting-landingzone/futebol/<endpoint>/`.
-3. Acrescentar o `WHEN` nos 2 modelos dbt; `dbt build --select +fact_value_opportunities`
+3. Acrescentar o `WHEN` nos **6** modelos dbt que traduzem `competition_id` -> slug
+   (`fact_fixtures`, `fact_odds_snapshot`, `fact_standings_snapshot`, `fact_injuries_snapshot`,
+   `fact_predictions_api`, `fact_team_season_stats`) **e o slug novo nas 5 listas de
+   `accepted_values`** de `models.yml` — é esse teste que pega o `CASE` esquecido (o mart devolve
+   `'unknown'` em silêncio). Eram 2 modelos quando este doc foi escrito; verificar com
+   `grep -rn "WHEN <id_da_liga_anterior>" models/` antes de confiar no número.
+   Depois `dbt build --select +fact_value_opportunities`
    (via `.venv` do analytics-engineering) e validar amostras: `competition` correta, evidências
    das premissas disparando, e `faixa` coerente.
 4. Backtest RPS/CLV em ≥1 rodada antes de sinalizar oportunidades da liga ao usuário.
