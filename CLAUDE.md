@@ -2,6 +2,31 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Isolamento por worktree
+
+**Trabalho de mais de um passo neste repositório roda em git worktree.** Chame `EnterWorktree`
+no início da sessão, antes de editar qualquer arquivo. Não vale a pena para pergunta de uma
+resposta só.
+
+Motivo: em 2026-08-05 duas sessões escreveram o mesmo arquivo no `analytics-engineering` ao
+mesmo tempo e uma sobrescreveu a outra. `git status` de uma sessão não distingue o que ela
+escreveu do que outra escreveu; worktree separa as árvores e o problema deixa de existir.
+Mudança que atravessa os dois repositórios precisa de um worktree em **cada um**.
+
+**Setup da árvore nova.** `.env` e `.venv` são gitignored, então o worktree nasce sem os dois
+— e sem o `.env` nenhum extractor funciona (é dele que saem `BALLDONTLIE_KEY`, o bucket e a
+`SEASON`).
+
+```bash
+cp /caminho/do/repo/original/.env .env
+ln -s /caminho/do/repo/original/.venv .venv
+```
+
+**⚠️ Worktree isola o disco, não a GCP.** Deploy de Cloud Run, de Workflow ou de job é global:
+sai do worktree e vai para o mesmo projeto `smartbetting-dados` que todo mundo usa. Duas
+sessões deployando o mesmo serviço se sobrescrevem sem nenhum aviso, e o workflow vivo passa a
+ser o da última. **Só uma sessão deploya por vez**, com ou sem worktree.
+
 ## Referências obrigatórias
 
 Sempre leia `.cursorrules` na raiz do projeto antes de escrever código. Ele define os princípios de modularização, a estrutura de `src/`, o padrão de scripts e o que **não** fazer (ex.: nada de `argparse`, nada de hardcode de valores que deveriam vir de `src/config.py`). Essas regras valem igualmente para Claude Code e têm precedência sobre exemplos desatualizados em `README.md`.
