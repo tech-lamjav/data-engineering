@@ -27,6 +27,10 @@ main:
         - workflow_start_time: ${sys.now()}
         - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
         - workflow_status: "SUCCESS"
+        # Status PRÓPRIO das guardas (spec #22): separado de workflow_status de propósito —
+        # guarda vermelha reporta no e-mail diário sem marcar o workflow como PARTIAL_FAILURE
+        # e sem bloquear board ou sync.
+        - guardas_status: "SUCCESS"
         - saved_count: 0
 
     - log_start:
@@ -258,6 +262,64 @@ main:
                 assign:
                 - workflow_status: "PARTIAL_FAILURE"
 
+    # FASE 4: guardas de qualidade de dado (spec #22). Passo DEDICADO, depois do board E do
+    # histórico — de propósito. Não é `dbt build` na fase 2: teste vermelho em modelo a
+    # montante faria o dbt PULAR os modelos a jusante, o mart não reconstruiria e o board
+    # congelaria. Guarda de qualidade de dado não pode derrubar o produto.
+    #
+    # Seleção por TAG e não por nome: guarda nova entra mexendo só no projeto dbt, sem editar
+    # este YAML e sem depender do redeploy do workflow — que é justamente o passo que costuma
+    # ser esquecido. Tag vazia resolve p/ "nada a fazer", então a ordem de deploy é segura nos
+    # dois sentidos.
+    #
+    # Usa variável de status PRÓPRIA (guardas_status): guarda vermelha reporta no log de
+    # conclusão — e por consequência no e-mail diário consolidado, que é o canal de alarme que
+    # existe aqui — sem virar PARTIAL_FAILURE do workflow e sem bloquear nada.
+    #
+    # ⚠️ O job dbt devolve exit 0 mesmo com ERROR>=1 (falha conhecida, fora do escopo desta
+    # spec). Logo o `except` abaixo pega o job CAINDO, não teste vermelho: o resultado dos
+    # testes se lê na linha `Done. PASS=... ERROR=...` do log do job.
+    - phase4_dbt_guardas:
+        try:
+            steps:
+            - execute_guardas_job:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "test", "--select", "tag:guarda", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: guardas_result
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 2
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - log_guardas_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Guardas de qualidade (tag:guarda) executadas — conferir 'Done. PASS=/ERROR=' no log do job"
+                        execution_name: ${guardas_result.name}
+        except:
+            as: e
+            steps:
+            - log_guardas_error:
+                call: sys.log
+                args:
+                    severity: WARNING
+                    data:
+                        message: "dbt test (tag:guarda) não executou — não bloqueia o workflow nem o board"
+                        error: ${e.message}
+            - handle_guardas_errors:
+                assign:
+                - guardas_status: "PARTIAL_FAILURE"
+
     - finalize:
         assign:
         - workflow_end_time: ${sys.now()}
@@ -271,11 +333,13 @@ main:
                 message: "Workflow odds (pregame) completed"
                 workflow_name: "workflow_futebol_odds"
                 status: ${workflow_status}
+                guardas_status: ${guardas_status}
                 saved_count: ${saved_count}
                 duration_seconds: ${duration_seconds}
 
     - return_result:
         return:
             status: ${workflow_status}
+            guardas_status: ${guardas_status}
             saved_count: ${saved_count}
             duration_seconds: ${duration_seconds}
