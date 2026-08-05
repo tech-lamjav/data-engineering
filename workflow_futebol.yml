@@ -24,6 +24,9 @@ main:
         - workflow_start_time: ${sys.now()}
         - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
         - workflow_status: "SUCCESS"
+        # Status PRÓPRIO das guardas (spec #22): guarda vermelha reporta no e-mail diário sem
+        # marcar o workflow como PARTIAL_FAILURE e sem bloquear board, snapshot ou sync.
+        - guardas_status: "SUCCESS"
         - failed_services: []
         - fixtures_ok: true
         # mode default = "current" se não fornecido
@@ -746,7 +749,58 @@ main:
                 assign:
                 - workflow_status: "PARTIAL_FAILURE"
                 - failed_services: ${list.concat(failed_services, ["dbt-snapshot-morning"])}
-        next: finalize
+        next: phase4_dbt_guardas
+
+    # ============================================================================
+    # FASE 4: guardas de qualidade de dado (spec #22)
+    # Passo DEDICADO, depois do board E do snapshot. Não é `dbt build` na fase 2: teste
+    # vermelho em modelo a montante faria o dbt PULAR os modelos a jusante, o mart não
+    # reconstruiria e o board congelaria. Guarda de qualidade não derruba o produto.
+    # Seleção por TAG: guarda nova entra mexendo só no projeto dbt, sem editar este YAML
+    # nem depender do redeploy do workflow. Tag vazia = "nada a fazer".
+    # ⚠️ O job dbt devolve exit 0 mesmo com ERROR>=1 — o `except` pega o job CAINDO, não
+    # teste vermelho; o resultado se lê na linha `Done. PASS=.../ERROR=...` do log do job.
+    # ============================================================================
+    - phase4_dbt_guardas:
+        try:
+            steps:
+            - execute_guardas_job:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "test", "--select", "tag:guarda", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: guardas_result
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 2
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - log_guardas_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Guardas de qualidade (tag:guarda) executadas — conferir 'Done. PASS=/ERROR=' no log do job"
+                        execution_name: ${guardas_result.name}
+        except:
+            as: e
+            steps:
+            - log_guardas_error:
+                call: sys.log
+                args:
+                    severity: WARNING
+                    data:
+                        message: "dbt test (tag:guarda) não executou — não bloqueia o workflow nem o board"
+                        error: ${e.message}
+            - handle_guardas_errors:
+                assign:
+                - guardas_status: "PARTIAL_FAILURE"
 
     # ============================================================================
     # FINALIZAÇÃO
@@ -765,6 +819,7 @@ main:
                 message: "Workflow execution completed"
                 workflow_name: "workflow_futebol"
                 status: ${workflow_status}
+                guardas_status: ${guardas_status}
                 mode: ${mode}
                 duration_seconds: ${duration_seconds}
                 failed_services: ${failed_services}
@@ -773,6 +828,7 @@ main:
     - return_result:
         return:
             status: ${workflow_status}
+            guardas_status: ${guardas_status}
             mode: ${mode}
             duration_seconds: ${duration_seconds}
             failed_services: ${failed_services}
