@@ -368,10 +368,20 @@ deploy_service() {
     elif [ "$SERVICE_NAME" = "daily-summary" ]; then
         # daily-summary lê Cloud Logging + Workflow Executions e envia 1 email/dia
         # (resumo consolidado de TODOS os workflows). Mesmos secrets do notify-execution
-        # (Gmail). Precisa de GCP_PROJECT_ID/LOG_LEVEL em env (src.config + logger).
+        # (Gmail) + API_FOOTBALL_KEY, que a seção de cota usa p/ bater o /status 1x/dia.
+        # Sem ela o email ainda sai, com a seção degradada dizendo o motivo — mas a cota
+        # some justamente do único canal de alarme do pipeline.
+        # Precisa de GCP_PROJECT_ID/LOG_LEVEL em env (src.config + logger).
         # SA runtime = $SERVICE_ACCOUNT (ExtractScripts@), que precisa de
         # roles/logging.viewer + roles/workflows.viewer (ver IAM no plano). Timeout 600s
         # folgado p/ paginação do Logging.
+        SUMMARY_SECRETS="GMAIL_USER=GMAIL_USER:latest,GMAIL_APP_PASSWORD=GMAIL_APP_PASSWORD:latest,NOTIFY_EMAIL=NOTIFY_EMAIL:latest"
+        # Mesma regra do build_secrets: a presença no .env decide se a chave é montada.
+        if [ -n "${API_FOOTBALL_KEY:-}" ]; then
+            SUMMARY_SECRETS="${SUMMARY_SECRETS},API_FOOTBALL_KEY=API_FOOTBALL_KEY:latest"
+        else
+            print_warning "daily-summary sem API_FOOTBALL_KEY: a secao de cota vai sair degradada"
+        fi
         gcloud run deploy "$SERVICE_NAME" \
             --source "$TEMP_DIR" \
             --region "$REGION" \
@@ -383,7 +393,7 @@ deploy_service() {
             --timeout "600" \
             --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},LOG_LEVEL=${LOG_LEVEL}" \
             --set-build-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
-            --set-secrets "GMAIL_USER=GMAIL_USER:latest,GMAIL_APP_PASSWORD=GMAIL_APP_PASSWORD:latest,NOTIFY_EMAIL=NOTIFY_EMAIL:latest" \
+            --set-secrets "$SUMMARY_SECRETS" \
             --project "$GCP_PROJECT_ID" || DEPLOY_EXIT_CODE=$?
     else
         gcloud run deploy "$SERVICE_NAME" \

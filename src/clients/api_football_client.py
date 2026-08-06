@@ -7,6 +7,13 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+# Teto de tempo da leitura de cota (/status). Ela roda dentro do resumo diário, ANTES do
+# envio do e-mail, num Cloud Run com timeout de 600s. O retry padrão do BaseClient são 6
+# tentativas — até ~810s somando backoff (30+60+120+120+120) e API_TIMEOUT por tentativa
+# —, então uma indisponibilidade do /status derrubaria o e-mail inteiro, que é exatamente
+# o que a seção de cota existe para impedir. Leitura best-effort, 1x/dia: 1 tentativa curta.
+STATUS_TIMEOUT = 15
+
 
 class ApiFootballClient(BaseClient):
     """Cliente para API-Football v3.
@@ -398,3 +405,35 @@ class ApiFootballClient(BaseClient):
             params={"fixture": fixture_id},
         )
         return self._raise_if_quota(response.json(), f"predictions fixture={fixture_id}")
+
+    def get_status(self) -> Dict[str, Any]:
+        """GET /status — consumo de requests do dia e vigência da assinatura.
+
+        Fonte da seção de cota do resumo diário (1 chamada/dia). `response` é um DICT
+        (não lista, ao contrário dos demais endpoints):
+        {account: {...}, subscription: {plan, end, active}, requests: {current, limit_day}}.
+        `subscription.end` vem ISO 8601 com offset ("2026-08-11T12:21:59+00:00").
+
+        ⚠️ `requests.current` é o contador do dia CORRENTE da API no momento da chamada —
+        não o consumo de um dia fechado. Quem consome carimba o horário da leitura
+        (ver src/reporting/api_quota.py).
+
+        Deliberadamente SEM _raise_if_quota: aqui um envelope com `errors` de cota é o
+        próprio sinal que queremos reportar, não uma falha a propagar. Quem chama
+        interpreta `errors` e degrada a seção.
+
+        Também deliberadamente FORA do _make_request: o retry longo do BaseClient serve
+        coleta (onde perder uma janela forward-only é irreversível) e aqui estouraria o
+        timeout do serviço de resumo — ver STATUS_TIMEOUT. Uma tentativa curta; falhou,
+        a seção sai degradada.
+
+        Returns:
+            Envelope cru: {response: {account, subscription, requests}, errors, ...}
+        """
+        response = self.session.request(
+            method="GET",
+            url=f"{self.base_url}/status",
+            timeout=STATUS_TIMEOUT,
+        )
+        response.raise_for_status()
+        return response.json()

@@ -19,6 +19,13 @@ API_TIMEOUT = 60
 API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
 
+# Limiares de alerta de cota no resumo diário (src/reporting/api_quota.py). O /status da
+# API-Football é a ÚNICA visibilidade de orçamento que existe: em 2026-08-05 o consumo
+# estava em 7.189/7.500 (95,9%) e o plano vencia em 6 dias, e nada no pipeline reportava
+# nenhum dos dois — a primeira notícia de cota estourada seria o produto vazio.
+QUOTA_ALERT_PCT = 80.0  # consumo do dia acima disso destaca no e-mail (agir no mesmo dia)
+SUBSCRIPTION_ALERT_DAYS = 14  # vencimento mais perto que isso destaca (renovação depende de terceiro)
+
 # Ligas alvo do pipeline futebol
 BRASILEIRAO_ID = 71
 COPA_MUNDO_ID = 1  # validar no primeiro run
