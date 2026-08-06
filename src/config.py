@@ -55,7 +55,8 @@ SERIE_A_ITA_ID = 135  # 3ª europeia (top-5, pontos corridos 20 times): Tier A c
 # FALSE em events/lineups/stats/players/injuries por PRÉ-TEMPORADA, flipam na abertura —
 # standings/predictions JÁ TRUE. Split-year: season 2026 = 2026/27 (start 2026-08-22,
 # end 2027-05-30, 380 jogos / 20 times, todos NS). Opener 22/08 16:30 UTC (Udinese x Como,
-# Inter x Monza) -> odds t24h abre ~21/08; predictions/injuries pregame (janela 14d) engajam ~08/08.
+# Inter x Monza) -> odds t24h abre ~21/08; predictions pregame (janela 14d) engaja ~08/08;
+# injuries pregame (janela 96h) engaja ~18/08 — as duas janelas deixaram de coincidir em 2026-08-06.
 # ⚠️ NÃO recalibrar as premissas de O/U por causa desta liga: o ambiente de gols medido em 1.520
 # jogos FT (24/25+25/26) dá 2,49 gols/jogo e 47,0% de Over 2.5 — praticamente idêntico ao
 # Brasileirão (2,48 / 46,7%), que é onde os thresholds foram calibrados. A fama de "liga de poucos
@@ -67,7 +68,7 @@ BUNDESLIGA_ID = 78  # 4ª europeia (top-5): Tier A completo. Probe 2026-08-05: 2
 # injuries=TRUE; odds=FALSE nas duas (temporadas encerradas, esperado). 2026 (current=True) mostra
 # FALSE em events/lineups/stats/players/injuries por PRÉ-TEMPORADA — standings/predictions JÁ TRUE.
 # Split-year: season 2026 = 2026/27 (start 2026-08-28, end 2027-05-22) -> odds t24h abre ~27/08;
-# predictions/injuries pregame (janela 14d) engajam ~14/08.
+# predictions pregame (janela 14d) engaja ~14/08; injuries pregame (janela 96h) engaja ~24/08.
 # ⚠️ FORMATO DIFERENTE das outras top-5 (gabarito de verificação não é o mesmo):
 #   - 308 fixtures/season, não 306 nem 380: 18 times x 34 rodadas + PLAYOFF DE REBAIXAMENTO de 2
 #     jogos contra o 3º da 2. Bundesliga. A rodada extra vem como "Relegation Round" (24/25) e,
@@ -92,7 +93,8 @@ LIGUE_1_ID = 61  # 6ª europeia e ÚLTIMA da Onda 2: Tier A completo. Probe 2026
 # ⚠️ ABERTURA = 2026-08-21 18:45 UTC. A task do ClickUp dizia 22/08, foi "corrigida" p/ 23/08, e
 # as duas estão erradas: a 1ª rodada tem 9 jogos espalhados em 21/08 (1), 22/08 (5) e 23/08 (3) —
 # 23/08 é o FIM da rodada 1, não o começo. Daqui saem as duas datas operacionais:
-# odds t24h abre ~20/08; predictions/injuries pregame (janela 14d) engajam ~07/08.
+# odds t24h abre ~20/08; predictions pregame (janela 14d) engaja ~07/08; injuries pregame
+# (janela 96h) engaja ~17/08.
 # ⚠️ GABARITO DE VERIFICAÇÃO SÃO TRÊS NÚMEROS, e nenhum é o das outras top-5:
 #   - base 18 times x 34 rodadas = 306 — é assim que a TEMPORADA NOVA valida (confirmado: 306 NS
 #     em 2026, todos Regular Season);
@@ -512,21 +514,36 @@ FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COP
 #
 # Mesma mecânica date-stampada de predictions (raw_futebol_injuries_{fixture}_daily_{data}.json):
 # skip-if-exists por (fixture, janela, DIA) → 1 captura/dia; o fato dedup latest-wins por
-# loaded_at. Janela ÚNICA "daily" cobre de agora (0) a 14 dias. Por que SÓ "daily" (sem banda
+# loaded_at. Janela ÚNICA "daily", de agora (0) até o horizonte. Por que SÓ "daily" (sem banda
 # near-kickoff): injuries são estáveis intra-dia (jogador descartado de manhã segue fora) E o
 # fact_injuries_snapshot é daily-grained (dedup por snapshot_date) → re-poll horário não
 # adiciona resolução; a notícia final de escalação vem da fonte de lineups (confirmed, ~T-30min).
+#
+# HORIZONTE: 96h (era 14 dias até 2026-08-06). A fonte só publica a lista a 53–70h do apito
+# — mediana 58h, medido sobre os 28 fixtures que já tiveram lista, coletados entre 14 e 31/07,
+# TODOS do Brasileirão. Os primeiros 11 dias e meio da banda antiga nunca devolviam nada, e o
+# poll horário repergunta o mesmo vazio até o kickoff: ~648 chamadas/dia, 8,6% da cota, para
+# reconfirmar de hora em hora que a fonte ainda não publicou.
+# 96h e não 72h justamente porque a amostra é pequena e de uma liga só: dá folga sobre o limite
+# superior observado. ⚠️ RECHECAR com amostra europeia — se La Liga/PL/Serie A/Bundesliga/Ligue 1
+# publicarem com antecedência diferente, a banda merece revisão. Com a sentinela do vazio
+# registrado (#33) gravando, passa a existir dado para revisá-la: hoje "perguntamos e não tinha"
+# não deixa rastro nenhum.
+# Mudar o horizonte é mudar ESTE número — a banda é derivada, não uma segunda entrada no mapa.
+FUTEBOL_INJURIES_HORIZON_HOURS = 96
 FUTEBOL_INJURIES_WINDOWS = {
-    "daily": (0, 20160),  # 0 até 14 dias (minutos) — varre todo NS futuro; 1 captura/dia
+    "daily": (0, FUTEBOL_INJURIES_HORIZON_HOURS * 60),  # 0 até o horizonte; 1 captura/dia
 }
 
 # coverage.injuries=TRUE p/ Brasileirão (71), La Liga (140, probe 2026-07-15), Premier League
 # (39, probe 2026-07-17) e Serie A ITA (135, probe 2026-08-03); Copa do Mundo (1) EXCLUÍDA (igual a
 # INJURIES_CURRENT — a API não fornece lesões da Copa; incluí-la gastaria quota e voltaria vazia).
-# Série B (72) também EXCLUÍDA: coverage.injuries=FALSE (validado 2026-07). La Liga varre NS ≤14d
-# (pregame); dormente até ~02/08 (14d antes da abertura 16/08). Premier League idem; dormente até
-# ~07/08 (14d antes de 21/08). Serie A ITA idem; dormente até ~08/08 (14d antes de 22/08).
-# Bundesliga (78, probe 2026-08-05) idem; dormente até ~14/08 (14d antes de 28/08).
+# Série B (72) também EXCLUÍDA: coverage.injuries=FALSE (validado 2026-07). As europeias varrem
+# NS dentro do horizonte de 96h (pregame) e ficam DORMENTES, a custo zero, até 4 dias antes do
+# opener de cada uma — datas recalculadas em 2026-08-06, quando o horizonte caiu de 14 dias
+# para 96h: La Liga ~12/08 (opener 16/08), Premier League ~17/08 (21/08), Ligue 1 ~17/08 (21/08),
+# Serie A ITA ~18/08 (22/08), Bundesliga ~24/08 (28/08). Antes engajavam ~10 dias mais cedo, e
+# cada um desses dias era varredura vazia paga de hora em hora.
 FUTEBOL_INJURIES_LEAGUE_IDS = [BRASILEIRAO_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID]
 
 # Fixture statistics (/fixtures/statistics) — 1 chamada por fixture, só após FT.

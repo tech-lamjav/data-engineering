@@ -4,7 +4,9 @@
 # premissas desfalque_adversario (+8) / desfalque_proprio (−15) do Motor de Score (S7).
 # Complementa o snapshot season-log diário (workflow_futebol.yml fase 1j), que congela
 # quando não há rodada recente (pausa FIFA) e não traz desfalques de jogos futuros. Uma
-# passada varre os NS na janela "daily" (0–14d): o extractor (mode=pregame) bucketa cada
+# passada varre os NS na janela "daily" (0–96h; era 0–14d até 2026-08-06 — a fonte só publica
+# a lista a 53–70h do apito, então os 11 dias e meio iniciais eram varredura vazia paga de hora
+# em hora): o extractor (mode=pregame) bucketa cada
 # jogo pela proximidade do kickoff (FUTEBOL_INJURIES_WINDOWS) e grava 1 arquivo date-stampado
 # por (fixture, dia) com skip-if-exists (1 captura/dia). Se algo novo foi coletado, rebuild
 # ENXUTO dos modelos do lado injuries.
