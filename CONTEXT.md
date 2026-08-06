@@ -77,17 +77,18 @@ _Avoid_: `status = 'FT'`, encerrado
 Status de fixture futura; o universo dos polls pré-jogo.
 
 **Escalação (lineup)**:
-Formação e relacionados de uma fixture, capturada em duas fases: `confirmed` (pré-jogo, ~T-30min) e `real` (pós-jogo). `real` vence `confirmed` (latest-wins).
+Formação e relacionados de uma fixture, capturada em duas fases: `confirmed` (anunciada ~T-40min; a fonte não publica escalação provável antes disso) e `real` (pós-jogo). São registros do que se sabia em dois momentos diferentes — uma não é versão melhor da outra, e a confirmada é a única evidência pré-apito de quem entra em campo.
+_Avoid_: escalação provável (não existe na fonte)
 
 **Desfalque**:
-Jogador indisponível para a partida (lesão ou suspensão) — o que a coleta de injuries captura.
+Jogador indisponível para a partida (lesão ou suspensão) — o que a coleta de injuries captura. A fonte publica a lista por fixture a cerca de dois a três dias do kickoff e não antes; consultar mais cedo devolve vazio, que é ausência de publicação e não ausência de desfalque.
 _Avoid_: lesão (mais restrito que desfalque)
 
 **Predictions (baseline da API)**:
 Previsão pré-jogo do algoritmo da própria API-Football, coletada como baseline de comparação para um futuro modelo próprio. Não é produto.
 
 **xG (expected goals)**:
-Métrica de gols esperados presente nas estatísticas de fixture; premissa enriquecedora do Motor de Score (ausência degrada o score, não quebra).
+Métrica de gols esperados presente nas estatísticas de fixture; insumo do Motor de Score. Cobertura quase total no Brasileirão e nas top-5 europeias, rala nas copas e na Série B — Copa do Brasil é o extremo. Onde é rala, a premissa fica **sem insumo**, que é diferente de sinal fraco.
 
 ### Coleta
 
@@ -108,7 +109,17 @@ _Avoid_: confundir com latest-only
 Verificação recorrente (~15min) das fixtures NS futuras, bucketando cada uma pela proximidade do kickoff.
 
 **Janela**:
-Banda de proximidade do kickoff que dispara uma captura: odds em T-24h / T-1h / T-15m, predictions em T-2h, escalação confirmada em ~T-30min. T-15m é a janela de fechamento (CLV).
+Banda de proximidade do kickoff que dispara uma captura. As bandas de um mesmo endpoint são **disjuntas** — bandas que se sobrepõem fazem uma passada do poll capturar o mesmo jogo duas vezes, com dois rótulos. T-15m é a janela de fechamento (CLV).
+
+**Janela diária**:
+Janela larga, carimbada por data, que varre todo o horizonte futuro com uma captura por dia — em vez de uma foto perto do kickoff. É como se cobre o que está a dias de distância sem multiplicar chamada por poll.
+
+**Horizonte**:
+Até quando à frente do kickoff um endpoint é consultado. É escolha nossa, e não deve ser confundida com o que a fonte oferece: quando os dois divergem, é a nossa banda que corta.
+
+**Vazio registrado**:
+Registro de que a fonte foi consultada e não tinha o dado. Sem ele, "perguntamos e não veio" e "nunca perguntamos" são o mesmo estado na landing — o skip-if-exists não trava, o poll repergunta o vazio até o kickoff, e a jusante não há como distinguir ausência do mundo de ausência da coleta.
+_Avoid_: tratar ausência de arquivo como ausência de dado
 
 **Forward-only**:
 Dado que só existe no seu momento: janela perdida não se reconstrói — sem backfill possível. Vale para odds, predictions e escalações confirmadas.
@@ -120,7 +131,7 @@ Idempotência por item: o que já está na landing não é re-buscado, exceto de
 Faixa recente em que itens já coletados são re-buscados para capturar correções pós-jogo da API.
 
 **Quota**:
-Orçamento diário de requests da API. Estouro na API-Football chega como resposta OK com `errors` preenchido — o run deve falhar, nunca registrar coleta parcial como sucesso.
+Orçamento diário de requests da API. Estouro na API-Football chega como resposta OK com `errors` preenchido — o run deve falhar, nunca registrar coleta parcial como sucesso. Consumo e data de vencimento do plano são estado observável (`/status`) e pertencem ao resumo diário: cota é insumo de coleta como qualquer outro, e o primeiro sintoma de ter acabado é o produto vazio.
 
 ### Plataforma
 
