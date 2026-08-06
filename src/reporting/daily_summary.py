@@ -342,19 +342,7 @@ def run_daily_summary(target_date: date | None = None) -> dict:
         "emailed": not bool(os.getenv("SUMMARY_DRY_RUN")),
         # Chave nova (aditiva — o workflow não mapeia campos do body). Cai no Cloud
         # Logging junto da resposta do Cloud Run: série histórica de cota de graça.
-        "quota": {
-            "current": quota.current,
-            "limit_day": quota.limit_day,
-            "pct": round(quota.pct, 1) if quota.pct is not None else None,
-            "plan": quota.plan,
-            "subscription_end": (
-                quota.subscription_end.isoformat() if quota.subscription_end else None
-            ),
-            "days_to_end": quota.days_to_end(day),
-            "alert_quota": quota.quota_alert(),
-            "alert_subscription": quota.subscription_alert(day),
-            "error": quota.error,
-        },
+        "quota": quota.as_log_dict(day),
         "totals": {
             "runs": sum(a.total for a in agg.values()),
             "success": sum(a.success for a in agg.values()),

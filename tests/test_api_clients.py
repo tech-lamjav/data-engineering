@@ -192,3 +192,50 @@ def test_get_paginated_loga_warning_em_divergencia_total_count(bdl_client, caplo
 
     assert len(data) == 2
     assert any("Divergência de contagem" in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# /status — leitura de cota do resumo diário (best-effort, sem o retry longo)
+# --------------------------------------------------------------------------- #
+def test_get_status_devolve_o_envelope_cru(af_client):
+    envelope = {
+        "errors": [],
+        "response": {
+            "subscription": {"plan": "Pro", "end": "2026-08-11T12:21:59+00:00", "active": True},
+            "requests": {"current": 4623, "limit_day": 7500},
+        },
+    }
+    af_client.session = MagicMock()
+    af_client.session.request.return_value = _resp(envelope)
+
+    assert af_client.get_status() == envelope
+
+
+def test_get_status_e_uma_tentativa_curta_sem_retry(af_client):
+    # A leitura roda ANTES do envio do email, num Cloud Run de timeout 600s. O retry
+    # padrão do BaseClient (6 tentativas, até ~810s somando backoff e API_TIMEOUT)
+    # derrubaria o email inteiro numa indisponibilidade do /status — o oposto do que a
+    # seção de cota existe p/ garantir. Aqui: 1 chamada, timeout curto.
+    from src.clients.api_football_client import STATUS_TIMEOUT
+
+    af_client.session = MagicMock()
+    af_client.session.request.return_value = _resp({"errors": [], "response": {}})
+
+    af_client.get_status()
+
+    assert af_client.session.request.call_count == 1
+    assert af_client.session.request.call_args.kwargs["timeout"] == STATUS_TIMEOUT
+    assert STATUS_TIMEOUT <= 60
+
+
+def test_get_status_propaga_erro_http_para_quem_degrada(af_client):
+    # collect_quota transforma isso em seção degradada; o cliente não engole o erro.
+    import requests
+
+    af_client.session = MagicMock()
+    af_client.session.request.return_value.raise_for_status.side_effect = (
+        requests.exceptions.HTTPError("500")
+    )
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        af_client.get_status()

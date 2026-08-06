@@ -7,6 +7,13 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+# Teto de tempo da leitura de cota (/status). Ela roda dentro do resumo diário, ANTES do
+# envio do e-mail, num Cloud Run com timeout de 600s. O retry padrão do BaseClient são 6
+# tentativas — até ~810s somando backoff (30+60+120+120+120) e API_TIMEOUT por tentativa
+# —, então uma indisponibilidade do /status derrubaria o e-mail inteiro, que é exatamente
+# o que a seção de cota existe para impedir. Leitura best-effort, 1x/dia: 1 tentativa curta.
+STATUS_TIMEOUT = 15
+
 
 class ApiFootballClient(BaseClient):
     """Cliente para API-Football v3.
@@ -415,8 +422,18 @@ class ApiFootballClient(BaseClient):
         próprio sinal que queremos reportar, não uma falha a propagar. Quem chama
         interpreta `errors` e degrada a seção.
 
+        Também deliberadamente FORA do _make_request: o retry longo do BaseClient serve
+        coleta (onde perder uma janela forward-only é irreversível) e aqui estouraria o
+        timeout do serviço de resumo — ver STATUS_TIMEOUT. Uma tentativa curta; falhou,
+        a seção sai degradada.
+
         Returns:
             Envelope cru: {response: {account, subscription, requests}, errors, ...}
         """
-        response = self._make_request("GET", "status")
+        response = self.session.request(
+            method="GET",
+            url=f"{self.base_url}/status",
+            timeout=STATUS_TIMEOUT,
+        )
+        response.raise_for_status()
         return response.json()

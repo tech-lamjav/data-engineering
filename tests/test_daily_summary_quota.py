@@ -261,12 +261,63 @@ def test_collect_quota_nao_levanta_quando_o_cliente_falha():
     assert "boom" in q.error
 
 
-def test_collect_quota_nao_levanta_quando_o_cliente_nem_constroi():
+def test_collect_quota_nao_levanta_quando_o_cliente_nem_constroi(monkeypatch):
     # Cenario real: servico sem API_FOOTBALL_KEY montado (secret nao ligado no deploy).
-    def _fabrica():
+    def _explode():
         raise RuntimeError("API_FOOTBALL_KEY ausente")
 
-    q = collect_quota(client_factory=_fabrica)
+    monkeypatch.setattr("src.reporting.api_quota.ApiFootballClient", _explode)
+
+    q = collect_quota()
 
     assert q.current is None
     assert "API_FOOTBALL_KEY" in q.error
+
+
+# --------------------------------------------------------------------------- #
+# Data de referencia do countdown
+# --------------------------------------------------------------------------- #
+def test_countdown_conta_do_dia_da_leitura_e_nao_do_dia_do_relatorio():
+    # O relatorio cobre o dia FECHADO (anterior), mas o email sai no dia da leitura.
+    # Contar pelo dia do relatorio exibiria um dia a mais de prazo e atrasaria o alerta
+    # em um dia — os dois na direcao errada.
+    q = parse_quota(_envelope(end="2026-08-19"), read_at=LEITURA)  # leitura em 06/08
+    dia_do_relatorio = date(2026, 8, 5)
+
+    assert q.reference_date(dia_do_relatorio) == date(2026, 8, 6)
+    assert q.days_to_end(dia_do_relatorio) == 13  # pelo dia do relatorio seriam 14
+    assert q.subscription_alert(dia_do_relatorio) is True  # 14 nao alertaria
+
+
+def test_countdown_cai_para_o_dia_do_relatorio_sem_carimbo_de_leitura():
+    q = parse_quota(_envelope(end="2026-08-19"))  # read_at=None
+
+    assert q.reference_date(DIA) == DIA
+    assert q.days_to_end(DIA) == 13
+
+
+# --------------------------------------------------------------------------- #
+# Forma compacta p/ o Cloud Logging
+# --------------------------------------------------------------------------- #
+def test_as_log_dict_resume_a_leitura():
+    q = parse_quota(_envelope(current=7189, limit_day=7500), read_at=LEITURA)
+
+    d = q.as_log_dict(DIA)
+
+    assert d["current"] == 7189
+    assert d["limit_day"] == 7500
+    assert d["pct"] == 95.9
+    assert d["subscription_end"] == "2026-08-11"
+    assert d["days_to_end"] == 5
+    assert d["alert_quota"] is True
+    assert d["alert_subscription"] is True
+    assert d["error"] is None
+
+
+def test_as_log_dict_sobrevive_a_leitura_degradada():
+    d = QuotaInfo(error="timeout").as_log_dict(DIA)
+
+    assert d["current"] is None
+    assert d["pct"] is None
+    assert d["days_to_end"] is None
+    assert d["error"] == "timeout"

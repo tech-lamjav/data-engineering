@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 
 # Paleta do e-mail (mesmos tons já usados na tabela de workflows).
-GREEN = "#1a7f37"
 AMBER = "#9a6700"
 RED = "#cf222e"
 MUTED = "#57606a"

@@ -15,7 +15,7 @@ alerta de vencimento não depende do horário e vale integralmente.
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from html import escape
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 from src.clients.api_football_client import ApiFootballClient
 from src.config import QUOTA_ALERT_PCT, SUBSCRIPTION_ALERT_DAYS
@@ -47,11 +47,21 @@ class QuotaInfo:
             return None
         return 100.0 * self.current / self.limit_day
 
+    def reference_date(self, day: date) -> date:
+        """Data a partir da qual o vencimento é contado.
+
+        O e-mail sai minutos depois da leitura, então quem lê conta a partir de HOJE — e
+        `day` é o dia ANTERIOR (o relatório cobre o dia fechado). Medir por `day` exibiria
+        um dia a mais de prazo e atrasaria o alerta em um dia, os dois na direção errada.
+        Em UTC, que é o fuso de `subscription.end`. Cai para `day` se não houve carimbo.
+        """
+        return self.read_at.date() if self.read_at else day
+
     def days_to_end(self, day: date) -> Optional[int]:
-        """Dias até o vencimento, contados a partir do dia do relatório (negativo = vencido)."""
+        """Dias até o vencimento a partir de reference_date (negativo = já vencido)."""
         if self.subscription_end is None:
             return None
-        return (self.subscription_end - day).days
+        return (self.subscription_end - self.reference_date(day)).days
 
     def quota_alert(self) -> bool:
         """Consumo PASSOU de QUOTA_ALERT_PCT — estrito: 80,0% cravado não alerta."""
@@ -64,6 +74,22 @@ class QuotaInfo:
             return True
         days = self.days_to_end(day)
         return days is not None and days < SUBSCRIPTION_ALERT_DAYS
+
+    def as_log_dict(self, day: date) -> Dict[str, Any]:
+        """Forma compacta da leitura p/ a resposta do Cloud Run (e daí p/ o Cloud Logging)."""
+        return {
+            "current": self.current,
+            "limit_day": self.limit_day,
+            "pct": round(self.pct, 1) if self.pct is not None else None,
+            "plan": self.plan,
+            "subscription_end": (
+                self.subscription_end.isoformat() if self.subscription_end else None
+            ),
+            "days_to_end": self.days_to_end(day),
+            "alert_quota": self.quota_alert(),
+            "alert_subscription": self.subscription_alert(day),
+            "error": self.error,
+        }
 
 
 def _parse_end(value: Any) -> Optional[date]:
@@ -105,10 +131,7 @@ def parse_quota(envelope: Dict[str, Any], read_at: Optional[datetime] = None) ->
     )
 
 
-def collect_quota(
-    client: Any = None,
-    client_factory: Optional[Callable[[], Any]] = None,
-) -> QuotaInfo:
+def collect_quota(client: Any = None) -> QuotaInfo:
     """Consulta o /status (1 chamada/dia). NUNCA levanta.
 
     O resumo diário é o único canal de alarme que existe no pipeline: ele não pode
@@ -119,7 +142,7 @@ def collect_quota(
     read_at = datetime.now(timezone.utc)
     try:
         if client is None:
-            client = (client_factory or ApiFootballClient)()
+            client = ApiFootballClient()
         return parse_quota(client.get_status(), read_at=read_at)
     except Exception as e:
         logger.warning(f"Status da API-Football indisponivel, secao de cota degradada: {e}")
@@ -161,7 +184,7 @@ def build_quota_section(quota: Optional[QuotaInfo], day: date) -> str:
 
     pct = quota.pct
     pct_txt = f"{pct:.1f}%" if pct is not None else "—"
-    consumo_txt = (
+    consumo_txt = escape(
         f"{quota.current} / {quota.limit_day}" if quota.limit_day else f"{quota.current}"
     )
 
@@ -191,10 +214,9 @@ def build_quota_section(quota: Optional[QuotaInfo], day: date) -> str:
             f"(limiar {QUOTA_ALERT_PCT:.0f}%). Agir hoje."
         )
     if quota.subscription_alert(day):
+        # `dias is None` só chega aqui junto de active=False, tratado acima.
         if quota.active is False:
             detalhe = "INATIVO"
-        elif dias is None:
-            detalhe = "sem data de vencimento legivel"
         elif dias < 0:
             detalhe = _fmt_dias(dias)  # "VENCIDO ha N dias"
         else:
