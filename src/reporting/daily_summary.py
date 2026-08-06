@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from html import escape
-from zoneinfo import ZoneInfo
 
 from google.cloud import logging as gcloud_logging
 from google.cloud.workflows.executions_v1 import ExecutionsClient
@@ -33,11 +32,12 @@ from google.cloud.workflows.executions_v1.types import (
 )
 
 from src.config import GCP_PROJECT_ID
+from src.reporting.api_quota import build_quota_section, collect_quota
+from src.reporting.formatting import SAO_PAULO, cell as _cell, fmt_brt as _fmt_brt
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 LOCATION = "us-east1"
 
 # workflow_id (com hífen) de todos os workflows — usado pela Executions API e como
@@ -198,19 +198,12 @@ def _fmt_dur(seconds: float) -> str:
     return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
 
 
-def _fmt_brt(dt_utc: datetime | None) -> str:
-    return dt_utc.astimezone(SAO_PAULO).strftime("%H:%M") if dt_utc else "—"
+def build_html(day: date, agg: dict, quota=None) -> tuple[str, str]:
+    """Monta (subject, html) do email consolidado. Sempre renderiza (mesmo vazio).
 
-
-def _cell(value, align="left", color=None) -> str:
-    style = f"padding:6px 10px;border:1px solid #ddd;text-align:{align}"
-    if color:
-        style += f";color:{color}"
-    return f'<td style="{style}">{value}</td>'
-
-
-def build_html(day: date, agg: dict) -> tuple[str, str]:
-    """Monta (subject, html) do email consolidado. Sempre renderiza (mesmo vazio)."""
+    `quota` (QuotaInfo | None) acrescenta a seção de cota da API-Football; None omite a
+    seção, mantendo o email de antes intacto.
+    """
     total_runs = sum(a.total for a in agg.values())
     total_ok = sum(a.success for a in agg.values())
     total_partial = sum(a.partial for a in agg.values())
@@ -292,7 +285,11 @@ def build_html(day: date, agg: dict) -> tuple[str, str]:
             f"</tr></thead><tbody>{''.join(fail_rows)}</tbody></table>"
         )
 
-    html = head + table + fail_section + "</div>"
+    # Seções extras entram aqui, uma função por seção — o C4 (status das guardas) é a
+    # próxima e não deve precisar reescrever nada acima.
+    quota_section = build_quota_section(quota, day)
+
+    html = head + table + fail_section + quota_section + "</div>"
     return subject, html
 
 
@@ -329,7 +326,10 @@ def run_daily_summary(target_date: date | None = None) -> dict:
     except Exception as e:
         logger.warning(f"Executions API indisponivel, seguindo so com Logging: {e}")
 
-    subject, html = build_html(day, agg)
+    # 1 chamada/dia ao /status. collect_quota nunca levanta: falha vira seção degradada.
+    quota = collect_quota()
+
+    subject, html = build_html(day, agg, quota)
 
     if os.getenv("SUMMARY_DRY_RUN"):
         logger.info(f"[DRY_RUN] email NAO enviado. subject={subject!r}")
@@ -340,6 +340,21 @@ def run_daily_summary(target_date: date | None = None) -> dict:
     return {
         "date": day.isoformat(),
         "emailed": not bool(os.getenv("SUMMARY_DRY_RUN")),
+        # Chave nova (aditiva — o workflow não mapeia campos do body). Cai no Cloud
+        # Logging junto da resposta do Cloud Run: série histórica de cota de graça.
+        "quota": {
+            "current": quota.current,
+            "limit_day": quota.limit_day,
+            "pct": round(quota.pct, 1) if quota.pct is not None else None,
+            "plan": quota.plan,
+            "subscription_end": (
+                quota.subscription_end.isoformat() if quota.subscription_end else None
+            ),
+            "days_to_end": quota.days_to_end(day),
+            "alert_quota": quota.quota_alert(),
+            "alert_subscription": quota.subscription_alert(day),
+            "error": quota.error,
+        },
         "totals": {
             "runs": sum(a.total for a in agg.values()),
             "success": sum(a.success for a in agg.values()),
