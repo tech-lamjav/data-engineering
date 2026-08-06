@@ -15,7 +15,7 @@ import pytest
 
 from src.config import (
     BRASILEIRAO_ID,
-    FUTEBOL_INJURIES_HORIZON_HOURS,
+    FUTEBOL_INJURIES_HORIZON_MIN,
     FUTEBOL_INJURIES_WINDOWS,
 )
 
@@ -67,11 +67,10 @@ def _envelope_com_desfalque():
 # A banda é um número declarado
 # --------------------------------------------------------------------------- #
 def test_a_banda_deriva_do_horizonte_declarado():
-    # AC: "mudar o horizonte é mudar um número, não acrescentar banda nova".
-    assert FUTEBOL_INJURIES_HORIZON_HOURS == 96
-    assert FUTEBOL_INJURIES_WINDOWS == {
-        "daily": (0, FUTEBOL_INJURIES_HORIZON_HOURS * 60)
-    }
+    # AC: "mudar o horizonte é mudar um número, não acrescentar banda nova". Sem pinar o
+    # valor: a config manda rechecar a banda com amostra europeia, e um teste que quebra
+    # nessa retuning seria um detector de mudanca, nao de regressao.
+    assert FUTEBOL_INJURIES_WINDOWS == {"daily": (0, FUTEBOL_INJURIES_HORIZON_MIN)}
 
 
 def test_a_banda_cobre_a_faixa_em_que_a_fonte_publica():
@@ -128,7 +127,7 @@ def test_fixture_logo_abaixo_do_teto_ainda_entra(ext):
 
 
 def test_fixture_perto_do_apito_continua_entrando(ext):
-    # A banda comeca em 0: jogo de hoje a noite nao pode cair fora por causa do estreitamento.
+    # A banda comeca em 0: fixture de hoje a noite nao pode cair fora por causa do estreitamento.
     ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(2)]
     ext.client.get_injuries_by_fixture.return_value = _envelope_com_desfalque()
 
@@ -142,7 +141,7 @@ def test_a_varredura_pede_ao_storage_so_o_horizonte_novo(ext):
     ext.extract_and_save()
 
     ext.storage.get_upcoming_fixtures_with_kickoff.assert_called_once_with(
-        FUTEBOL_INJURIES_HORIZON_HOURS * 60
+        FUTEBOL_INJURIES_HORIZON_MIN
     )
 
 

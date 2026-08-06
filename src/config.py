@@ -530,9 +530,11 @@ FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COP
 # registrado (#33) gravando, passa a existir dado para revisá-la: hoje "perguntamos e não tinha"
 # não deixa rastro nenhum.
 # Mudar o horizonte é mudar ESTE número — a banda é derivada, não uma segunda entrada no mapa.
-FUTEBOL_INJURIES_HORIZON_HOURS = 96
+# Em MINUTOS, como todas as bandas do projeto (FUTEBOL_ODDS_WINDOWS/FUTEBOL_PREDICTIONS_WINDOWS):
+# uma unidade só evita `* 60` espalhado por config e testes.
+FUTEBOL_INJURIES_HORIZON_MIN = 96 * 60
 FUTEBOL_INJURIES_WINDOWS = {
-    "daily": (0, FUTEBOL_INJURIES_HORIZON_HOURS * 60),  # 0 até o horizonte; 1 captura/dia
+    "daily": (0, FUTEBOL_INJURIES_HORIZON_MIN),  # 0 até o horizonte; 1 captura/dia
 }
 
 # coverage.injuries=TRUE p/ Brasileirão (71), La Liga (140, probe 2026-07-15), Premier League
