@@ -33,6 +33,7 @@ from google.cloud.workflows.executions_v1.types import (
 
 from src.config import GCP_PROJECT_ID
 from src.reporting.api_quota import build_quota_section, collect_quota
+from src.reporting.guardas import build_guardas_section
 from src.reporting.formatting import SAO_PAULO, cell as _cell, fmt_brt as _fmt_brt
 from src.utils.logger import setup_logger
 
@@ -84,6 +85,10 @@ class WFAgg:
     durations: list = field(default_factory=list)
     last_run: datetime | None = None  # UTC
     failures: list = field(default_factory=list)  # (dt_utc, status, detalhe)
+    # Guardas de dado (tag:guarda) vermelhas: timestamps (UTC) das execucoes em que
+    # `guardas_status` veio != SUCCESS. Separado de `failures` porque guarda vermelha NAO
+    # e falha do workflow — nao pode derrubar o board, so precisa alarmar.
+    guardas_red: list = field(default_factory=list)
 
 
 def compute_window(target_date: date | None = None):
@@ -138,6 +143,11 @@ def collect_from_logging(client, start_utc, end_utc, agg) -> int:
             failed_services = payload.get("failed_services") or []
             detail = ", ".join(str(s) for s in failed_services) if failed_services else "—"
             a.failures.append((ts, status, detail))
+        # Status PROPRIO das guardas, emitido pelos workflows futebol/odds. Ausente nos
+        # demais workflows (que nao rodam guardas) — ausencia nao e vermelho.
+        guardas = payload.get("guardas_status")
+        if guardas and guardas != "SUCCESS":
+            a.guardas_red.append(ts)
         try:
             a.saved_count += int(payload.get("saved_count") or 0)
         except (TypeError, ValueError):
@@ -210,15 +220,33 @@ def build_html(day: date, agg: dict, quota=None) -> tuple[str, str]:
     total_failed = sum(a.failed for a in agg.values())
     has_problems = (total_partial + total_failed) > 0
 
-    flag = "FALHAS" if has_problems else "OK"
+    # Guarda vermelha nao entra em has_problems de proposito: ela nao e falha de workflow.
+    # Mas TEM que aparecer no assunto — [OK] com guarda vermelha e alarme mudo, que era
+    # exatamente o buraco do C4.
+    vermelhas = {wf: a.guardas_red for wf, a in agg.items() if a.guardas_red}
+    total_guardas_red = sum(len(v) for v in vermelhas.values())
+
+    if has_problems and vermelhas:
+        flag = "FALHAS+GUARDA"
+    elif has_problems:
+        flag = "FALHAS"
+    elif vermelhas:
+        flag = "GUARDA"
+    else:
+        flag = "OK"
     subject = f"[{flag}] Resumo diario de workflows — {day.isoformat()}"
 
+    resumo_guardas = (
+        f' · <strong style="color:#cf222e">{total_guardas_red} com guarda vermelha</strong>'
+        if total_guardas_red
+        else ""
+    )
     head = (
         '<div style="font-family:Arial,Helvetica,sans-serif;color:#1f2328;max-width:860px">'
         f'<h2 style="margin:0 0 4px">Resumo diario de workflows — {day.isoformat()}</h2>'
         '<p style="margin:0 0 14px;color:#57606a;font-size:13px">'
         f'{total_runs} execucoes · {total_ok} OK · {total_partial} parcial · '
-        f'{total_failed} falha. Horarios em America/Sao_Paulo (BRT).</p>'
+        f'{total_failed} falha{resumo_guardas}. Horarios em America/Sao_Paulo (BRT).</p>'
     )
 
     rows = []
@@ -285,11 +313,12 @@ def build_html(day: date, agg: dict, quota=None) -> tuple[str, str]:
             f"</tr></thead><tbody>{''.join(fail_rows)}</tbody></table>"
         )
 
-    # Seções extras entram aqui, uma função por seção — o C4 (status das guardas) é a
-    # próxima e não deve precisar reescrever nada acima.
+    # Seções extras entram aqui, uma função por seção. Guardas antes da cota: guarda
+    # vermelha é acionável hoje, cota é acompanhamento.
+    guardas_section = build_guardas_section(vermelhas)
     quota_section = build_quota_section(quota, day)
 
-    html = head + table + fail_section + quota_section + "</div>"
+    html = head + table + fail_section + guardas_section + quota_section + "</div>"
     return subject, html
 
 

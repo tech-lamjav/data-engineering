@@ -758,8 +758,15 @@ main:
     # reconstruiria e o board congelaria. Guarda de qualidade não derruba o produto.
     # Seleção por TAG: guarda nova entra mexendo só no projeto dbt, sem editar este YAML
     # nem depender do redeploy do workflow. Tag vazia = "nada a fazer".
-    # ⚠️ O job dbt devolve exit 0 mesmo com ERROR>=1 — o `except` pega o job CAINDO, não
-    # teste vermelho; o resultado se lê na linha `Done. PASS=.../ERROR=...` do log do job.
+    # O `except` PEGA guarda vermelha. Medido em 2026-08-07, os 3 elos: `dbt test --select
+    # tag:guarda` sai com exit 1 quando uma guarda falha (PASS=13 ERROR=1 -> exit 1);
+    # container != 0 vira execução Cloud Run FAILED; e o conector jobs.run ESPERA o job
+    # (240-280s quando a fase 4 roda, vs 2-3s quando o workflow sai antes) e LEVANTA no
+    # FAILED. Sonda `probe-c4-guardas` devolveu {conector_levantou: true,
+    # guardas_status: PARTIAL_FAILURE}. O comentário anterior dizia "exit 0 mesmo com
+    # ERROR>=1" — isso é do `gcloud run jobs execute` SEM `--wait` (disparo assíncrono),
+    # mecanismo diferente do conector, e não vale aqui.
+    # ⚠️ maxRetries=1 no job: guarda vermelha roda a suíte 2x antes de falhar.
     # ============================================================================
     - phase4_dbt_guardas:
         try:
@@ -786,7 +793,7 @@ main:
                 args:
                     severity: INFO
                     data:
-                        message: "Guardas de qualidade (tag:guarda) executadas — conferir 'Done. PASS=/ERROR=' no log do job"
+                        message: "Guardas de qualidade (tag:guarda) PASSARAM — job verde significa ERROR=0"
                         execution_name: ${guardas_result.name}
         except:
             as: e
@@ -796,7 +803,7 @@ main:
                 args:
                     severity: WARNING
                     data:
-                        message: "dbt test (tag:guarda) não executou — não bloqueia o workflow nem o board"
+                        message: "GUARDA VERMELHA (ou o job não executou) — reporta no resumo diário; não bloqueia o workflow nem o board. Qual teste falhou: log do job dbt-futebol"
                         error: ${e.message}
             - handle_guardas_errors:
                 assign:
