@@ -171,3 +171,145 @@ def test_sem_fixtures_no_horizonte_nao_quebra(ext):
 
     assert ext.extract_and_save() == []
     ext.client.get_injuries_by_fixture.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Vazio registrado (sentinela)
+# --------------------------------------------------------------------------- #
+def _envelope_vazio():
+    """Fonte respondeu, e nao havia desfalque — diferente de erro."""
+    return {"errors": [], "response": []}
+
+
+def _dados_gravados(ext):
+    """Envelope que foi para o upload (o que vira linha na landing)."""
+    return ext.storage.upload_json.call_args.kwargs["data"]
+
+
+def test_resposta_vazia_grava_a_sentinela(ext):
+    # Antes: nao gravava nada, e o poll horario repergunta o mesmo vazio ate o kickoff.
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
+    ext.client.get_injuries_by_fixture.return_value = _envelope_vazio()
+
+    ext.extract_and_save()
+
+    ext.storage.upload_json.assert_called_once()
+    assert _dados_gravados(ext)["total_rows"] == 0
+
+
+def test_a_sentinela_e_consultavel_por_fixture_e_dia(ext):
+    # A razao de ser da entrega: distinguir "perguntamos e nao tinha" de "nunca perguntamos".
+    # A linha metadata-only precisa carregar de QUEM e de QUANDO foi a pergunta, em campos
+    # que o schema atual da external table ja comporta.
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
+    ext.client.get_injuries_by_fixture.return_value = _envelope_vazio()
+
+    ext.extract_and_save()
+
+    data = _dados_gravados(ext)
+    assert data["fixture"]["id"] == 999
+    assert data["snapshot_date"] == ext.snapshot_date
+    assert data["requested_league_id"] == BRASILEIRAO_ID
+    assert data["requested_season"] == 2026
+    assert data["loaded_at"]
+    assert data["injuries"] == []
+
+
+def test_a_sentinela_e_date_stampada_por_fixture_e_janela(ext):
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
+    ext.client.get_injuries_by_fixture.return_value = _envelope_vazio()
+
+    ext.extract_and_save()
+
+    kw = ext.storage.upload_json.call_args.kwargs
+    assert kw["game_id"] == 999
+    assert kw["mode"] == "daily"
+    assert kw["date"] == ext.snapshot_date
+
+
+def test_com_a_sentinela_gravada_a_passada_seguinte_nao_chama_a_api(ext):
+    # O efeito de orcamento: o skip-if-exists volta a travar, uma pergunta por dia.
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
+    ext.storage.bucket.blob.return_value.exists.return_value = True
+
+    ext.extract_and_save()
+
+    ext.client.get_injuries_by_fixture.assert_not_called()
+    ext.storage.upload_json.assert_not_called()
+
+
+def test_sentinela_sozinha_nao_abre_o_gate_do_dbt(ext):
+    # saved_count > 0 dispara o rebuild do dbt no workflow. Sentinela nao gera linha de
+    # desfalque nenhuma (o staging do outro repo a descarta), entao rebuildar por causa
+    # dela seria rebuild horario a troco de nada.
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
+    ext.client.get_injuries_by_fixture.return_value = _envelope_vazio()
+
+    assert ext.extract_and_save() == []
+    ext.storage.upload_json.assert_called_once()  # gravou, mas nao conta como novidade
+
+
+def test_fixture_com_dado_convive_com_fixture_vazio(ext):
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [
+        _fixture(60, fixture_id=111),
+        _fixture(61, fixture_id=222),
+    ]
+    ext.client.get_injuries_by_fixture.side_effect = [
+        _envelope_com_desfalque(),
+        _envelope_vazio(),
+    ]
+
+    paths = ext.extract_and_save()
+
+    assert len(paths) == 1  # so o que tem desfalque abre o gate
+    assert ext.storage.upload_json.call_count == 2  # mas os dois arquivos existem
+
+
+def test_erro_da_api_nao_vira_sentinela(ext):
+    # "A fonte respondeu e nao tinha" e "a chamada falhou" nao podem virar o mesmo
+    # registro: gravar sentinela num erro travaria o skip-if-exists por um dia inteiro
+    # em cima de uma mentira, e coleta pre-jogo e forward-only.
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
+    ext.client.get_injuries_by_fixture.return_value = {
+        "errors": {"fixture": "The Fixture field is required."},
+        "response": [],
+    }
+
+    paths = ext.extract_and_save()
+
+    assert paths == []
+    ext.storage.upload_json.assert_not_called()
+
+
+def test_erro_da_api_e_logado_como_falha_nao_como_vazio(ext, caplog):
+    # AC: "O log distingue sentinela gravada de falha real".
+    import logging
+
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
+    ext.client.get_injuries_by_fixture.return_value = {
+        "errors": {"fixture": "boom"},
+        "response": [],
+    }
+
+    with caplog.at_level(logging.ERROR):
+        ext.extract_and_save()
+
+    assert any("RESUMO DE FALHA" in r.message for r in caplog.records)
+
+
+def test_resposta_com_desfalque_nao_regride(ext):
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
+    ext.client.get_injuries_by_fixture.return_value = _envelope_com_desfalque()
+
+    paths = ext.extract_and_save()
+
+    assert len(paths) == 1
+    data = _dados_gravados(ext)
+    assert data["total_rows"] == 1
+    linha = data["injuries"][0]
+    # O shape da linha e o que coexiste com o season-log no mesmo fato — nao pode mudar.
+    assert linha["requested_league_id"] == BRASILEIRAO_ID
+    assert linha["requested_season"] == 2026
+    assert linha["snapshot_date"] == ext.snapshot_date
+    assert linha["player"]["id"] == 1
+    assert linha["team"]["id"] == 10

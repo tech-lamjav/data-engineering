@@ -43,6 +43,14 @@ class InjuriesExtractor(BaseExtractor):
     sim. 1 arquivo date-stampado por (fixture, janela, dia):
     raw_futebol_injuries_{fixture}_daily_{YYYY-MM-DD}.json → skip-if-exists por DIA. Os
     caminhos current/backfill ficam INTACTOS (retornam str; pregame retorna List[str]).
+
+    ⚠️ O pregame grava TAMBÉM quando a fonte não devolve desfalque — é o VAZIO REGISTRADO
+    (arquivo com contagem zero). Motivo duplo: (1) sem arquivo, o skip-if-exists não trava
+    e o poll repergunta o mesmo vazio de hora em hora até o kickoff; (2) sem o registro,
+    "perguntamos e a fonte não tinha" e "nunca perguntamos" são o MESMO estado na landing,
+    e nenhum consumidor a jusante consegue distinguir os dois. A objeção antiga — gravar
+    vazio "viraria linha NULL" — se resolve uma camada acima: o staging do dbt já descarta
+    a linha metadata-only (`player.id IS NOT NULL`), então a sentinela não chega ao fato.
     """
 
     VALID_MODES = ("current", "backfill", "pregame")
@@ -136,13 +144,25 @@ class InjuriesExtractor(BaseExtractor):
         fact_injuries_snapshot, SEM coluna collection_window (a janela vai só no nome do
         arquivo). requested_league_id/season vêm do FIXTURE (não da resposta) p/ alinhar a
         chave de dedup do fato com a do season-log (mesmo (league, season, snapshot_date)).
+
+        O envelope carimba fixture/liga/season/snapshot_date TAMBÉM no nível de cima, não só
+        dentro das linhas: quando `injuries` vem vazia, o writer NDJSON emite uma linha só de
+        metadados, e é ela que vira o VAZIO REGISTRADO — o registro de que perguntamos por
+        aquele fixture naquele dia. Sem esses campos no topo, a linha sairia anônima e não
+        responderia à única pergunta que o Motor faz dela: "perguntamos por este jogo hoje?".
+        Nas linhas com dado o `**item` sobrescreve `fixture`, e os demais campos são idênticos
+        aos que a linha já carregava — o shape de quem tem desfalque não muda.
+
+        Levanta em `errors`: "a fonte respondeu e não havia desfalque" e "a chamada falhou"
+        NÃO podem virar o mesmo registro. Gravar sentinela em cima de um erro travaria o
+        skip-if-exists por um dia inteiro sobre uma mentira, e coleta pré-jogo é forward-only.
+        Quem chama conta como falha e re-tenta no próximo poll.
         """
         envelope = self.client.get_injuries_by_fixture(fixture_id)
 
         errors = envelope.get("errors")
-        if errors:  # list vazia [] (sucesso) é falsy; só loga erro de verdade
-            logger.error(f"API errors p/ fixture={fixture_id}: {errors}")
-            return {"total_rows": 0, "injuries": []}
+        if errors:  # list vazia [] (sucesso) é falsy; só levanta em erro de verdade
+            raise RuntimeError(f"API errors p/ fixture={fixture_id}: {errors}")
 
         resp = envelope.get("response") or []
         rows = [
@@ -155,7 +175,15 @@ class InjuriesExtractor(BaseExtractor):
             }
             for item in resp
         ]
-        return {"total_rows": len(rows), "injuries": rows}
+        return {
+            "total_rows": len(rows),
+            "requested_league_id": league_id,
+            "requested_season": season,
+            "snapshot_date": self.snapshot_date,
+            "loaded_at": utcnow_iso(),
+            "fixture": {"id": fixture_id},
+            "injuries": rows,
+        }
 
     def extract_and_save(self, **kwargs):
         """Override: season-log date-stampado (current/backfill → str) OU pré-jogo por
@@ -188,7 +216,12 @@ class InjuriesExtractor(BaseExtractor):
         """Coleta FORWARD-ONLY por fixture (modo pregame). Varre os jogos NS dentro do
         horizonte (FUTEBOL_INJURIES_WINDOWS), calcula o lead até o kickoff e, p/ a janela
         cuja banda contém o lead, bate /injuries?fixture 1x com skip-if-exists por (fixture,
-        janela, dia). Espelha PredictionsExtractor.extract_and_save."""
+        janela, dia). Espelha PredictionsExtractor.extract_and_save.
+
+        Grava sempre que a fonte responde — com desfalque ou vazio (sentinela). O retorno
+        traz SÓ os arquivos COM desfalque: é ele que vira o `saved_count` do gate do
+        workflow, e sentinela não gera linha de desfalque a jusante, então abrir o gate por
+        causa dela seria rebuild de dbt horário sem dado novo nenhum."""
         max_lead = max((hi for (_, hi) in self.windows.values()), default=0)
         logger.info(
             f"Iniciando extração injuries pré-jogo (janelas={self.windows}, ligas={self.league_ids})"
@@ -247,11 +280,7 @@ class InjuriesExtractor(BaseExtractor):
                     )
                     time.sleep(0.4)  # cortesia entre chamadas (rate-limit API-Football)
 
-                    if data.get("total_rows", 0) == 0:
-                        # Sem desfalque registrado ainda: NÃO grava (re-tenta no próximo poll;
-                        # gravar vazio travaria o skip-if-exists e viraria linha NULL).
-                        empty += 1
-                        continue
+                    tem_desfalque = data.get("total_rows", 0) > 0
 
                     gcs_path = self.storage.upload_json(
                         data=data,
@@ -262,7 +291,17 @@ class InjuriesExtractor(BaseExtractor):
                         mode=window,
                         date=today,
                     )
-                    saved_paths.append(gcs_path)
+
+                    if tem_desfalque:
+                        saved_paths.append(gcs_path)
+                    else:
+                        # VAZIO REGISTRADO: a fonte respondeu e não havia desfalque. Grava
+                        # assim mesmo — é o registro de que perguntamos. Fica FORA de
+                        # saved_paths de propósito: o workflow usa saved_count>0 como gate do
+                        # rebuild do dbt, e a sentinela não gera linha de desfalque nenhuma
+                        # (o staging a descarta), então contá-la aqui viraria rebuild horário
+                        # a troco de nada.
+                        empty += 1
                 except Exception as e:
                     logger.error(
                         f"Erro ao processar fixture {fixture_id} ({window}): {str(e)}",
@@ -272,9 +311,9 @@ class InjuriesExtractor(BaseExtractor):
                     continue
 
         logger.info(
-            f"injuries pré-jogo concluído: {len(saved_paths)} salvos, {skipped} pulados "
-            f"(já existem), {empty} sem desfalque, {failed} com erro; {considered} "
-            f"(fixture,janela) na banda."
+            f"injuries pré-jogo concluído: {len(saved_paths)} com desfalque, {empty} "
+            f"vazios registrados (sentinela gravada), {skipped} pulados (já existem), "
+            f"{failed} com erro; {considered} (fixture,janela) na banda."
         )
         if failed:
             # Resumo de FALHA distinto de 'sem desfalque': forward-only, janela pode ser perdida.
