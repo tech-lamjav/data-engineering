@@ -448,8 +448,12 @@ FUTEBOL_ODDS_WINDOWS_DIARIAS = {"daily"}
 # normalmente existem — manter 1 aqui se a validação confirmar coverage.odds=TRUE.
 # Copa do Brasil (73)/Libertadores (13) ARMADAS 2026-07-13, Sudamericana (11) 2026-07-14, La Liga (140) 2026-07-15 (dormente até t24h ~15/08, opener 16/08),
 # Premier League (39) 2026-07-17 (dormente até t24h ~20/08, opener 21/08 19:00 UTC)
-# (mesma decisão: armar no dia 0, sem deploy futuro p/ não esquecer). Ficam DORMENTES com custo 0
-# — o poll só chama /odds p/ NS com lead <=24h — até o t24h abrir: Sudamericana ~20/07
+# (mesma decisão: armar no dia 0, sem deploy futuro p/ não esquecer). ⚠️ DORMENTE DEIXOU DE SER
+# CUSTO ZERO em 2026-08-07, com a janela diária: o poll passa a chamar /odds p/ NS com lead até 7
+# dias, e liga em pré-temporada (coverage.odds=FALSE) devolve vazio. O custo é limitado a 1
+# chamada por fixture por dia — e só porque a diária GRAVA o vazio registrado; sem isso o
+# skip-if-exists nunca travaria e seriam ~96/dia por fixture (poll de 15min × 6 dias de banda).
+# Até o t24h abrir: Sudamericana ~20/07
 # (R32/repechagem ida 21–24/07, volta 28–31/07; oitavas ida 11–13/08, volta 18–20/08),
 # CdB ~31/07 (oitavas 01/08), Libertadores 10/08 (ida 11/08, volta 18/08). coverage.odds é
 # sazonal (FALSE fora da janela 1-14d); a checagem de Pinnacle (id=4) virou verificação

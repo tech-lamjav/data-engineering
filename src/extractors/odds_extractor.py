@@ -175,10 +175,14 @@ class OddsExtractor(BaseExtractor):
                     )
                     time.sleep(0.4)  # cortesia entre chamadas (rate-limit API-Football)
 
-                    if data.get("total_bookmakers", 0) == 0:
-                        # Sem odds publicadas ainda (ou jogo sem mercado): NÃO grava, p/
-                        # ser re-tentado no próximo poll. Gravar vazio aqui faria o
-                        # skip-if-exists bloquear as próximas passadas da janela.
+                    tem_odds = data.get("total_bookmakers", 0) > 0
+
+                    if not tem_odds and date_stamp is None:
+                        # Banda de FECHAMENTO sem odds publicadas: NÃO grava, p/ ser
+                        # re-tentada no próximo poll. A banda tem minutos de largura e a
+                        # casa pode publicar a qualquer momento; gravar aqui travaria o
+                        # skip-if-exists e perderia a linha de fechamento, que é
+                        # forward-only e não se reconstrói.
                         logger.info(
                             f"Fixture {fixture_id} ({window}): sem odds, pulando (re-tenta depois)."
                         )
@@ -194,7 +198,20 @@ class OddsExtractor(BaseExtractor):
                         mode=window,  # sufixo _daily | _t24h | _t1h | _t15m no nome
                         date=date_stamp,  # só as diárias (None nas de fechamento)
                     )
-                    saved_paths.append(gcs_path)
+
+                    if tem_odds:
+                        saved_paths.append(gcs_path)
+                    else:
+                        # VAZIO REGISTRADO na janela diária. Sem ele a banda diária é uma
+                        # bomba de cota: ela tem DIAS de largura, então um fixture sem odds
+                        # nunca gravaria arquivo, o skip-if-exists nunca travaria, e o poll
+                        # de 15min reperguntaria o mesmo vazio ~96x/dia por até uma semana.
+                        # Liga dormente (coverage.odds=FALSE até a abertura) devolve vazio
+                        # de propósito — são 5 delas armadas hoje. Com o arquivo, 1x/dia.
+                        # Fora de saved_paths: arquivo sem casa nenhuma não gera linha no
+                        # fato (o UNNEST de `bets` vazio elimina a linha no staging), então
+                        # não há rebuild de dbt a fazer.
+                        empty += 1
                 except Exception as e:
                     logger.error(
                         f"Erro ao processar fixture {fixture_id} ({window}): {str(e)}",
@@ -204,8 +221,9 @@ class OddsExtractor(BaseExtractor):
                     continue
 
         logger.info(
-            f"odds concluído: {len(saved_paths)} salvos, {skipped} pulados (já existem), "
-            f"{empty} sem odds, {failed} com erro; {considered} (fixture,janela) na banda."
+            f"odds concluído: {len(saved_paths)} com odds, {empty} sem odds (vazio "
+            f"registrado na diária, re-tenta nas de fechamento), {skipped} pulados "
+            f"(já existem), {failed} com erro; {considered} (fixture,janela) na banda."
         )
         if failed:
             # Resumo de FALHA distinto de 'sem odds': odds é FORWARD-ONLY — uma falha
