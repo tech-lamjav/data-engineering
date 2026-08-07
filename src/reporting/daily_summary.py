@@ -34,6 +34,7 @@ from google.cloud.workflows.executions_v1.types import (
 from src.config import GCP_PROJECT_ID
 from src.reporting.api_quota import build_quota_section, collect_quota
 from src.reporting.guardas import build_guardas_section
+from src.reporting.procedencia import build_procedencia_section, collect_procedencia
 from src.reporting.formatting import SAO_PAULO, cell as _cell, fmt_brt as _fmt_brt
 from src.utils.logger import setup_logger
 
@@ -208,11 +209,12 @@ def _fmt_dur(seconds: float) -> str:
     return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
 
 
-def build_html(day: date, agg: dict, quota=None) -> tuple[str, str]:
+def build_html(day: date, agg: dict, quota=None, procedencia=None) -> tuple[str, str]:
     """Monta (subject, html) do email consolidado. Sempre renderiza (mesmo vazio).
 
     `quota` (QuotaInfo | None) acrescenta a seção de cota da API-Football; None omite a
-    seção, mantendo o email de antes intacto.
+    seção, mantendo o email de antes intacto. `procedencia` (ProcedenciaInfo | None) faz o
+    mesmo para a seção de deriva de imagem dbt.
     """
     total_runs = sum(a.total for a in agg.values())
     total_ok = sum(a.success for a in agg.values())
@@ -235,6 +237,11 @@ def build_html(day: date, agg: dict, quota=None) -> tuple[str, str]:
         flags.append("[FALHAS]")
     if vermelhas:
         flags.append("[GUARDA]")
+    # Deriva de imagem também não é falha de workflow — os workflows rodam verdes com a
+    # imagem errada, que é justamente o que a torna difícil de ver. Mesma lógica do
+    # [GUARDA]: se não subir para o assunto, é alarme mudo.
+    if procedencia is not None and procedencia.alarme:
+        flags.append("[DERIVA]")
     subject = f"{''.join(flags) or '[OK]'} Resumo diario de workflows — {day.isoformat()}"
 
     resumo_guardas = (
@@ -317,9 +324,12 @@ def build_html(day: date, agg: dict, quota=None) -> tuple[str, str]:
     # Seções extras entram aqui, uma função por seção. Guardas antes da cota: guarda
     # vermelha é acionável hoje, cota é acompanhamento.
     guardas_section = build_guardas_section(vermelhas)
+    # Procedência logo após guardas e antes da cota: deriva de imagem é a causa que desliga
+    # a própria fase de guardas, então lê-se uma na sequência da outra.
+    procedencia_section = build_procedencia_section(procedencia)
     quota_section = build_quota_section(quota, day)
 
-    html = head + table + fail_section + guardas_section + quota_section + "</div>"
+    html = head + table + fail_section + guardas_section + procedencia_section + quota_section + "</div>"
     return subject, html
 
 
@@ -359,7 +369,10 @@ def run_daily_summary(target_date: date | None = None) -> dict:
     # 1 chamada/dia ao /status. collect_quota nunca levanta: falha vira seção degradada.
     quota = collect_quota()
 
-    subject, html = build_html(day, agg, quota)
+    # 2 jobs + 1 GET no GitHub, 1×/dia. Também nunca levanta.
+    procedencia = collect_procedencia()
+
+    subject, html = build_html(day, agg, quota, procedencia)
 
     if os.getenv("SUMMARY_DRY_RUN"):
         logger.info(f"[DRY_RUN] email NAO enviado. subject={subject!r}")
