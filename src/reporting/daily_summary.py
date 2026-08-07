@@ -226,15 +226,16 @@ def build_html(day: date, agg: dict, quota=None) -> tuple[str, str]:
     vermelhas = {wf: a.guardas_red for wf, a in agg.items() if a.guardas_red}
     total_guardas_red = sum(len(v) for v in vermelhas.values())
 
-    if has_problems and vermelhas:
-        flag = "FALHAS+GUARDA"
-    elif has_problems:
-        flag = "FALHAS"
-    elif vermelhas:
-        flag = "GUARDA"
-    else:
-        flag = "OK"
-    subject = f"[{flag}] Resumo diario de workflows — {day.isoformat()}"
+    # Tokens JUSTAPOSTOS ("[FALHAS][GUARDA]") e não fundidos ("[FALHAS+GUARDA]"): filtro de
+    # caixa de entrada casa por substring, e o fundido não casaria nem com "[FALHAS]" nem com
+    # "[GUARDA]" — falharia exatamente no pior dia, o que tem os dois. Justapor mantém uma
+    # regra pré-existente em "[FALHAS]" funcionando e deixa "[GUARDA]" casar sozinho.
+    flags = []
+    if has_problems:
+        flags.append("[FALHAS]")
+    if vermelhas:
+        flags.append("[GUARDA]")
+    subject = f"{''.join(flags) or '[OK]'} Resumo diario de workflows — {day.isoformat()}"
 
     resumo_guardas = (
         f' · <strong style="color:#cf222e">{total_guardas_red} com guarda vermelha</strong>'

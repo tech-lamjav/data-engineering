@@ -124,13 +124,18 @@ def test_assunto_denuncia_a_guarda_com_o_workflow_verde(daily_summary):
 
 
 def test_assunto_soma_falha_de_workflow_e_guarda(daily_summary):
-    """Guarda vermelha nao pode APAGAR a sinalizacao de falha do workflow, nem vice-versa."""
+    """Guarda vermelha nao pode APAGAR a sinalizacao de falha do workflow, nem vice-versa.
+
+    Assevera os tokens COM colchetes de proposito: filtro de caixa de entrada casa por
+    substring, entao um assunto fundido tipo "[FALHAS+GUARDA]" nao casaria com "[FALHAS]"
+    nem com "[GUARDA]" e mataria a regra de alerta justamente no pior dia.
+    """
     assunto, _ = _assunto_e_resumo(
         daily_summary, _payload(status="PARTIAL_FAILURE", guardas_status="PARTIAL_FAILURE")
     )
 
-    assert "FALHAS" in assunto
-    assert "GUARDA" in assunto
+    assert "[FALHAS]" in assunto
+    assert "[GUARDA]" in assunto
 
 
 def test_assunto_limpo_quando_tudo_verde(daily_summary):
