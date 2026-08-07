@@ -123,6 +123,35 @@ LIGUE_1_ID = 61  # 6ª europeia e ÚLTIMA da Onda 2: Tier A completo. Probe 2026
 # espera — o time.sleep(0.4) adicionado em 16/07 foi escrito exatamente p/ este caso. Todo laço
 # novo sobre (league_id, season) nasce com o sleep.
 
+PRIMEIRA_LIGA_ID = 94  # 7ª europeia e ÚLTIMA liga da Onda 2 (fecha a expansão). Probe 2026-08-07.
+# ⚠️ COVERAGE NÃO É UNIFORME ENTRE AS DUAS TEMPORADAS FECHADAS — é o ponto que difere das outras
+# europeias e a razão de INJURIES_BACKFILL não ganhar as duas tuplas:
+#   2024 (2024/25): events/lineups/stats_fixtures/stats_players/standings/players/predictions=TRUE,
+#                   odds=FALSE (encerrada, esperado) e **injuries=FALSE**.
+#   2025 (2025/26): idem, mas **injuries=TRUE**.
+#   2026 (2026/27): standings/predictions/**odds**=TRUE; events/lineups/stats/players/injuries=FALSE
+#                   por pré-temporada (flipam na abertura).
+# É o padrão da Libertadores (flag que muda de season p/ season), não o da Ligue 1 (TRUE nas duas).
+# ⚠️ ODDS JÁ ESTÁ TRUE NA TEMPORADA CORRENTE — a liga NÃO entra dormente, ao contrário de Ligue 1,
+# Bundesliga e Serie A. A abertura é HOJE (2026-08-07 19:15 UTC), então o jogo já está dentro da
+# janela de 1-14 dias que faz coverage.odds virar TRUE. O poll captura no 1º ciclo pós-deploy.
+# Split-year: season 2026 = 2026/27, start 2026-08-07 -> end 2027-05-16. Rodada 1 espalhada em
+# 07/08 (1 jogo), 08/08 (3), 09/08 (4) e 10/08 (1).
+# ⚠️ GABARITO DE VERIFICAÇÃO (mesma família de 18 times da Bundesliga/Ligue 1, mas ESTÁVEL):
+#   - 306 na temporada nova (18 x 34) — é assim que a liga nova valida;
+#   - 308 em 2024/25 E 308 em 2025/26 (306 + playoff de 2 jogos contra a 2ª divisão). Diferente da
+#     Ligue 1, onde o bracket variava (308 vs 310) — aqui são 2 jogos nas duas temporadas.
+#   - rótulo do playoff INCONSISTENTE, como em todas as outras: "Relegation Round" em 24/25 e
+#     "Final" em 25/26. É a API, não o nosso dado.
+#   - 19 times em /teams nas duas fechadas (18 + o adversário do playoff), 18 na corrente → o
+#     catálogo já traz todos, ZERO risco de órfão em dim_teams.
+#   - /standings: 18 linhas por season, grupo único.
+#   - NENHUM fixture AWD (≠ Ligue 1, que tem 1 em 25/26): status é FT em 308/308 nas duas.
+# ⚠️ AMBIENTE DE GOLS (616 jogos FT, 24/25+25/26): 2,62 gols/jogo e 51,5% de Over 2.5 —
+# +0,14 e +4,8pp vs Brasileirão. Desvio BRANDO: fica entre a Serie A ITA (2,49 / 47,0%) e a
+# Premier League (2,84 / 55,8%), longe da Bundesliga (3,18 / 61,9%) e da Ligue 1 (2,90 / 54,1%).
+# Entra SEM gate e SEM recalibração, como as outras seis.
+
 # Split entre backfill (one-shot, anos anteriores) e current (diário, ano corrente)
 LEAGUES_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
@@ -147,6 +176,8 @@ LEAGUES_BACKFILL = [
     (BUNDESLIGA_ID, 2025),  # 2025/26
     (LIGUE_1_ID, 2024),  # 2024/25 (split-year europeu)
     (LIGUE_1_ID, 2025),  # 2025/26
+    (PRIMEIRA_LIGA_ID, 2024),  # 2024/25 (split-year europeu)
+    (PRIMEIRA_LIGA_ID, 2025),  # 2025/26
 ]
 LEAGUES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -161,6 +192,7 @@ LEAGUES_CURRENT = [
     (SERIE_A_ITA_ID, 2026),  # 2026/27 (opener 22/08)
     (BUNDESLIGA_ID, 2026),  # 2026/27 (opener 28/08 — a mais tardia do portfólio)
     (LIGUE_1_ID, 2026),  # 2026/27 (opener 21/08)
+    (PRIMEIRA_LIGA_ID, 2026),  # 2026/27 (opener 07/08 — HOJE, a mais cedo do portfólio)
 ]
 
 # Idem leagues — 4 chamadas distribuídas entre backfill (one-shot) e current (diário).
@@ -187,6 +219,8 @@ TEAMS_BACKFILL = [
     (BUNDESLIGA_ID, 2025),  # 2025/26
     (LIGUE_1_ID, 2024),  # 2024/25 (split-year europeu)
     (LIGUE_1_ID, 2025),  # 2025/26
+    (PRIMEIRA_LIGA_ID, 2024),  # 2024/25 (split-year europeu)
+    (PRIMEIRA_LIGA_ID, 2025),  # 2025/26
 ]
 TEAMS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -201,6 +235,7 @@ TEAMS_CURRENT = [
     (SERIE_A_ITA_ID, 2026),  # 2026/27 (opener 22/08)
     (BUNDESLIGA_ID, 2026),  # 2026/27 (opener 28/08 — a mais tardia do portfólio)
     (LIGUE_1_ID, 2026),  # 2026/27 (opener 21/08)
+    (PRIMEIRA_LIGA_ID, 2026),  # 2026/27 (opener 07/08 — HOJE, a mais cedo do portfólio)
 ]
 
 # Idem teams — catálogo de jogadores via /players?league=&season= (paginado).
@@ -227,6 +262,8 @@ PLAYERS_BACKFILL = [
     (BUNDESLIGA_ID, 2025),  # 2025/26
     (LIGUE_1_ID, 2024),  # 2024/25 (split-year europeu)
     (LIGUE_1_ID, 2025),  # 2025/26
+    (PRIMEIRA_LIGA_ID, 2024),  # 2024/25 (split-year europeu)
+    (PRIMEIRA_LIGA_ID, 2025),  # 2025/26
 ]
 PLAYERS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -241,6 +278,7 @@ PLAYERS_CURRENT = [
     (SERIE_A_ITA_ID, 2026),  # 2026/27 (opener 22/08)
     (BUNDESLIGA_ID, 2026),  # 2026/27 (opener 28/08 — a mais tardia do portfólio)
     (LIGUE_1_ID, 2026),  # 2026/27 (opener 21/08)
+    (PRIMEIRA_LIGA_ID, 2026),  # 2026/27 (opener 07/08 — HOJE, a mais cedo do portfólio)
 ]
 
 # Fixtures (jogos) — tabela mãe via /fixtures?league=&season= (paginado).
@@ -268,6 +306,8 @@ FIXTURES_BACKFILL = [
     (BUNDESLIGA_ID, 2025),  # 2025/26
     (LIGUE_1_ID, 2024),  # 2024/25 (split-year europeu)
     (LIGUE_1_ID, 2025),  # 2025/26
+    (PRIMEIRA_LIGA_ID, 2024),  # 2024/25 (split-year europeu)
+    (PRIMEIRA_LIGA_ID, 2025),  # 2025/26
 ]
 FIXTURES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -282,6 +322,7 @@ FIXTURES_CURRENT = [
     (SERIE_A_ITA_ID, 2026),  # 2026/27 (opener 22/08, 380 jogos)
     (BUNDESLIGA_ID, 2026),  # 2026/27 (opener 28/08 — a mais tardia do portfólio)
     (LIGUE_1_ID, 2026),  # 2026/27 (opener 21/08)
+    (PRIMEIRA_LIGA_ID, 2026),  # 2026/27 (opener 07/08 — HOJE, a mais cedo do portfólio)
 ]
 
 # Standings (/standings) — snapshot diário da tabela do campeonato (1 chamada por
@@ -328,6 +369,8 @@ STANDINGS_BACKFILL = [
     (BUNDESLIGA_ID, 2025),  # 2025/26
     (LIGUE_1_ID, 2024),  # 2024/25 (split-year europeu)
     (LIGUE_1_ID, 2025),  # 2025/26
+    (PRIMEIRA_LIGA_ID, 2024),  # 2024/25 (split-year europeu)
+    (PRIMEIRA_LIGA_ID, 2025),  # 2025/26
 ]
 STANDINGS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -341,6 +384,7 @@ STANDINGS_CURRENT = [
     (SERIE_A_ITA_ID, 2026),  # 2026/27 (opener 22/08) — standings=TRUE já pré-temporada
     (BUNDESLIGA_ID, 2026),  # 2026/27 (opener 28/08) — standings=TRUE já pré-temporada
     (LIGUE_1_ID, 2026),  # 2026/27 (opener 21/08) — standings=TRUE já pré-temporada
+    (PRIMEIRA_LIGA_ID, 2026),  # 2026/27 (opener 07/08 — HOJE) — standings=TRUE já pré-temporada
 ]
 
 # Injuries (/injuries) — snapshot diário de lesionados/suspensos (1 chamada/liga×season,
@@ -391,6 +435,7 @@ INJURIES_BACKFILL = [
     (BUNDESLIGA_ID, 2025),  # 2025/26
     (LIGUE_1_ID, 2024),  # 2024/25 (split-year europeu)
     (LIGUE_1_ID, 2025),  # 2025/26
+    (PRIMEIRA_LIGA_ID, 2025),  # 2025/26 — SÓ esta: injuries=FALSE em 2024 (probe), tupla de 2024 seria chamada vazia
 ]
 INJURIES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
@@ -399,6 +444,7 @@ INJURIES_CURRENT = [
     (SERIE_A_ITA_ID, 2026),  # idem La Liga/PL: FALSE pré-temporada (probe), flipa em 22/08; 0 linhas até lá
     (BUNDESLIGA_ID, 2026),  # idem: FALSE pré-temporada (probe), flipa em 28/08; 0 linhas até lá
     (LIGUE_1_ID, 2026),  # idem La Liga/PL/Serie A/Bundesliga: FALSE pré-temporada (probe), flipa em 21/08; 0 linhas até lá
+    (PRIMEIRA_LIGA_ID, 2026),  # FALSE pré-temporada mas 2025 foi TRUE (probe) → flipa na abertura de hoje; 0 linhas até lá
     # UCL (2026) NÃO incluída ainda — coverage.injuries=FALSE na fase classificatória (probe
     # 2026-07-28); recheck quando a fase de liga começar (~set/2026), igual ao caveat da 13.
 ]
@@ -449,7 +495,7 @@ FUTEBOL_ODDS_WINDOWS = {
 # Ligue 1 (61) ARMADA 2026-08-06: dormente igual, coverage.odds=FALSE agora e o t24h abre ~20/08
 # (opener 21/08 18:45 UTC — a task do ClickUp diz 23/08 e está errada; 23/08 é o fim da rodada 1,
 # e planejar por ela perderia a captura dos 3 primeiros jogos). ~2 semanas de custo 0.
-FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, UCL_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID]
+FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, UCL_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID, PRIMEIRA_LIGA_ID]
 
 # Predictions (/predictions) — BASELINE de comparação (a previsão do algoritmo da própria
 # API) E fonte da corroboração `modelo_api_concorda` (+7) do Motor de Score. Não é produto:
@@ -504,7 +550,7 @@ FUTEBOL_PREDICTIONS_WINDOWS = {
 # pré-temporada. A janela daily de 14d alcança o opener (21/08) já em ~07/08, ou seja QUASE
 # IMEDIATAMENTE depois do deploy — ≠ Bundesliga, que espera até 14/08. Liga de pontos corridos
 # com histórico cheio → esperado REAL, não placeholder 45/45/10.
-FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, UCL_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID]
+FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, UCL_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID, PRIMEIRA_LIGA_ID]
 
 # Injuries PRÉ-JOGO (/injuries?fixture) — coleta FORWARD-ONLY por fixture (modo "pregame"),
 # complementando o snapshot season-log diário (INJURIES_CURRENT, /injuries?league&season).
@@ -546,7 +592,7 @@ FUTEBOL_INJURIES_WINDOWS = {
 # para 96h: La Liga ~12/08 (opener 16/08), Premier League ~17/08 (21/08), Ligue 1 ~17/08 (21/08),
 # Serie A ITA ~18/08 (22/08), Bundesliga ~24/08 (28/08). Antes engajavam ~10 dias mais cedo, e
 # cada um desses dias era varredura vazia paga de hora em hora.
-FUTEBOL_INJURIES_LEAGUE_IDS = [BRASILEIRAO_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID]
+FUTEBOL_INJURIES_LEAGUE_IDS = [BRASILEIRAO_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID, PRIMEIRA_LIGA_ID]
 
 # Fixture statistics (/fixtures/statistics) — 1 chamada por fixture, só após FT.
 # No modo current, re-busca jogos cujo kickoff foi nos últimos N dias (captura
