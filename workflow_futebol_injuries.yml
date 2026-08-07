@@ -22,7 +22,11 @@
 # próximo poll. Assim não há dois workflows escrevendo as mesmas tabelas do Score.
 #
 # O dbt usa --select SEM '+' (enxuto): a external table raw_futebol_injuries é a fonte; o gate
-# saved_count>0 garante que só roda com arquivo novo no GCS.
+# saved_count>0 garante que só roda quando entrou DESFALQUE novo. ⚠️ Desde 2026-08-07 isso não
+# é o mesmo que "arquivo novo no GCS": o poll também grava o VAZIO REGISTRADO (arquivo com
+# contagem zero, o registro de que perguntamos), e esses ficam FORA do saved_count de
+# propósito — o staging os descarta e eles não geram linha de desfalque, então abrir o gate
+# por causa deles seria rebuild horário sem dado novo.
 # ============================================================
 
 main:

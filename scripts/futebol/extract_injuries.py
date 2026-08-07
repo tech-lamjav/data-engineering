@@ -24,8 +24,10 @@ def main():
         logger.info(f"Iniciando extract_injuries (mode={mode})")
         result = InjuriesExtractor(mode=mode).extract_and_save()
         if mode == "pregame":
-            # pregame retorna List[str] (1 path/jogo); current/backfill retornam str.
-            logger.info(f"✓ Concluído: {len(result)} snapshot(s) pré-jogo salvo(s)")
+            # pregame retorna List[str] com os arquivos COM desfalque — os vazios registrados
+            # são gravados também, mas ficam fora da lista (não abrem o gate do dbt) e são
+            # contados no log do extractor. Por isso "com desfalque", não "salvos".
+            logger.info(f"✓ Concluído: {len(result)} snapshot(s) pré-jogo com desfalque")
         elif not result:
             logger.warning("extract_injuries: extração retornou vazio (nada gravado).")
         else:
