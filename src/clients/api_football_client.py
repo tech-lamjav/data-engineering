@@ -124,8 +124,9 @@ class ApiFootballClient(BaseClient):
         este não popula desfalques de jogos futuros fora do horizonte curto da temporada.
 
         ⚠️ Só fixtures de ligas com coverage.injuries=TRUE (Brasileirão 71) retornam dados;
-        fixture futuro sem lesão registrada ainda → `response` vazio (degradação graciosa:
-        re-tenta no próximo poll).
+        fixture futuro sem lesão registrada ainda → `response` vazio. Isso NÃO é re-tentado
+        no próximo poll desde 2026-08-07: o extractor grava o vazio registrado e o
+        skip-if-exists trava a repergunta até o dia seguinte (ver InjuriesExtractor).
 
         Returns:
             Envelope cru: {response: [{player, team, fixture, league, type, reason}], errors, ...}

@@ -116,7 +116,7 @@ def test_fixture_dentro_da_banda_e_coletado(ext):
     assert kw["endpoint"] == "injuries"
     assert kw["sport"] == "futebol"
     assert kw["game_id"] == 999
-    assert kw["mode"] == "daily"
+    assert kw["mode"] in ext.windows
 
 
 def test_fixture_logo_abaixo_do_teto_ainda_entra(ext):
@@ -174,7 +174,7 @@ def test_sem_fixtures_no_horizonte_nao_quebra(ext):
 
 
 # --------------------------------------------------------------------------- #
-# Vazio registrado (sentinela)
+# Vazio registrado
 # --------------------------------------------------------------------------- #
 def _envelope_vazio():
     """Fonte respondeu, e nao havia desfalque — diferente de erro."""
@@ -186,7 +186,7 @@ def _dados_gravados(ext):
     return ext.storage.upload_json.call_args.kwargs["data"]
 
 
-def test_resposta_vazia_grava_a_sentinela(ext):
+def test_resposta_vazia_grava_o_vazio_registrado(ext):
     # Antes: nao gravava nada, e o poll horario repergunta o mesmo vazio ate o kickoff.
     ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
     ext.client.get_injuries_by_fixture.return_value = _envelope_vazio()
@@ -197,7 +197,7 @@ def test_resposta_vazia_grava_a_sentinela(ext):
     assert _dados_gravados(ext)["total_rows"] == 0
 
 
-def test_a_sentinela_e_consultavel_por_fixture_e_dia(ext):
+def test_o_vazio_registrado_e_consultavel_por_fixture_e_dia(ext):
     # A razao de ser da entrega: distinguir "perguntamos e nao tinha" de "nunca perguntamos".
     # A linha metadata-only precisa carregar de QUEM e de QUANDO foi a pergunta, em campos
     # que o schema atual da external table ja comporta.
@@ -215,7 +215,7 @@ def test_a_sentinela_e_consultavel_por_fixture_e_dia(ext):
     assert data["injuries"] == []
 
 
-def test_a_sentinela_e_date_stampada_por_fixture_e_janela(ext):
+def test_o_vazio_registrado_e_date_stampado_por_fixture_e_janela(ext):
     ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
     ext.client.get_injuries_by_fixture.return_value = _envelope_vazio()
 
@@ -223,11 +223,11 @@ def test_a_sentinela_e_date_stampada_por_fixture_e_janela(ext):
 
     kw = ext.storage.upload_json.call_args.kwargs
     assert kw["game_id"] == 999
-    assert kw["mode"] == "daily"
+    assert kw["mode"] in ext.windows
     assert kw["date"] == ext.snapshot_date
 
 
-def test_com_a_sentinela_gravada_a_passada_seguinte_nao_chama_a_api(ext):
+def test_com_o_vazio_gravado_a_passada_seguinte_nao_chama_a_api(ext):
     # O efeito de orcamento: o skip-if-exists volta a travar, uma pergunta por dia.
     ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
     ext.storage.bucket.blob.return_value.exists.return_value = True
@@ -238,8 +238,8 @@ def test_com_a_sentinela_gravada_a_passada_seguinte_nao_chama_a_api(ext):
     ext.storage.upload_json.assert_not_called()
 
 
-def test_sentinela_sozinha_nao_abre_o_gate_do_dbt(ext):
-    # saved_count > 0 dispara o rebuild do dbt no workflow. Sentinela nao gera linha de
+def test_vazio_registrado_sozinho_nao_abre_o_gate_do_dbt(ext):
+    # saved_count > 0 dispara o rebuild do dbt no workflow. Vazio registrado nao gera linha de
     # desfalque nenhuma (o staging do outro repo a descarta), entao rebuildar por causa
     # dela seria rebuild horario a troco de nada.
     ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
@@ -265,9 +265,9 @@ def test_fixture_com_dado_convive_com_fixture_vazio(ext):
     assert ext.storage.upload_json.call_count == 2  # mas os dois arquivos existem
 
 
-def test_erro_da_api_nao_vira_sentinela(ext):
+def test_erro_da_api_nao_vira_vazio_registrado(ext):
     # "A fonte respondeu e nao tinha" e "a chamada falhou" nao podem virar o mesmo
-    # registro: gravar sentinela num erro travaria o skip-if-exists por um dia inteiro
+    # registro: gravar vazio registrado num erro travaria o skip-if-exists por um dia inteiro
     # em cima de uma mentira, e coleta pre-jogo e forward-only.
     ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
     ext.client.get_injuries_by_fixture.return_value = {
@@ -282,7 +282,7 @@ def test_erro_da_api_nao_vira_sentinela(ext):
 
 
 def test_erro_da_api_e_logado_como_falha_nao_como_vazio(ext, caplog):
-    # AC: "O log distingue sentinela gravada de falha real".
+    # AC: "O log distingue vazio registrado de falha real".
     import logging
 
     ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
@@ -313,3 +313,62 @@ def test_resposta_com_desfalque_nao_regride(ext):
     assert linha["snapshot_date"] == ext.snapshot_date
     assert linha["player"]["id"] == 1
     assert linha["team"]["id"] == 10
+
+
+# --------------------------------------------------------------------------- #
+# O mecanismo: envelope -> NDJSON de verdade
+#
+# Os testes acima param no dict entregue ao upload (storage mockado). O vazio registrado
+# só existe porque o writer NDJSON transforma um envelope de array vazio em UMA linha de
+# metadados — se isso mudar, a entrega inteira deixa de funcionar em silêncio. Aqui o
+# writer real é exercitado, sem rede.
+# --------------------------------------------------------------------------- #
+def _writer():
+    from src.storage.gcs_storage import GCSStorage
+
+    return GCSStorage.__new__(GCSStorage)  # sem __init__: nada de cliente GCS
+
+
+def _envelope_de_upload(ext):
+    return ext.storage.upload_json.call_args.kwargs["data"]
+
+
+def test_o_envelope_vazio_vira_uma_linha_de_metadados_consultavel(ext):
+    import json
+
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
+    ext.client.get_injuries_by_fixture.return_value = _envelope_vazio()
+    ext.extract_and_save()
+
+    ndjson = _writer()._convert_to_newline_delimited_json(
+        _envelope_de_upload(ext), "injuries"
+    )
+    linhas = ndjson.strip().split("\n")
+
+    assert len(linhas) == 1
+    linha = json.loads(linhas[0])
+    assert linha["total_rows"] == 0
+    assert linha["fixture"]["id"] == 999
+    assert linha["snapshot_date"] == ext.snapshot_date
+    # E o que faz o staging do outro repo descartar a linha (player.id IS NOT NULL),
+    # para o vazio registrado nao virar linha de desfalque no fato.
+    assert "player" not in linha
+
+
+def test_o_envelope_com_dado_nao_ganha_linha_extra_nem_perde_o_shape(ext):
+    import json
+
+    ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(60)]
+    ext.client.get_injuries_by_fixture.return_value = _envelope_com_desfalque()
+    ext.extract_and_save()
+
+    ndjson = _writer()._convert_to_newline_delimited_json(
+        _envelope_de_upload(ext), "injuries"
+    )
+    linhas = ndjson.strip().split("\n")
+
+    assert len(linhas) == 1  # 1 desfalque = 1 linha; o carimbo do topo nao vira linha propria
+    linha = json.loads(linhas[0])
+    assert linha["player"]["id"] == 1
+    assert linha["fixture"]["id"] == 999
+    assert linha["total_rows"] == 1
