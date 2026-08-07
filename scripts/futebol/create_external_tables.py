@@ -530,9 +530,10 @@ def main():
         )
         logger.info(f"✓ raw_futebol_injuries criada (URI: {injuries_uri})")
 
-        # raw_futebol_odds — snapshot pré-jogo de odds (value betting). FORWARD-ONLY, 3
-        # janelas por jogo (collection_window t24h|t1h|t15m). 1 arquivo por (fixture, janela):
-        # raw_futebol_odds_{fixture}_{t24h|t1h|t15m}.json — o wildcard cobre todos. N linhas por
+        # raw_futebol_odds — snapshot pré-jogo de odds (value betting). FORWARD-ONLY, 4
+        # janelas por jogo (collection_window daily|t24h|t1h|t15m). 1 arquivo por (fixture,
+        # janela): raw_futebol_odds_{fixture}_{t24h|t1h|t15m}.json; a diária date-stampa —
+        # raw_futebol_odds_{fixture}_daily_{YYYY-MM-DD}.json — o wildcard cobre todos. N linhas por
         # arquivo (1 por CASA), bets/values ANINHADOS (UNNEST no dbt). Schema EXPLÍCITO: a
         # odd vem como STRING decimal ("1.85") — autodetect viraria FLOAT e perderia precisão/
         # mistura de tipos; cast p/ FLOAT64 só no stg. Guarda TODAS as casas/mercados; o
@@ -551,7 +552,7 @@ def main():
             bigquery.SchemaField("fixture_id", "INTEGER"),
             bigquery.SchemaField("league_id", "INTEGER"),
             bigquery.SchemaField("season", "INTEGER"),
-            bigquery.SchemaField("collection_window", "STRING"),       # "t24h" | "t1h" | "t15m"
+            bigquery.SchemaField("collection_window", "STRING"),       # "daily" | "t24h" | "t1h" | "t15m"
             bigquery.SchemaField("collection_timestamp", "TIMESTAMP"), # momento da coleta (UTC) — partição no fato
             bigquery.SchemaField("kickoff_timestamp", "INTEGER"),      # unix UTC do kickoff
             bigquery.SchemaField("api_update", "TIMESTAMP"),           # última atualização das odds na API (ISO)
@@ -568,10 +569,16 @@ def main():
             schema=odds_schema,
             description=(
                 "API-Football /odds, NDJSON. Snapshot pré-jogo de odds (CLV/EV/value betting), "
-                "FORWARD-ONLY, em 3 janelas por jogo (collection_window t24h = linha de abertura, "
-                "t1h = perto do fechamento, t15m = linha de fechamento). N linhas por (fixture, janela) — 1 por CASA; "
-                "bets/values aninhados (REPEATED). 1 arquivo por (fixture, janela): "
-                "raw_futebol_odds_{fixture}_{t24h|t1h|t15m}.json (skip-if-exists = 1 snapshot/janela). "
+                "FORWARD-ONLY, em 4 janelas por jogo (collection_window daily = 1 captura/dia de "
+                ">24h até 7 dias do apito, o que tira o board do recorte de 24h; t24h = linha de "
+                "abertura, t1h = perto do fechamento, t15m = linha de fechamento). N linhas por "
+                "(fixture, janela) — 1 por CASA; bets/values aninhados (REPEATED). 1 arquivo por "
+                "(fixture, janela): raw_futebol_odds_{fixture}_{t24h|t1h|t15m}.json; a diária é "
+                "date-stampada — raw_futebol_odds_{fixture}_daily_{YYYY-MM-DD}.json, skip-if-exists "
+                "por (fixture, janela, DIA), então acumula 1 arquivo por dia por jogo. ⚠️ O fato "
+                "dedup latest-wins por (fixture, casa, mercado, outcome, collection_window) SEM o "
+                "dia: até o grão de lá mudar, as capturas diárias colapsam na mais recente no fato "
+                "— o histórico de movimento de linha fica guardado aqui, na landing. "
                 "Guarda TODAS as casas/mercados; o fact afunila p/ os 8 mercados-alvo. Schema "
                 "explícito (odd/value STRING — cast no stg; collection_timestamp/api_update ISO→"
                 "TIMESTAMP; kickoff_timestamp unix INTEGER). Brasileirão (71) + Copa do Mundo (1) "

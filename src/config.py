@@ -463,19 +463,43 @@ INJURIES_CURRENT = [
 # da largura da banda. t15m (0,15) é a LINHA DE FECHAMENTO (CLV real): banda inclusiva [0,15]
 # + poll */15 garante 1 captura perto do kickoff (lead≈15→0); forward-only, cada dia sem
 # t15m = linha de fechamento perdida pra sempre.
+#
+# HORIZONTE (desde 2026-08-07): 7 dias. O board era, por construção, um board de 24 horas —
+# quem abria de manhã via os jogos de hoje à noite e mais nada. O corte era NOSSO, não da
+# fonte: sondagem direta em 2026-08-05 devolveu 12–13 casas, Pinnacle inclusa, a 51h, 72h,
+# 77h, 96h e 147h do apito. A janela "daily" cobre de pouco além de 24h até o horizonte, com
+# 1 captura por fixture por dia (date-stampada, mesmo arquétipo do predictions). Ampliar de 7
+# para N dias é mudar ESTE número; as bandas de fechamento não se mexem.
+#
+# ⚠️ DISJUNÇÃO É REQUISITO. O piso da "daily" começa 1 minuto acima do teto da t24h. Bandas
+# sobrepostas fazem a MESMA passada do poll bucketar o mesmo fixture em duas janelas: duas
+# chamadas, dois arquivos, duas linhas no fato com rótulos diferentes p/ o mesmo preço. O
+# teste em tests/test_odds_pregame.py trava qualquer sobreposição futura.
+FUTEBOL_ODDS_HORIZON_MIN = 7 * 24 * 60  # 7 dias
 FUTEBOL_ODDS_WINDOWS = {
+    "daily": (1441, FUTEBOL_ODDS_HORIZON_MIN),  # >24h até o horizonte — 1 captura/dia
     "t24h": (1320, 1440),  # 22h–24h antes (alvo 24h — linha de abertura)
     "t1h":  (30, 60),      # 30–60min antes (alvo 1h — linha intermediária)
     "t15m": (0, 15),       # 0–15min antes (alvo ~15min — linha de fechamento p/ CLV real)
 }
+
+# Janelas de odds que DATE-STAMPAM o arquivo (raw_futebol_odds_{fixture}_{janela}_{data}.json)
+# → skip-if-exists por (fixture, janela, DIA), ou seja 1 captura/dia enquanto o fixture ficar
+# na banda. Só a "daily": as bandas de fechamento são 1 captura única por fixture e o nome sem
+# data é o que a external table e o fato já leem — date-stampá-las seria regressão.
+FUTEBOL_ODDS_WINDOWS_DIARIAS = {"daily"}
 
 # Ligas com coverage.odds=TRUE (validado em dim_leagues). O poll filtra os jogos NS
 # por esses league_ids. Diferente de /injuries (Copa excluída), odds de Copa do Mundo
 # normalmente existem — manter 1 aqui se a validação confirmar coverage.odds=TRUE.
 # Copa do Brasil (73)/Libertadores (13) ARMADAS 2026-07-13, Sudamericana (11) 2026-07-14, La Liga (140) 2026-07-15 (dormente até t24h ~15/08, opener 16/08),
 # Premier League (39) 2026-07-17 (dormente até t24h ~20/08, opener 21/08 19:00 UTC)
-# (mesma decisão: armar no dia 0, sem deploy futuro p/ não esquecer). Ficam DORMENTES com custo 0
-# — o poll só chama /odds p/ NS com lead <=24h — até o t24h abrir: Sudamericana ~20/07
+# (mesma decisão: armar no dia 0, sem deploy futuro p/ não esquecer). ⚠️ DORMENTE DEIXOU DE SER
+# CUSTO ZERO em 2026-08-07, com a janela diária: o poll passa a chamar /odds p/ NS com lead até 7
+# dias, e liga em pré-temporada (coverage.odds=FALSE) devolve vazio. O custo é limitado a 1
+# chamada por fixture por dia — e só porque a diária GRAVA o vazio registrado; sem isso o
+# skip-if-exists nunca travaria e seriam ~96/dia por fixture (poll de 15min × 6 dias de banda).
+# Até o t24h abrir: Sudamericana ~20/07
 # (R32/repechagem ida 21–24/07, volta 28–31/07; oitavas ida 11–13/08, volta 18–20/08),
 # CdB ~31/07 (oitavas 01/08), Libertadores 10/08 (ida 11/08, volta 18/08). coverage.odds é
 # sazonal (FALSE fora da janela 1-14d); a checagem de Pinnacle (id=4) virou verificação
@@ -995,7 +1019,8 @@ def get_gcs_path(
         # futebol/{endpoint}/raw_futebol_{endpoint}_{fixture_id}.json
         # fixture_lineups grava em duas fases (mode "confirmed"|"real") → sufixo de fase
         # no nome do arquivo p/ guardar os dois snapshots (T-30min e pós-jogo).
-        # odds grava em três janelas (mode "t24h"|"t1h"|"t15m") → mesmo mecanismo de sufixo.
+        # odds grava em quatro janelas (mode "daily"|"t24h"|"t1h"|"t15m") → mesmo mecanismo de
+        # sufixo; só a "daily" passa `date` (date-stamp por dia).
         if game_id is not None:
             # Fases válidas: janelas de odds + de predictions (fonte única: as constantes
             # FUTEBOL_*_WINDOWS) + fases de lineups ("confirmed"|"real"). Novas janelas

@@ -1,9 +1,12 @@
 # ============================================================
-# WORKFLOW FUTEBOL ODDS (pré-jogo / T-24h e T-1h)
-# Poll das ODDS pré-jogo (coração do value betting) em 2 janelas por jogo: T-24h (linha de
-# abertura) e T-1h (linha perto do fechamento). Uma passada cobre as duas janelas — o
-# extractor bucketa cada jogo NS pela proximidade do kickoff (FUTEBOL_ODDS_WINDOWS) e grava
-# 1 arquivo por (fixture, janela) com skip-if-exists (1 snapshot/janela). Se algo novo foi
+# WORKFLOW FUTEBOL ODDS (pré-jogo / diária + T-24h, T-1h, T-15m)
+# Poll das ODDS pré-jogo (coração do value betting) em 4 janelas por jogo: "daily" (de pouco
+# além de 24h até 7 dias do apito — 1 captura por dia, date-stampada, é o que tira o board do
+# recorte de 24 horas; adicionada em 2026-08-07), T-24h (linha de abertura), T-1h
+# (intermediária) e T-15m (fechamento, CLV). Uma passada cobre todas — o
+# extractor bucketa cada jogo NS pela proximidade do kickoff (FUTEBOL_ODDS_WINDOWS, bandas
+# DISJUNTAS) e grava 1 arquivo por (fixture, janela) — por (fixture, janela, dia) na diária —
+# com skip-if-exists. Se algo novo foi
 # coletado, rebuild ENXUTO dos modelos de odds + Motor de Score no dbt-futebol
 # (int_futebol_odds_devig / _corroboracao / _premissas_1x2 / _premissas_ou / _premissas_ah -> fact_value_opportunities):
 # a cada janela nova de odds o Score 1X2 + Gols O/U + Handicap asiático é recalculado com o edge/penalidades atualizados.
@@ -43,7 +46,7 @@ main:
                 execution_id: ${execution_id}
 
     # ========================================================================
-    # FASE 1: Extração das odds (2 janelas numa passada — sem query param)
+    # FASE 1: Extração das odds (as 4 janelas numa passada — sem query param)
     # ========================================================================
     - phase1_extract_odds:
         try:

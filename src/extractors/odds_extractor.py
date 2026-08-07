@@ -4,21 +4,46 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List
 from src.extractors.base_extractor import BaseExtractor
 from src.clients.api_football_client import ApiFootballClient
-from src.config import FUTEBOL_ODDS_WINDOWS, FUTEBOL_ODDS_LEAGUE_IDS, get_gcs_path
+from src.config import (
+    FUTEBOL_ODDS_WINDOWS,
+    FUTEBOL_ODDS_WINDOWS_DIARIAS,
+    FUTEBOL_ODDS_LEAGUE_IDS,
+    get_gcs_path,
+)
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 
 class OddsExtractor(BaseExtractor):
-    """Extrai odds pré-jogo via /odds?fixture={id} em 2 janelas (T-24h e T-1h).
+    """Extrai odds pré-jogo via /odds?fixture={id} em 4 janelas (diária + 3 de fechamento).
 
     Coleta FORWARD-ONLY (não dá pra reconstruir as janelas de jogos passados). Um poll
-    (~15min) faz UMA passada nos jogos NS das próximas ~24h, calcula o lead (minutos até o
+    (~15min) faz UMA passada nos jogos NS dentro do horizonte, calcula o lead (minutos até o
     kickoff) e, p/ cada janela cuja banda (FUTEBOL_ODDS_WINDOWS) contém o lead, bate /odds
-    1x e grava 1 arquivo por (fixture, janela). skip-if-exists trava recaptura → 1 snapshot
-    por janela. NÃO grava vazio (jogo sem odds publicadas ainda → re-tenta no próximo poll;
-    gravar vazio travaria o skip-if-exists — mesma lição das escalações pré-jogo).
+    1x e grava 1 arquivo. NÃO grava vazio (jogo sem odds publicadas ainda → re-tenta no
+    próximo poll; gravar vazio travaria o skip-if-exists — mesma lição das escalações
+    pré-jogo, e diferente do vazio registrado de injuries, cuja banda é diária e não de
+    fechamento).
+
+    DUAS naturezas de janela:
+      - "daily" (>24h até o horizonte de 7 dias): o path é DATE-STAMPADO
+        (raw_futebol_odds_{fixture}_daily_{YYYY-MM-DD}.json), logo skip-if-exists é por
+        (fixture, janela, DIA) → 1 captura/dia enquanto o jogo fica na banda. É o que tira o
+        board do recorte de 24h. Mesmo arquétipo do PredictionsExtractor.
+      - t24h / t1h / t15m (fechamento): sem date-stamp, 1 captura única por (fixture, janela).
+        t15m é a linha de fechamento p/ CLV. Nomes de arquivo INTACTOS.
+
+    ⚠️ As bandas são DISJUNTAS por requisito — ver FUTEBOL_ODDS_WINDOWS. Sobreposição faria a
+    mesma passada bucketar o mesmo fixture duas vezes: duas chamadas, dois arquivos, duas
+    linhas no fato com rótulos diferentes p/ o mesmo preço.
+
+    ⚠️ O fato a jusante (fact_odds_snapshot) dedup latest-wins por (fixture, casa, mercado,
+    outcome, collection_window) — SEM o dia. Enquanto o grão de lá não mudar
+    (analytics-engineering#37), as N capturas diárias de um fixture colapsam na mais recente
+    no fato. Os arquivos ficam todos na landing: o histórico de movimento de linha está
+    guardado e é recuperável quando o grão mudar; é justamente por ser forward-only que vale
+    coletar agora.
 
     Guarda TODAS as casas/mercados que a API devolve (filtrar não economiza quota — o custo
     é a chamada); o afunilamento p/ os mercados-alvo acontece no dbt (fact_odds_snapshot).
@@ -35,6 +60,7 @@ class OddsExtractor(BaseExtractor):
         self.has_date = False
         # Atributos de instância (não constantes diretas) p/ permitir override em testes.
         self.windows = dict(FUTEBOL_ODDS_WINDOWS)
+        self.daily_windows = set(FUTEBOL_ODDS_WINDOWS_DIARIAS)
         self.league_ids = list(FUTEBOL_ODDS_LEAGUE_IDS)
 
     def extract(
@@ -97,6 +123,7 @@ class OddsExtractor(BaseExtractor):
             return []
 
         now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")  # date-stamp das janelas diárias
         saved_paths = []
         skipped = 0
         empty = 0
@@ -122,8 +149,14 @@ class OddsExtractor(BaseExtractor):
                     continue
                 considered += 1
 
+                # Só as janelas diárias date-stampam → skip-if-exists por (fixture, janela,
+                # DIA), 1 captura/dia enquanto o fixture fica na banda. As de fechamento
+                # seguem sem data no nome: 1 captura única, e é assim que o fato já lê.
+                date_stamp = today if window in self.daily_windows else None
+
                 blob_path = get_gcs_path(
                     "odds", 0, sport="futebol", game_id=fixture_id, mode=window,
+                    date=date_stamp,
                 )
 
                 # Erros transitórios (timeout de API/GCS) não abortam o run: loga, conta
@@ -142,10 +175,14 @@ class OddsExtractor(BaseExtractor):
                     )
                     time.sleep(0.4)  # cortesia entre chamadas (rate-limit API-Football)
 
-                    if data.get("total_bookmakers", 0) == 0:
-                        # Sem odds publicadas ainda (ou jogo sem mercado): NÃO grava, p/
-                        # ser re-tentado no próximo poll. Gravar vazio aqui faria o
-                        # skip-if-exists bloquear as próximas passadas da janela.
+                    tem_odds = data.get("total_bookmakers", 0) > 0
+
+                    if not tem_odds and date_stamp is None:
+                        # Banda de FECHAMENTO sem odds publicadas: NÃO grava, p/ ser
+                        # re-tentada no próximo poll. A banda tem minutos de largura e a
+                        # casa pode publicar a qualquer momento; gravar aqui travaria o
+                        # skip-if-exists e perderia a linha de fechamento, que é
+                        # forward-only e não se reconstrói.
                         logger.info(
                             f"Fixture {fixture_id} ({window}): sem odds, pulando (re-tenta depois)."
                         )
@@ -158,9 +195,23 @@ class OddsExtractor(BaseExtractor):
                         season=0,  # ignorado pelo branch sport='futebol' do get_gcs_path
                         sport="futebol",
                         game_id=fixture_id,
-                        mode=window,  # sufixo _t24h | _t1h no nome do arquivo
+                        mode=window,  # sufixo _daily | _t24h | _t1h | _t15m no nome
+                        date=date_stamp,  # só as diárias (None nas de fechamento)
                     )
-                    saved_paths.append(gcs_path)
+
+                    if tem_odds:
+                        saved_paths.append(gcs_path)
+                    else:
+                        # VAZIO REGISTRADO na janela diária. Sem ele a banda diária é uma
+                        # bomba de cota: ela tem DIAS de largura, então um fixture sem odds
+                        # nunca gravaria arquivo, o skip-if-exists nunca travaria, e o poll
+                        # de 15min reperguntaria o mesmo vazio ~96x/dia por até uma semana.
+                        # Liga dormente (coverage.odds=FALSE até a abertura) devolve vazio
+                        # de propósito — são 5 delas armadas hoje. Com o arquivo, 1x/dia.
+                        # Fora de saved_paths: arquivo sem casa nenhuma não gera linha no
+                        # fato (o UNNEST de `bets` vazio elimina a linha no staging), então
+                        # não há rebuild de dbt a fazer.
+                        empty += 1
                 except Exception as e:
                     logger.error(
                         f"Erro ao processar fixture {fixture_id} ({window}): {str(e)}",
@@ -170,8 +221,9 @@ class OddsExtractor(BaseExtractor):
                     continue
 
         logger.info(
-            f"odds concluído: {len(saved_paths)} salvos, {skipped} pulados (já existem), "
-            f"{empty} sem odds, {failed} com erro; {considered} (fixture,janela) na banda."
+            f"odds concluído: {len(saved_paths)} com odds, {empty} sem odds (vazio "
+            f"registrado na diária, re-tenta nas de fechamento), {skipped} pulados "
+            f"(já existem), {failed} com erro; {considered} (fixture,janela) na banda."
         )
         if failed:
             # Resumo de FALHA distinto de 'sem odds': odds é FORWARD-ONLY — uma falha
