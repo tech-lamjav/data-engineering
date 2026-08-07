@@ -417,11 +417,31 @@ INJURIES_CURRENT = [
 # da largura da banda. t15m (0,15) é a LINHA DE FECHAMENTO (CLV real): banda inclusiva [0,15]
 # + poll */15 garante 1 captura perto do kickoff (lead≈15→0); forward-only, cada dia sem
 # t15m = linha de fechamento perdida pra sempre.
+#
+# HORIZONTE (desde 2026-08-07): 7 dias. O board era, por construção, um board de 24 horas —
+# quem abria de manhã via os jogos de hoje à noite e mais nada. O corte era NOSSO, não da
+# fonte: sondagem direta em 2026-08-05 devolveu 12–13 casas, Pinnacle inclusa, a 51h, 72h,
+# 77h, 96h e 147h do apito. A janela "daily" cobre de pouco além de 24h até o horizonte, com
+# 1 captura por fixture por dia (date-stampada, mesmo arquétipo do predictions). Ampliar de 7
+# para N dias é mudar ESTE número; as bandas de fechamento não se mexem.
+#
+# ⚠️ DISJUNÇÃO É REQUISITO. O piso da "daily" começa 1 minuto acima do teto da t24h. Bandas
+# sobrepostas fazem a MESMA passada do poll bucketar o mesmo fixture em duas janelas: duas
+# chamadas, dois arquivos, duas linhas no fato com rótulos diferentes p/ o mesmo preço. O
+# teste em tests/test_odds_pregame.py trava qualquer sobreposição futura.
+FUTEBOL_ODDS_HORIZON_MIN = 7 * 24 * 60  # 7 dias
 FUTEBOL_ODDS_WINDOWS = {
+    "daily": (1441, FUTEBOL_ODDS_HORIZON_MIN),  # >24h até o horizonte — 1 captura/dia
     "t24h": (1320, 1440),  # 22h–24h antes (alvo 24h — linha de abertura)
     "t1h":  (30, 60),      # 30–60min antes (alvo 1h — linha intermediária)
     "t15m": (0, 15),       # 0–15min antes (alvo ~15min — linha de fechamento p/ CLV real)
 }
+
+# Janelas de odds que DATE-STAMPAM o arquivo (raw_futebol_odds_{fixture}_{janela}_{data}.json)
+# → skip-if-exists por (fixture, janela, DIA), ou seja 1 captura/dia enquanto o fixture ficar
+# na banda. Só a "daily": as bandas de fechamento são 1 captura única por fixture e o nome sem
+# data é o que a external table e o fato já leem — date-stampá-las seria regressão.
+FUTEBOL_ODDS_WINDOWS_DIARIAS = {"daily"}
 
 # Ligas com coverage.odds=TRUE (validado em dim_leagues). O poll filtra os jogos NS
 # por esses league_ids. Diferente de /injuries (Copa excluída), odds de Copa do Mundo
@@ -949,7 +969,8 @@ def get_gcs_path(
         # futebol/{endpoint}/raw_futebol_{endpoint}_{fixture_id}.json
         # fixture_lineups grava em duas fases (mode "confirmed"|"real") → sufixo de fase
         # no nome do arquivo p/ guardar os dois snapshots (T-30min e pós-jogo).
-        # odds grava em três janelas (mode "t24h"|"t1h"|"t15m") → mesmo mecanismo de sufixo.
+        # odds grava em quatro janelas (mode "daily"|"t24h"|"t1h"|"t15m") → mesmo mecanismo de
+        # sufixo; só a "daily" passa `date` (date-stamp por dia).
         if game_id is not None:
             # Fases válidas: janelas de odds + de predictions (fonte única: as constantes
             # FUTEBOL_*_WINDOWS) + fases de lineups ("confirmed"|"real"). Novas janelas
