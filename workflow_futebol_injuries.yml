@@ -139,7 +139,7 @@ main:
                         body:
                             overrides:
                                 containerOverrides:
-                                    - args: ["dbt", "run", "--select", "stg_futebol_injuries", "fact_injuries_snapshot", "int_futebol_player_importance", "int_futebol_desfalques", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                    - args: ["dbt", "run", "--select", "stg_futebol_injuries", "stg_futebol_injuries_coleta", "fact_injuries_snapshot", "int_futebol_player_importance", "int_futebol_desfalques", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                     result: job_execution_result
                 # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
                 retry:
@@ -179,7 +179,7 @@ main:
                         body:
                             overrides:
                                 containerOverrides:
-                                    - args: ["dbt", "run", "--select", "stg_futebol_injuries", "fact_injuries_snapshot", "int_futebol_player_importance", "int_futebol_desfalques", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                    - args: ["dbt", "run", "--select", "stg_futebol_injuries", "stg_futebol_injuries_coleta", "fact_injuries_snapshot", "int_futebol_player_importance", "int_futebol_desfalques", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                     result: recover_result
                 retry:
                     predicate: ${http.default_retry_predicate}
