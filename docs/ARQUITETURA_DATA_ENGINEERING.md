@@ -91,6 +91,7 @@ src/
 ├── bigquery/bigquery_client.py # Cria/atualiza external tables NBA
 ├── sync/bq_to_postgres.py # Materializa marts BQ → Supabase Postgres
 ├── reporting/daily_summary.py  # Resumo diário de execuções (1 email/dia)
+│   └── {api_quota,guardas,procedencia,suite_dbt}.py # 1 seção do e-mail cada (§5.9-5.10)
 └── utils/                 # logger + helpers (normalização de chaves p/ BigQuery)
 ```
 
@@ -466,6 +467,55 @@ Ambos enviam por **Gmail SMTP_SSL** (`smtp.gmail.com:465`) com os secrets `GMAIL
   tabela HTML (runs/OK/parcial/falha/duração). Requer `logging.viewer` + `workflows.viewer`.
 - **`notify-execution`** — modelo antigo, 1 email **por execução** (texto plano). Workflow-agnóstico;
   ainda chamado por alguns workflows.
+
+### 5.10 Testes dbt em produção — onde olhar o resultado
+
+Os testes do `dbt_futebol` rodam em **duas fases** do `workflow_futebol.yml`, ambas **depois** do
+mart e **sem gate**. A separação é deliberada: `dbt build` faria teste vermelho a montante **pular**
+os modelos a jusante, o mart não reconstruiria e o board congelaria. Guarda de qualidade não derruba
+o produto.
+
+| Fase | Seleção | Testes | Severidade típica | Sinal |
+|---|---|---|---|---|
+| 4 | `dbt test --select tag:guarda` | 36 | `error` | `guardas_status` no `log_completion` |
+| 5 | `dbt test --exclude tag:guarda tag:taskf` | 305 (291 data + 14 unit) | `warn` | linha `Done. PASS=…` do log do job |
+
+União das duas = a suíte inteira, sem pagar duas vezes pelo scan. `tag:taskf` fica de fora: os 5
+testes da task [F] leem o dataset de **medição** `futebol_taskF`, que produção não constrói.
+
+**Onde o time olha:** o **e-mail do resumo diário** (`daily-summary`, ~00:05 BRT), seções
+"Guardas de qualidade de dado" e "Suite dbt". Nenhuma das duas fases derruba workflow, então o
+e-mail é o único canal — e o assunto carrega os tokens `[GUARDA]` e `[SUITE]`.
+
+**Por que a fase 5 se lê pelo LOG e não pelo status.** `dbt test` sai com **0 quando tudo que falhou
+é `warn`** — e hoje tudo que a fase 5 acusa é warn. Um status verde/vermelho ficaria verde para
+sempre. Por isso o workflow emite `suite_execution` (nome da execução do Cloud Run Job) junto de
+`suite_status`, e o resumo diário lê a linha de fechamento do dbt nessa execução:
+
+```
+Done. PASS=295 WARN=10 ERROR=0 SKIP=0 NO-OP=0 TOTAL=305
+```
+
+**`WARN` é o estado normal — o valor está em comparar com ontem.** Baseline medido em 2026-08-21
+(execução `dbt-futebol-tqjk8`), 10 WARN: 3 `relationships` de órfãos conhecidos
+(`fact_injuries_snapshot`→`dim_players` 4.742, `fact_fixture_lineups_players`→`dim_players` 6.214,
+`fact_standings_snapshot`→`dim_teams` 8), `fact_injuries_snapshot`→`fact_fixtures` (90),
+`int_futebol_desfalques`→`dim_players` (33), `assert_per_fixture_coverage` (29, baseline
+estrutural), `accepted_values` de posição em `dim_players` (1) e 3 de grão/nulo em staging de
+lineups/player_stats. **WARN subindo é regressão nova, mesmo com `ERROR=0`.** Só `ERROR≥1` acende o
+assunto — um token que pisca todo dia treina o time a ignorar o e-mail.
+
+**Custo.** Medido na mesma execução: **7,66 GB faturados** (6,10 GB processados) em 319 jobs de BQ,
+~2min12s de parede — ~US$ 0,044/dia a on-demand. As staging são **views sobre NDJSON externo**,
+então todo teste sobre elas é full scan: **70% do custo (5,03 GiB) vem de 61 testes de
+`stg_futebol_*`**; os 258 restantes, sobre marts já materializados, custam 2,11 GiB. Se a conta
+apertar, a alavanca é acrescentar `stg_futebol_*` ao `--exclude` (−70% do custo, mantendo 258 dos
+305 testes) — **não** desligar a fase. ⚠️ O job tem `maxRetries=1`: um dia com `ERROR≥1` roda a
+suíte **duas vezes** antes de a execução falhar.
+
+**O que as fases NÃO pegam:** imagem dbt velha. As duas rodam da mesma imagem pré-buildada, então
+código mergeado e não buildado passa verde nas duas. Esse é o papel da seção "Procedência" do mesmo
+e-mail (§5.9) e do detector horário no `analytics-engineering`.
 
 ---
 
