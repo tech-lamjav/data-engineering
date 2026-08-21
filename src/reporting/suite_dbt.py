@@ -160,6 +160,12 @@ def e_fase5(args) -> bool:
     `dbt test` + `--exclude` a distingue da fase 4 (`dbt test` + `--select tag:guarda`) e das
     fases de `run`/`snapshot`. Não casa o valor do `--exclude`: mudar as tags excluídas é
     mexer só no YAML, e um matcher literal apagaria a seção calado no dia da mudança.
+
+    ⚠️ O discriminador é a PRESENÇA de `--exclude`, e ele só é único enquanto a fase 4
+    continuar sem `--exclude` — nos dois workflows que a rodam (futebol e odds). No dia em
+    que alguém acrescentar um `--exclude` à seleção das guardas, esta seção passa a reportar
+    a execução errada **em silêncio**. Se isso acontecer, o discriminador tem de virar a
+    presença de `--select tag:guarda` (fase 4) versus a ausência dela.
     """
     args = list(args or [])
     return args[:2] == ["dbt", "test"] and "--exclude" in args
