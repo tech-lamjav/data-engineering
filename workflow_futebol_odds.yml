@@ -117,9 +117,18 @@ main:
     # ========================================================================
     # FASE 2: dbt enxuto — modelos de odds + Motor de Score 1X2 + Gols O/U + Handicap + BTTS. Cai em finalize ao terminar.
     # Os modelos do Motor usam --select SEM '+' (os facts upstream já são materializados pelos
-    # outros workflows; aqui só recalcula devig/corroboração/premissas + os marts fact_value_funnel e
-    # fact_value_opportunities). O funil (#95) vem ANTES do board na lista: workflow enumera modelo a
-    # modelo, e modelo fora da lista nasce parado — foi assim que uma tabela nova já ficou sem rodar.
+    # outros workflows; aqui só recalcula devig/corroboração/premissas + os marts fact_value_funnel,
+    # fact_value_funnel_selo e fact_value_opportunities). O funil (#95) vem ANTES do board na lista:
+    # workflow enumera modelo a modelo, e modelo fora da lista nasce parado — foi assim que uma
+    # tabela nova já ficou sem rodar.
+    #
+    # ⚠️ O `fact_value_funnel_selo` (#96) vem DEPOIS do funil e é ele que torna possível a guarda de
+    # imutabilidade: ele grava, uma vez só, a contagem e a soma de nota de cada dia de kickoff que
+    # ficou para trás. Fora da lista ele nasce parado e a guarda passa a comparar contra o vazio.
+    #
+    # ⚠️ Os DOIS são `full_refresh=false` no dbt, e isso é de propósito: a fase de RECOVERY abaixo
+    # roda este mesmo `--select` com `--full-refresh`. Sem a trava, a primeira recuperação de deriva
+    # determinística apagaria o histórico append-only inteiro — em silêncio, e com o job verde.
     # ========================================================================
     - phase2_dbt:
         try:
@@ -136,7 +145,7 @@ main:
                         body:
                             overrides:
                                 containerOverrides:
-                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_player_importance", "int_futebol_desfalques", "int_futebol_team_form_pit", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "int_futebol_premissas_dc", "fact_value_funnel", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_player_importance", "int_futebol_desfalques", "int_futebol_team_form_pit", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "int_futebol_premissas_dc", "fact_value_funnel", "fact_value_funnel_selo", "fact_value_opportunities", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                     result: job_execution_result
                 # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
                 retry:
@@ -177,7 +186,7 @@ main:
                         body:
                             overrides:
                                 containerOverrides:
-                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_player_importance", "int_futebol_desfalques", "int_futebol_team_form_pit", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "int_futebol_premissas_dc", "fact_value_funnel", "fact_value_opportunities", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                    - args: ["dbt", "run", "--select", "stg_futebol_odds", "fact_odds_snapshot", "int_futebol_odds_devig", "int_futebol_corroboracao", "int_futebol_player_importance", "int_futebol_desfalques", "int_futebol_team_form_pit", "int_futebol_premissas_1x2", "int_futebol_premissas_ou", "int_futebol_premissas_ah", "int_futebol_premissas_btts", "int_futebol_premissas_dc", "fact_value_funnel", "fact_value_funnel_selo", "fact_value_opportunities", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                     result: recover_result
                 retry:
                     predicate: ${http.default_retry_predicate}
