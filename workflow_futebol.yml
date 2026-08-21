@@ -32,10 +32,6 @@ main:
         # os gates a montante (extract-fixtures falhou, dbt falhou) desviam direto p/ finalize
         # sem passar pela fase — e "não rodou" reportado como verde é o buraco que o C4 fechou.
         - suite_status: "NOT_RUN"
-        # Nome da execução do Cloud Run Job da fase 5. É por ele que o resumo diário acha a
-        # linha `Done. PASS=... WARN=... ERROR=...` no log — o status sozinho não distingue
-        # PASS de WARN (dbt sai com 0 nos dois), e WARN é justamente o estado normal aqui.
-        - suite_execution: ""
         - failed_services: []
         - fixtures_ok: true
         # mode default = "current" se não fornecido
@@ -836,13 +832,29 @@ main:
     #
     # ⚠️ E O STATUS SOZINHO NÃO BASTA: `dbt test` sai com 0 quando tudo que falhou é `warn`,
     # então uma fase que só reportasse verde/vermelho ficaria verde para sempre e não
-    # detectaria nada. O sinal é a linha `Done. PASS=... WARN=... ERROR=...` do log do job —
-    # por isso `suite_execution` guarda o nome da execução: é a chave com que o resumo
-    # diário vai buscar essa linha no Cloud Logging (`src/reporting/suite_dbt.py`).
+    # detectaria nada. O sinal é a linha `Done. PASS=... WARN=... ERROR=...` do log do job.
+    # Quem a lê é o resumo diário (`src/reporting/suite_dbt.py`): ele acha a execução desta
+    # fase pelos ARGS dela na Cloud Run Admin API. Tentar passar o nome da execução daqui
+    # NÃO funciona — medido em 2026-08-21: `<result>.name` do conector é o nome da
+    # OPERAÇÃO (`.../operations/<uuid>`), não o da execução (`dbt-futebol-xxxxx`), e o label
+    # do Cloud Logging é o segundo. `suite_status` abaixo continua sendo o sinal de que a
+    # fase rodou e de que o job não caiu.
     #
     # É a ÚLTIMA fase, depois do board, do snapshot e das guardas: nada aqui pode atrasar a
     # janela do alerta das 10h BRT, e o sync roda em workflow próprio, com scheduler próprio.
     # ⚠️ maxRetries=1 no job: suíte com ERROR>=1 roda 2x antes de a execução falhar.
+    #
+    # ⚠️ LIMITE HERDADO DA FASE 4: o gate `check_dbt_success_for_snapshot` exige
+    # `workflow_status == "SUCCESS"`, e QUALQUER um dos ~10 extractores da fase 1 marca
+    # PARTIAL_FAILURE — então uma liga com standings falhando pula as fases 3, 4 E 5, e a
+    # suíte não roda naquele dia (`suite_status` fica NOT_RUN e o resumo diário diz isso).
+    # Na prática é raro: 22 de 22 execuções agendadas entre 01/08 e 21/08 saíram SUCCESS.
+    # Desacoplar a fase 5 desse gate é mudança de fluxo das outras fases e ficou de fora.
+    #
+    # ⚠️ E o `except` abaixo NÃO significa "ERROR>=1": ele pega o job caindo por qualquer
+    # motivo — ERROR>=1, mas também OOM, timeout e falha de imagem. Por isso o resumo diário
+    # trata `suite_status: PARTIAL_FAILURE` sem contagem como VERMELHO genérico, e não como
+    # "teste vermelho".
     # ============================================================================
     - phase5_dbt_suite:
         try:
@@ -867,14 +879,13 @@ main:
             - mark_suite_ok:
                 assign:
                 - suite_status: "SUCCESS"
-                - suite_execution: ${suite_result.name}
             - log_suite_success:
                 call: sys.log
                 args:
                     severity: INFO
                     data:
                         message: "Suite dbt (resto, fora de tag:guarda) executada — ERROR=0. PASS/WARN saem da linha Done. do log do job"
-                        execution_name: ${suite_result.name}
+                        operation_name: ${suite_result.name}
         except:
             as: e
             steps:
@@ -908,7 +919,6 @@ main:
                 status: ${workflow_status}
                 guardas_status: ${guardas_status}
                 suite_status: ${suite_status}
-                suite_execution: ${suite_execution}
                 mode: ${mode}
                 duration_seconds: ${duration_seconds}
                 failed_services: ${failed_services}
@@ -919,7 +929,6 @@ main:
             status: ${workflow_status}
             guardas_status: ${guardas_status}
             suite_status: ${suite_status}
-            suite_execution: ${suite_execution}
             mode: ${mode}
             duration_seconds: ${duration_seconds}
             failed_services: ${failed_services}

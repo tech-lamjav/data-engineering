@@ -1,7 +1,7 @@
 """DE#19: o resultado da suite dbt (fase 5) tem que chegar ao resumo diario.
 
-A fase 5 roda os ~291 testes que ficam FORA de `tag:guarda` — os `relationships`,
-`not_null` e `unique` dos marts, que ate agora so rodavam no laptop de quem lembrasse.
+A fase 5 roda os 291 data tests que ficam FORA de `tag:guarda` e `tag:taskf` (mais os 14
+unit tests: 305 nos), que ate agora so rodavam no laptop de quem lembrasse.
 
 O caso discriminante NAO e o mesmo das guardas. Guarda vermelha e `severity: error`: o
 job cai, o conector levanta, o status conta a historia. Aqui tudo que acende hoje e
@@ -11,6 +11,11 @@ so `suite_status` ficaria verde para sempre. O sinal e a linha do log:
     Done. PASS=295 WARN=10 ERROR=0 SKIP=0 NO-OP=0 TOTAL=305
 
 (linha real da execucao `dbt-futebol-tqjk8`, dbt 1.11.2, 2026-08-21.)
+
+E achar QUAL execucao do job `dbt-futebol` e a da fase 5 tambem nao e obvio: o job e o
+mesmo nas quatro fases, e o nome que o conector devolve ao workflow e o da OPERACAO, nao
+o da execucao. Quem separa e `encontra_execucao`, pelos ARGS que a Cloud Run Admin API
+guarda em cada execucao.
 
 `suite_dbt` importa o SDK de logging preguicosamente, dentro do coletor, entao a logica
 e testada aqui sem stub nenhum. So a fiacao dentro de `daily_summary` precisa dos stubs.
@@ -28,6 +33,8 @@ from src.reporting.suite_dbt import (
     SuiteRun,
     build_suite_section,
     collect_suite,
+    e_fase5,
+    encontra_execucao,
     parse_done,
 )
 
@@ -36,10 +43,21 @@ INICIO = datetime(2026, 8, 21, 3, 0, tzinfo=timezone.utc)
 FIM = datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc)
 QUANDO = datetime(2026, 8, 21, 13, 34, tzinfo=timezone.utc)
 
-EXEC_LONGO = (
-    "projects/smartbetting-dados/locations/us-east1/jobs/dbt-futebol/executions/dbt-futebol-tqjk8"
-)
 EXEC_CURTO = "dbt-futebol-tqjk8"
+EXEC_LONGO = (
+    "projects/smartbetting-dados/locations/us-east1/jobs/dbt-futebol/executions/" + EXEC_CURTO
+)
+
+# Args reais das quatro fases, como a Cloud Run Admin API v2 os devolve (lidos de
+# execucoes de producao em 2026-08-21).
+ARGS_FASE5 = ["dbt", "test", "--exclude", "tag:guarda", "tag:taskf",
+              "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt",
+              "--target", "prod"]
+ARGS_GUARDAS = ["dbt", "test", "--select", "tag:guarda",
+                "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt",
+                "--target", "prod"]
+ARGS_SNAPSHOT = ["dbt", "snapshot", "--select", "fact_value_opportunities_hist",
+                 "--project-dir", "/app/dbt_futebol", "--target", "prod"]
 
 # Linha real, com o prefixo ANSI e o horario que o Cloud Run entrega no textPayload.
 LINHA_REAL = "\x1b[0m13:34:08  Done. PASS=295 WARN=10 ERROR=0 SKIP=0 NO-OP=0 TOTAL=305"
@@ -81,6 +99,96 @@ def test_linha_que_nao_e_fechamento_de_teste():
 
 
 # ---------------------------------------------------------------------------
+# e_fase5 / encontra_execucao
+# ---------------------------------------------------------------------------
+def test_separa_a_fase5_das_outras_fases_do_MESMO_job():
+    """O job `dbt-futebol` e o mesmo nas quatro fases — sem este predicado a secao poderia
+    reportar a contagem das guardas (36 testes) como se fosse a da suite (305)."""
+    assert e_fase5(ARGS_FASE5) is True
+    assert e_fase5(ARGS_GUARDAS) is False
+    assert e_fase5(ARGS_SNAPSHOT) is False
+    assert e_fase5(["dbt", "run", "--select", "+fact_fixtures"]) is False
+    assert e_fase5(None) is False
+
+
+class _Resp:
+    def __init__(self, doc):
+        self._doc = doc
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._doc
+
+
+class _FakeRun:
+    """Cloud Run Admin API v2: devolve as paginas na ordem, da mais recente p/ a antiga."""
+
+    def __init__(self, *paginas):
+        self._paginas = list(paginas)
+        self.params = []
+
+    def get(self, url, **kw):
+        self.params.append(kw.get("params") or {})
+        i = min(len(self.params) - 1, len(self._paginas) - 1)
+        return _Resp(self._paginas[i])
+
+
+def _execucao(nome, create_time, args):
+    return {"name": f"projects/p/locations/l/jobs/dbt-futebol/executions/{nome}",
+            "createTime": create_time,
+            "template": {"containers": [{"args": args}]}}
+
+
+@pytest.fixture(autouse=True)
+def _sem_adc(monkeypatch):
+    """`encontra_execucao` pede um token de ADC; nenhum teste deve tocar a rede."""
+    monkeypatch.setattr("src.reporting.suite_dbt.token_gcp", lambda: "token-de-teste")
+
+
+def test_encontra_a_execucao_da_fase5_ignorando_as_outras():
+    sessao = _FakeRun({"executions": [
+        _execucao("dbt-futebol-zzz", "2026-08-21T18:00:00.123456789Z", ARGS_GUARDAS),
+        _execucao(EXEC_CURTO, "2026-08-21T13:31:56.078666Z", ARGS_FASE5),
+        _execucao("dbt-futebol-aaa", "2026-08-21T12:13:30.367280Z", ARGS_SNAPSHOT),
+    ]})
+
+    nome, quando = encontra_execucao(INICIO, FIM, sessao=sessao)
+
+    assert nome == EXEC_CURTO
+    assert quando.hour == 13
+
+
+def test_para_de_paginar_ao_sair_da_janela():
+    """A API devolve da mais recente p/ a mais antiga: passou do inicio do dia, acabou.
+
+    Sem a parada, um dia sem fase 5 varreria as 5 paginas (1.000 execucoes) a toa.
+    """
+    sessao = _FakeRun({"executions": [
+        _execucao("velha", "2026-08-19T13:00:00Z", ARGS_FASE5),
+    ], "nextPageToken": "tem-mais"})
+
+    nome, _ = encontra_execucao(INICIO, FIM, sessao=sessao)
+
+    assert nome is None
+    assert len(sessao.params) == 1, "nao devia ter pedido a proxima pagina"
+
+
+def test_ignora_execucao_posterior_a_janela():
+    """O resumo roda p/ o dia ANTERIOR: a execucao de hoje nao pode entrar no e-mail de
+    ontem."""
+    sessao = _FakeRun({"executions": [
+        _execucao("de-hoje", "2026-08-22T13:00:00Z", ARGS_FASE5),
+        _execucao(EXEC_CURTO, "2026-08-21T13:31:56Z", ARGS_FASE5),
+    ]})
+
+    nome, _ = encontra_execucao(INICIO, FIM, sessao=sessao)
+
+    assert nome == EXEC_CURTO
+
+
+# ---------------------------------------------------------------------------
 # collect_suite
 # ---------------------------------------------------------------------------
 class _Entry:
@@ -91,36 +199,64 @@ class _Entry:
 class _FakeLogging:
     def __init__(self, entries):
         self._entries = entries
-        self.filtros = []
+        self.kwargs = []
 
     def list_entries(self, **kwargs):
-        self.filtros.append(kwargs.get("filter_", ""))
+        self.kwargs.append(kwargs)
         return iter(self._entries)
 
 
+def _sessao_ok():
+    return _FakeRun({"executions": [
+        _execucao(EXEC_CURTO, "2026-08-21T13:31:56.078666Z", ARGS_FASE5),
+    ]})
+
+
 def _run(**extra):
-    base = {"quando": QUANDO, "status": "SUCCESS", "execucao": EXEC_LONGO}
+    base = {"quando": QUANDO, "status": "SUCCESS"}
     base.update(extra)
     return SuiteRun(**base)
 
 
 def test_sem_execucao_no_dia_a_secao_some():
     """Workflow antigo, sem o campo no log_completion: melhor sumir do que mentir."""
-    assert collect_suite([]) is None
+    assert collect_suite([], INICIO, FIM) is None
     assert build_suite_section(None) == ""
 
 
 def test_acha_a_contagem_pela_execucao():
     cliente = _FakeLogging([_Entry(LINHA_REAL)])
 
-    info = collect_suite([_run()], client=cliente)
+    info = collect_suite([_run()], INICIO, FIM, client=cliente, sessao=_sessao_ok())
 
     assert info.contagem.warn == 10
     assert info.erro_leitura is None
-    # Filtra pela execucao, e o label do Cloud Logging usa o nome CURTO — o workflow emite
-    # o nome do recurso inteiro, entao ha uma conversao no meio que precisa estar certa.
-    assert EXEC_CURTO in cliente.filtros[0]
-    assert "projects/" not in cliente.filtros[0].split("execution_name")[1]
+    assert info.execucao == EXEC_CURTO
+    assert EXEC_CURTO in cliente.kwargs[0]["filter_"]
+
+
+def test_le_a_ULTIMA_linha_done_da_execucao():
+    """`maxRetries=1` no job: uma execucao que falha e repete tem DUAS linhas `Done.`.
+
+    Ascendente (o default do SDK) reportaria a tentativa que FALHOU de uma execucao que
+    terminou verde — `[SUITE]` falso, que e o alarme que treina o time a ignorar o e-mail.
+    """
+    cliente = _FakeLogging([_Entry(LINHA_REAL)])
+
+    collect_suite([_run()], INICIO, FIM, client=cliente, sessao=_sessao_ok())
+
+    assert cliente.kwargs[0].get("order_by") == "timestamp desc"
+
+
+def test_filtro_do_logging_e_limitado_no_tempo():
+    """O resumo roda ~00:05 BRT p/ o dia anterior: sem limite, a consulta varre os 30 dias
+    de retencao inteiros para achar uma linha."""
+    cliente = _FakeLogging([_Entry(LINHA_REAL)])
+
+    collect_suite([_run()], INICIO, FIM, client=cliente, sessao=_sessao_ok())
+
+    assert "timestamp>=" in cliente.kwargs[0]["filter_"]
+    assert "timestamp<" in cliente.kwargs[0]["filter_"]
 
 
 def test_logging_indisponivel_nao_derruba_o_resumo():
@@ -128,44 +264,57 @@ def test_logging_indisponivel_nao_derruba_o_resumo():
     cliente = MagicMock()
     cliente.list_entries.side_effect = RuntimeError("permissao negada")
 
-    info = collect_suite([_run()], client=cliente)
+    info = collect_suite([_run()], INICIO, FIM, client=cliente, sessao=_sessao_ok())
 
     assert info.erro_leitura is not None
     assert info.contagem is None
     assert "Suite dbt" in build_suite_section(info)
 
 
+def test_cloud_run_indisponivel_nao_derruba_o_resumo():
+    sessao = MagicMock()
+    sessao.get.side_effect = RuntimeError("403")
+
+    info = collect_suite([_run()], INICIO, FIM, client=_FakeLogging([]), sessao=sessao)
+
+    assert info.erro_leitura is not None
+    assert "Suite dbt" in build_suite_section(info)
+
+
 def test_execucao_sem_linha_done_vira_leitura_degradada():
-    info = collect_suite([_run()], client=_FakeLogging([]))
+    info = collect_suite([_run()], INICIO, FIM, client=_FakeLogging([]), sessao=_sessao_ok())
 
     assert info.contagem is None
     assert "Done. PASS=" in info.erro_leitura
 
 
-def test_usa_a_execucao_MAIS_RECENTE_do_dia():
-    """O workflow futebol pode rodar mais de uma vez (backfill manual). O estado atual do
-    mart e o da ultima."""
-    antiga = _run(quando=datetime(2026, 8, 21, 6, 0, tzinfo=timezone.utc), execucao="x/velha")
-    info = collect_suite([antiga, _run()], client=_FakeLogging([_Entry(LINHA_REAL)]))
+def test_nao_procura_execucao_quando_a_fase_nao_rodou():
+    """`NOT_RUN` e resposta completa: nao ha execucao para achar, e pedir a lista seria
+    uma chamada de rede para descobrir isso."""
+    sessao = _sessao_ok()
 
-    assert info.run.execucao_curta == EXEC_CURTO
+    info = collect_suite([_run(status="NOT_RUN")], INICIO, FIM, sessao=sessao)
+
+    assert info.execucao is None
+    assert sessao.params == []
+
+
+def test_usa_a_passagem_MAIS_RECENTE_do_dia():
+    """O workflow futebol pode rodar mais de uma vez (backfill manual)."""
+    antiga = _run(quando=datetime(2026, 8, 21, 6, 0, tzinfo=timezone.utc), status="NOT_RUN")
+    info = collect_suite([antiga, _run()], INICIO, FIM,
+                         client=_FakeLogging([_Entry(LINHA_REAL)]), sessao=_sessao_ok())
+
+    assert info.run.status == "SUCCESS"
     assert info.execucoes_no_dia == 2
 
 
 def test_execucao_sem_timestamp_nao_levanta():
     """Defensivo: ordenar None com None levantaria TypeError e mataria o resumo inteiro."""
-    info = collect_suite([_run(quando=None), _run(quando=None)], client=_FakeLogging([]))
+    info = collect_suite([_run(quando=None), _run(quando=None)], INICIO, FIM,
+                         client=_FakeLogging([]), sessao=_sessao_ok())
 
     assert info is not None
-
-
-def test_fase_vermelha_sem_nome_de_execucao():
-    """Quando o job cai, o conector levanta antes de o workflow nomear a execucao. Sobra o
-    status — e ele basta, porque `dbt test` so cai com ERROR>=1."""
-    info = collect_suite([_run(status="PARTIAL_FAILURE", execucao="")], client=_FakeLogging([]))
-
-    assert info.alarme is True
-    assert info.contagem is None
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +335,13 @@ def test_error_alarma():
     assert info.alarme is True
 
 
+def test_job_caido_sem_contagem_alarma():
+    """O `except` da fase 5 pega ERROR>=1 mas tambem OOM, timeout e falha de imagem."""
+    info = SuiteInfo(run=_run(status="PARTIAL_FAILURE"))
+
+    assert info.alarme is True
+
+
 # ---------------------------------------------------------------------------
 # build_suite_section
 # ---------------------------------------------------------------------------
@@ -202,18 +358,48 @@ def test_secao_aparece_MESMO_verde_com_o_numero_de_warn():
 
 
 def test_secao_diz_quando_a_fase_nao_rodou():
-    """Gate a montante desviou (extract-fixtures ou o rebuild falhou). "Nao rodou"
-    reportado como verde e exatamente o buraco que o C4 fechou nas guardas."""
-    html = build_suite_section(SuiteInfo(run=_run(status="NOT_RUN", execucao="")))
+    """Gate a montante desviou. "Nao rodou" reportado como verde e exatamente o buraco que
+    o C4 fechou nas guardas."""
+    html = build_suite_section(SuiteInfo(run=_run(status="NOT_RUN")))
 
     assert "NAO rodou" in html
 
 
 def test_secao_vermelha_diz_onde_olhar():
-    html = build_suite_section(SuiteInfo(run=_run(), contagem=ContagemDbt(290, 10, 5, 0, 305)))
+    html = build_suite_section(
+        SuiteInfo(run=_run(), contagem=ContagemDbt(290, 10, 5, 0, 305), execucao=EXEC_CURTO)
+    )
 
     assert "dbt-futebol" in html
     assert EXEC_CURTO in html
+
+
+def test_job_caido_SEM_contagem_renderiza_VERMELHO():
+    """O caso que a fase existe para pegar, e o unico que estava saindo errado.
+
+    Quando o job cai e nao sobra linha `Done.` legivel, `contagem` e None. Se o ramo
+    vermelho exigisse contagem, o dia caia no ramo cinza de "leitura degradada": assunto
+    com [SUITE] e corpo dizendo que nao ha nada para ver. Vermelho sem contagem ainda diz
+    onde olhar, que e a unica acao possivel.
+    """
+    info = SuiteInfo(run=_run(status="PARTIAL_FAILURE"), execucao=EXEC_CURTO,
+                     erro_leitura="execucao nao tem linha 'Done. PASS='")
+
+    html = build_suite_section(info)
+
+    assert "#cf222e" in html, "cor vermelha"
+    assert "VERMELHA" in html
+    assert EXEC_CURTO in html
+
+
+def test_leitura_degradada_com_a_fase_VERDE_nao_finge_vermelho():
+    """Contraparte: falha de leitura nao e falha de dado. Cinza, com o motivo."""
+    info = SuiteInfo(run=_run(), erro_leitura="RuntimeError: 403")
+
+    html = build_suite_section(info)
+
+    assert "#cf222e" not in html
+    assert "403" in html
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +447,6 @@ def _payload(**extra):
         "status": "SUCCESS",
         "guardas_status": "SUCCESS",
         "suite_status": "SUCCESS",
-        "suite_execution": EXEC_LONGO,
         "mode": "current",
         "duration_seconds": 900.0,
     }
@@ -280,13 +465,13 @@ def _agrega(daily_summary, *payloads):
     return agg
 
 
-def test_collect_from_logging_captura_a_execucao_da_fase5(daily_summary):
+def test_collect_from_logging_captura_a_passagem_pela_fase5(daily_summary):
     agg = _agrega(daily_summary, _payload())
 
     runs = agg["workflow-futebol"].suite_runs
     assert len(runs) == 1
-    assert runs[0].execucao_curta == EXEC_CURTO
     assert runs[0].status == "SUCCESS"
+    assert runs[0].quando == QUANDO
 
 
 def test_workflow_sem_a_fase5_nao_vira_falso_positivo(daily_summary):
@@ -294,7 +479,6 @@ def test_workflow_sem_a_fase5_nao_vira_falso_positivo(daily_summary):
     e tambem != "nao rodou" — a secao nem existe para eles."""
     sem_campo = _payload(workflow_name="workflow_futebol_sync")
     sem_campo.pop("suite_status")
-    sem_campo.pop("suite_execution")
     agg = _agrega(daily_summary, sem_campo)
 
     assert agg["workflow-futebol-sync"].suite_runs == []
@@ -340,6 +524,6 @@ def test_email_de_antes_fica_intacto_sem_a_secao(daily_summary):
     """`suite=None` (workflow ainda nao deployado) nao pode mudar o e-mail existente."""
     agg = _agrega(daily_summary, _payload())
 
-    _, com = daily_summary.build_html(DIA, agg, None, None, None)
+    _, html = daily_summary.build_html(DIA, agg, None, None, None)
 
-    assert "Suite dbt" not in com
+    assert "Suite dbt" not in html

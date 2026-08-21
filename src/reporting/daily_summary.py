@@ -158,9 +158,7 @@ def collect_from_logging(client, start_utc, end_utc, agg) -> int:
         # futebol) — ausencia nao e "nao rodou", e "nao se aplica", e a secao nem aparece.
         suite = payload.get("suite_status")
         if suite:
-            a.suite_runs.append(
-                SuiteRun(quando=ts, status=suite, execucao=payload.get("suite_execution") or "")
-            )
+            a.suite_runs.append(SuiteRun(quando=ts, status=suite))
         try:
             a.saved_count += int(payload.get("saved_count") or 0)
         except (TypeError, ValueError):
@@ -395,9 +393,9 @@ def run_daily_summary(target_date: date | None = None) -> dict:
     # 2 jobs + 1 GET no GitHub, 1×/dia. Também nunca levanta.
     procedencia = collect_procedencia()
 
-    # 1 leitura do Cloud Logging por dia (a execução mais recente da fase 5). Nunca levanta;
-    # sem execução no dia devolve None e a seção some.
-    suite = collect_suite([r for a in agg.values() for r in a.suite_runs])
+    # 1 listagem de execuções do Cloud Run + 1 leitura do Cloud Logging, 1×/dia. Nunca
+    # levanta; sem execução da fase 5 no dia devolve None e a seção some.
+    suite = collect_suite([r for a in agg.values() for r in a.suite_runs], start_utc, end_utc)
 
     subject, html = build_html(day, agg, quota, procedencia, suite)
 
