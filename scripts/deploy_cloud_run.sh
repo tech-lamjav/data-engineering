@@ -243,7 +243,7 @@ load_env() {
 # ⚠️ Variável que vale para TODOS os serviços entra no bloco COMUM do fim — uma
 # edição, não quatro. Foi "esquecer uma ramificação" que deixou o fix do de-vig 2
 # dias fora de produção; é a mesma classe de falha que o carimbo de procedência dos
-# serviços existe para pegar (docs/adr/0001-carimbo-de-procedencia-dos-servicos-cloud-run.md).
+# serviços existe para pegar (DE #44; o ADR chega em docs/adr/ pelo PR #57).
 build_service_env_vars() {
     local service_name=$1
     local entry_point=$2
