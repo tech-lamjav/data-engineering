@@ -27,6 +27,11 @@ main:
         # Status PRÓPRIO das guardas (spec #22): guarda vermelha reporta no e-mail diário sem
         # marcar o workflow como PARTIAL_FAILURE e sem bloquear board, snapshot ou sync.
         - guardas_status: "SUCCESS"
+        # Status PRÓPRIO da suíte dbt restante (issue DE#19), pela mesma razão das guardas: a
+        # suíte inteira é INVENTÁRIO, não portão. Começa em NOT_RUN e não em SUCCESS porque
+        # os gates a montante (extract-fixtures falhou, dbt falhou) desviam direto p/ finalize
+        # sem passar pela fase — e "não rodou" reportado como verde é o buraco que o C4 fechou.
+        - suite_status: "NOT_RUN"
         - failed_services: []
         - fixtures_ok: true
         # mode default = "current" se não fornecido
@@ -810,6 +815,92 @@ main:
                 - guardas_status: "PARTIAL_FAILURE"
 
     # ============================================================================
+    # FASE 5: resto da suíte dbt (issue DE#19)
+    # A fase 4 roda 36 testes (`tag:guarda`). O projeto tem 332. Os ~291 restantes — os
+    # `relationships`, `not_null` e `unique` de todos os marts — só existiam no laptop de
+    # quem lembrasse de rodá-los. Esta fase é o complemento: `tag:guarda` ∪ FASE 5 = suíte
+    # inteira, sem pagar duas vezes pelo scan das guardas.
+    #
+    # `tag:taskf` fica de fora de propósito: os 5 testes da task [F] leem o dataset de
+    # MEDIÇÃO `futebol_taskF`, que produção não constrói nem lê. Ver ADR 0007.
+    #
+    # SEM GATE, e isso é a decisão central. Hoje 3 `relationships` acusam órfãos conhecidos
+    # (injuries→dim_players, injuries→fact_fixtures, standings→dim_teams) e a cobertura
+    # per-fixture tem baseline estrutural — todos em `severity: warn`. Com gate, o primeiro
+    # órfão novo derrubaria o pipeline diário inteiro, o sync para o Postgres de serving
+    # junto. Trocar detecção tardia por indisponibilidade é mau negócio para este produto.
+    #
+    # ⚠️ E O STATUS SOZINHO NÃO BASTA: `dbt test` sai com 0 quando tudo que falhou é `warn`,
+    # então uma fase que só reportasse verde/vermelho ficaria verde para sempre e não
+    # detectaria nada. O sinal é a linha `Done. PASS=... WARN=... ERROR=...` do log do job.
+    # Quem a lê é o resumo diário (`src/reporting/suite_dbt.py`): ele acha a execução desta
+    # fase pelos ARGS dela na Cloud Run Admin API. Tentar passar o nome da execução daqui
+    # NÃO funciona — medido em 2026-08-21: `<result>.name` do conector é o nome da
+    # OPERAÇÃO (`.../operations/<uuid>`), não o da execução (`dbt-futebol-xxxxx`), e o label
+    # do Cloud Logging é o segundo. `suite_status` abaixo continua sendo o sinal de que a
+    # fase rodou e de que o job não caiu.
+    #
+    # É a ÚLTIMA fase, depois do board, do snapshot e das guardas: nada aqui pode atrasar a
+    # janela do alerta das 10h BRT, e o sync roda em workflow próprio, com scheduler próprio.
+    # ⚠️ maxRetries=1 no job: suíte com ERROR>=1 roda 2x antes de a execução falhar.
+    #
+    # ⚠️ LIMITE HERDADO DA FASE 4: o gate `check_dbt_success_for_snapshot` exige
+    # `workflow_status == "SUCCESS"`, e QUALQUER um dos ~10 extractores da fase 1 marca
+    # PARTIAL_FAILURE — então uma liga com standings falhando pula as fases 3, 4 E 5, e a
+    # suíte não roda naquele dia (`suite_status` fica NOT_RUN e o resumo diário diz isso).
+    # Na prática é raro: 22 de 22 execuções agendadas entre 01/08 e 21/08 saíram SUCCESS.
+    # Desacoplar a fase 5 desse gate é mudança de fluxo das outras fases e ficou de fora.
+    #
+    # ⚠️ E o `except` abaixo NÃO significa "ERROR>=1": ele pega o job caindo por qualquer
+    # motivo — ERROR>=1, mas também OOM, timeout e falha de imagem. Por isso o resumo diário
+    # trata `suite_status: PARTIAL_FAILURE` sem contagem como VERMELHO genérico, e não como
+    # "teste vermelho".
+    # ============================================================================
+    - phase5_dbt_suite:
+        try:
+            steps:
+            - execute_suite_job:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "test", "--exclude", "tag:guarda", "tag:taskf", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: suite_result
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 2
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - mark_suite_ok:
+                assign:
+                - suite_status: "SUCCESS"
+            - log_suite_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Suite dbt (resto, fora de tag:guarda) executada — ERROR=0. PASS/WARN saem da linha Done. do log do job"
+                        operation_name: ${suite_result.name}
+        except:
+            as: e
+            steps:
+            - log_suite_error:
+                call: sys.log
+                args:
+                    severity: WARNING
+                    data:
+                        message: "Suite dbt com ERROR>=1 (ou o job não executou) — reporta no resumo diário; não bloqueia nada. Qual teste falhou: log do job dbt-futebol"
+                        error: ${e.message}
+            - handle_suite_errors:
+                assign:
+                - suite_status: "PARTIAL_FAILURE"
+
+    # ============================================================================
     # FINALIZAÇÃO
     # ============================================================================
     - finalize:
@@ -827,6 +918,7 @@ main:
                 workflow_name: "workflow_futebol"
                 status: ${workflow_status}
                 guardas_status: ${guardas_status}
+                suite_status: ${suite_status}
                 mode: ${mode}
                 duration_seconds: ${duration_seconds}
                 failed_services: ${failed_services}
@@ -836,6 +928,7 @@ main:
         return:
             status: ${workflow_status}
             guardas_status: ${guardas_status}
+            suite_status: ${suite_status}
             mode: ${mode}
             duration_seconds: ${duration_seconds}
             failed_services: ${failed_services}

@@ -110,7 +110,9 @@ class ProcedenciaInfo:
         return self.veredito.vermelho or self.veredito.parado
 
 
-def _token_gcp() -> str:
+def token_gcp() -> str:
+    """Token de ADC p/ a Cloud Run Admin API. Publico porque `suite_dbt.py` chama a mesma
+    API (executions) e nao ha razao p/ duas copias do mesmo handshake."""
     import google.auth
     import google.auth.transport.requests
 
@@ -131,7 +133,7 @@ def collect_carimbos(jobs=JOBS_DBT) -> list:
         return [CarimboJob(job=j, error=motivo) for j in jobs]
 
     try:
-        token = _token_gcp()
+        token = token_gcp()
     except Exception as e:
         logger.warning(f"Sem credencial p/ Cloud Run, secao de procedencia degradada: {e}")
         return [CarimboJob(job=j, error=f"{type(e).__name__}: {e}") for j in jobs]

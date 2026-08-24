@@ -35,6 +35,7 @@ from src.config import GCP_PROJECT_ID
 from src.reporting.api_quota import build_quota_section, collect_quota
 from src.reporting.guardas import build_guardas_section
 from src.reporting.procedencia import build_procedencia_section, collect_procedencia
+from src.reporting.suite_dbt import SuiteRun, build_suite_section, collect_suite
 from src.reporting.formatting import SAO_PAULO, cell as _cell, fmt_brt as _fmt_brt
 from src.utils.logger import setup_logger
 
@@ -90,6 +91,10 @@ class WFAgg:
     # `guardas_status` veio != SUCCESS. Separado de `failures` porque guarda vermelha NAO
     # e falha do workflow — nao pode derrubar o board, so precisa alarmar.
     guardas_red: list = field(default_factory=list)
+    # Execucoes da FASE 5 (resto da suite dbt, DE#19). Guardadas TODAS, verdes inclusive:
+    # diferente das guardas, o valor aqui e a contagem PASS/WARN/ERROR — e WARN>0 e o estado
+    # normal, entao "so guardar quando acende" nao daria nada para acender.
+    suite_runs: list = field(default_factory=list)
 
 
 def compute_window(target_date: date | None = None):
@@ -149,6 +154,11 @@ def collect_from_logging(client, start_utc, end_utc, agg) -> int:
         guardas = payload.get("guardas_status")
         if guardas and guardas != "SUCCESS":
             a.guardas_red.append(ts)
+        # Idem para a FASE 5. Chave ausente = workflow que nao roda a suite (todos menos o
+        # futebol) — ausencia nao e "nao rodou", e "nao se aplica", e a secao nem aparece.
+        suite = payload.get("suite_status")
+        if suite:
+            a.suite_runs.append(SuiteRun(quando=ts, status=suite))
         try:
             a.saved_count += int(payload.get("saved_count") or 0)
         except (TypeError, ValueError):
@@ -209,12 +219,12 @@ def _fmt_dur(seconds: float) -> str:
     return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
 
 
-def build_html(day: date, agg: dict, quota=None, procedencia=None) -> tuple[str, str]:
+def build_html(day: date, agg: dict, quota=None, procedencia=None, suite=None) -> tuple[str, str]:
     """Monta (subject, html) do email consolidado. Sempre renderiza (mesmo vazio).
 
     `quota` (QuotaInfo | None) acrescenta a seção de cota da API-Football; None omite a
-    seção, mantendo o email de antes intacto. `procedencia` (ProcedenciaInfo | None) faz o
-    mesmo para a seção de deriva de imagem dbt.
+    seção, mantendo o email de antes intacto. `procedencia` (ProcedenciaInfo | None) e
+    `suite` (SuiteInfo | None, o resto da suíte dbt) fazem o mesmo para as suas seções.
     """
     total_runs = sum(a.total for a in agg.values())
     total_ok = sum(a.success for a in agg.values())
@@ -242,6 +252,11 @@ def build_html(day: date, agg: dict, quota=None, procedencia=None) -> tuple[str,
     # [GUARDA]: se não subir para o assunto, é alarme mudo.
     if procedencia is not None and procedencia.alarme:
         flags.append("[DERIVA]")
+    # Mesma regra do [GUARDA]: a FASE 5 nao derruba workflow nenhum, entao sem token no
+    # assunto ela seria alarme mudo. So ERROR>=1 acende — WARN e o estado permanente da
+    # suite (orfaos conhecidos) e piscar todo dia treinaria todo mundo a ignorar o e-mail.
+    if suite is not None and suite.alarme:
+        flags.append("[SUITE]")
     subject = f"{''.join(flags) or '[OK]'} Resumo diario de workflows — {day.isoformat()}"
 
     resumo_guardas = (
@@ -324,12 +339,18 @@ def build_html(day: date, agg: dict, quota=None, procedencia=None) -> tuple[str,
     # Seções extras entram aqui, uma função por seção. Guardas antes da cota: guarda
     # vermelha é acionável hoje, cota é acompanhamento.
     guardas_section = build_guardas_section(vermelhas)
-    # Procedência logo após guardas e antes da cota: deriva de imagem é a causa que desliga
-    # a própria fase de guardas, então lê-se uma na sequência da outra.
+    # Suíte logo após as guardas: são os dois resultados de `dbt test` do mesmo job, e a
+    # pergunta que uma deixa em aberto ("passou o resto?") é a que a outra responde.
+    suite_section = build_suite_section(suite)
+    # Procedência depois das duas e antes da cota: deriva de imagem é a causa que desliga as
+    # DUAS fases de teste (elas rodam da mesma imagem), então lê-se na sequência delas.
     procedencia_section = build_procedencia_section(procedencia)
     quota_section = build_quota_section(quota, day)
 
-    html = head + table + fail_section + guardas_section + procedencia_section + quota_section + "</div>"
+    html = (
+        head + table + fail_section + guardas_section + suite_section
+        + procedencia_section + quota_section + "</div>"
+    )
     return subject, html
 
 
@@ -372,7 +393,11 @@ def run_daily_summary(target_date: date | None = None) -> dict:
     # 2 jobs + 1 GET no GitHub, 1×/dia. Também nunca levanta.
     procedencia = collect_procedencia()
 
-    subject, html = build_html(day, agg, quota, procedencia)
+    # 1 listagem de execuções do Cloud Run + 1 leitura do Cloud Logging, 1×/dia. Nunca
+    # levanta; sem execução da fase 5 no dia devolve None e a seção some.
+    suite = collect_suite([r for a in agg.values() for r in a.suite_runs], start_utc, end_utc)
+
+    subject, html = build_html(day, agg, quota, procedencia, suite)
 
     if os.getenv("SUMMARY_DRY_RUN"):
         logger.info(f"[DRY_RUN] email NAO enviado. subject={subject!r}")
