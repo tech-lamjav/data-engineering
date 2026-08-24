@@ -228,14 +228,52 @@ load_env() {
     print_info "Variáveis de ambiente carregadas com sucesso"
 }
 
-# Converte variáveis de ambiente para formato --set-env-vars
-build_env_vars() {
-    # Apenas config NÃO sensível. As chaves de API vão via Secret Manager (build_secrets).
-    ENV_VARS="GCS_BUCKET_NAME=${GCS_BUCKET_NAME}"
-    ENV_VARS="${ENV_VARS},GCP_PROJECT_ID=${GCP_PROJECT_ID}"
-    ENV_VARS="${ENV_VARS},SEASON=${SEASON}"
-    ENV_VARS="${ENV_VARS},LOG_LEVEL=${LOG_LEVEL}"
-    echo "$ENV_VARS"
+# Ponto ÚNICO de montagem do --set-env-vars de runtime dos 29 serviços.
+#
+# Apenas config NÃO sensível. As chaves de API vão via Secret Manager (build_secrets).
+#
+# As ramificações do deploy_service() divergem de propósito, e a divergência está
+# preservada — mas num lugar só:
+#
+#   notify-execution               só o entry point; não lê GCS, BigQuery nem SEASON
+#   sync-bq-to-postgres            projeto + log (src.config e o logger precisam), sem
+#   daily-summary                  bucket nem SEASON: nenhum dos dois extrai nada
+#   os outros 26 (extractors)      a configuração de extração completa
+#
+# ⚠️ Variável que vale para TODOS os serviços entra no bloco COMUM do fim — uma
+# edição, não quatro. Foi "esquecer uma ramificação" que deixou o fix do de-vig 2
+# dias fora de produção; é a mesma classe de falha que o carimbo de procedência dos
+# serviços existe para pegar (docs/adr/0001-carimbo-de-procedencia-dos-servicos-cloud-run.md).
+build_service_env_vars() {
+    local service_name=$1
+    local entry_point=$2
+    local vars
+
+    case "$service_name" in
+        notify-execution)
+            vars="GOOGLE_FUNCTION_TARGET=${entry_point}"
+            ;;
+        sync-bq-to-postgres|daily-summary)
+            vars="GCP_PROJECT_ID=${GCP_PROJECT_ID},LOG_LEVEL=${LOG_LEVEL}"
+            ;;
+        *)
+            vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME}"
+            vars="${vars},GCP_PROJECT_ID=${GCP_PROJECT_ID}"
+            vars="${vars},SEASON=${SEASON}"
+            vars="${vars},LOG_LEVEL=${LOG_LEVEL}"
+            vars="${vars},GOOGLE_FUNCTION_TARGET=${entry_point}"
+            ;;
+    esac
+
+    # Bloco COMUM: o que vale para os 29, independente da ramificação. Vazio hoje —
+    # este ticket é prefactor puro e não introduz variável nenhuma. É aqui que as
+    # quatro do carimbo (PROCEDENCIA_*) entram.
+    local comuns=""
+    if [ -n "$comuns" ]; then
+        vars="${vars},${comuns}"
+    fi
+
+    echo "$vars"
 }
 
 # Monta o --set-secrets das chaves de API (lidas do Secret Manager em runtime, não em texto puro).
@@ -316,10 +354,9 @@ deploy_service() {
     echo "  - src/: $(test -d "$TEMP_DIR/src" && echo "✓" || echo "✗")"
     echo "  - scripts/: $(test -d "$TEMP_DIR/scripts" && echo "✓" || echo "✗")"
     
-    # Constrói env vars
+    # Constrói env vars — todas as ramificações abaixo consomem este mesmo $ENV_VARS
     local ENTRY_POINT=$(get_entry_point "$SERVICE_NAME")
-    local ENV_VARS=$(build_env_vars)
-    ENV_VARS="${ENV_VARS},GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}"
+    local ENV_VARS=$(build_service_env_vars "$SERVICE_NAME" "$ENTRY_POINT")
 
     # Faz deploy
     print_info "Executando gcloud run deploy..."
@@ -341,7 +378,7 @@ deploy_service() {
             --memory "$MEMORY" \
             --cpu "$CPU" \
             --timeout "$TIMEOUT" \
-            --set-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
+            --set-env-vars "$ENV_VARS" \
             --set-secrets "GMAIL_USER=GMAIL_USER:latest,GMAIL_APP_PASSWORD=GMAIL_APP_PASSWORD:latest,NOTIFY_EMAIL=NOTIFY_EMAIL:latest" \
             --project "$GCP_PROJECT_ID" || DEPLOY_EXIT_CODE=$?
     elif [ "$SERVICE_NAME" = "sync-bq-to-postgres" ]; then
@@ -361,7 +398,7 @@ deploy_service() {
             --cpu "$CPU" \
             --timeout "900" \
             --max-instances "1" \
-            --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},LOG_LEVEL=${LOG_LEVEL}" \
+            --set-env-vars "$ENV_VARS" \
             --set-build-env-vars "GOOGLE_RUNTIME_VERSION=3.13,GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
             --set-secrets "SUPABASE_PG_URL_PRD=SUPABASE_PG_URL_PRD:latest,SUPABASE_PG_URL_DEV=SUPABASE_PG_URL_DEV:latest" \
             --project "$GCP_PROJECT_ID" || DEPLOY_EXIT_CODE=$?
@@ -391,7 +428,7 @@ deploy_service() {
             --memory "$MEMORY" \
             --cpu "$CPU" \
             --timeout "600" \
-            --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},LOG_LEVEL=${LOG_LEVEL}" \
+            --set-env-vars "$ENV_VARS" \
             --set-build-env-vars "GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
             --set-secrets "$SUMMARY_SECRETS" \
             --project "$GCP_PROJECT_ID" || DEPLOY_EXIT_CODE=$?
