@@ -596,6 +596,56 @@ main:
                         message: "Starting Cloud Run Job execution"
                         job_name: ${job_name}
 
+            # ------------------------------------------------------------------
+            # O SEED DO DENOMINADOR CONGELADO (AE #105, ADR 0005).
+            #
+            # `dbt run` NAO constroi seed — ele so constroi modelo. Sem este passo a tabela
+            # `futebol_p95_nota_contexto` nunca e atualizada a partir do CSV versionado, e o
+            # `fact_value_funnel` normaliza a nota por um denominador velho, em silencio:
+            # nenhuma guarda de esquema acende, porque a tabela existe e tem linhas.
+            #
+            # FICA SO NO DIARIO. O CSV muda por commit — uma remedicao do p95 —, nunca a cada
+            # 15 minutos; por-lo tambem no workflow_futebol_odds.yml pagaria carga por nada.
+            #
+            # ANTES do `dbt run`, porque o funil LE o seed.
+            #
+            # Falha aqui NAO cai no recovery com --full-refresh do bloco de fora, e e de
+            # proposito: seed velho e denominador velho, nao e drift table<->view, e
+            # reconstruir o DAG inteiro seria a cura errada para a doenca errada. Ela marca
+            # PARTIAL_FAILURE e o rebuild segue com o denominador que ja estava no BigQuery.
+            # ------------------------------------------------------------------
+            - execute_seed_job:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "seed", "--select", "futebol_p95_nota_contexto", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: seed_result
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+                except:
+                    as: e_seed
+                    steps:
+                    - log_seed_error:
+                        call: sys.log
+                        args:
+                            severity: WARNING
+                            data:
+                                message: "dbt seed (futebol_p95_nota_contexto) falhou — o funil vai normalizar pelo denominador que ja estava no BigQuery"
+                                error: ${e_seed.message}
+                    - mark_seed_failed:
+                        assign:
+                        - workflow_status: "PARTIAL_FAILURE"
+                        - failed_services: ${list.concat(failed_services, ["dbt-futebol:seed"])}
+
             - execute_cloud_run_job:
                 try:
                     call: googleapis.run.v2.projects.locations.jobs.run
