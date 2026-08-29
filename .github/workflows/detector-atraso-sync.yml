@@ -1,0 +1,81 @@
+# Detector de atraso do sync BigQuery -> Postgres de serving.
+#
+# Pergunta, de hora em hora: o Postgres que o app lê tem o dado que o BigQuery já
+# produziu? Compara, por tabela, o `modified` do BQ com o `last_synced_bq_modified_time`
+# gravado em `futebol._sync_state`, em PRD e DEV.
+#
+# POR QUE ESTE DETECTOR VIVE AQUI, e não num Cloud Run + Cloud Scheduler:
+# ele existe para enxergar o sync parado, e o sync é Cloud Run disparado por Workflow.
+# Vigia hospedado na infra que vigia morre junto com ela. Mesma razão pela qual o
+# detector de deriva de imagem do `analytics-engineering` vive fora da imagem dbt.
+# Ver docs/adr/0002.
+#
+# POR QUE O E-MAIL SAI DO SCRIPT, e não da notificação nativa do Actions:
+# notificação de workflow agendado vai APENAS para quem criou o workflow — o time não
+# recebe nada — e vermelho persistente gera uma notificação por execução, ~24/dia. O
+# incidente de 26–29/08/2026 durou 3 dias porque o alarme que existia chegava todo dia e
+# virou papel de parede. O script manda e-mail só na TRANSIÇÃO de estado, com um lembrete
+# a cada 24h enquanto o vermelho durar.
+#
+# O job também sai com código 1 quando há atraso: o e-mail é o canal, mas job verde com
+# serving parado seria mentira, e a aba Actions é onde alguém confere o histórico.
+#
+# ⚠️ SECRETS NECESSÁRIOS neste repositório (nenhum existe hoje — este é o primeiro
+# workflow do repo):
+#   BIGQUERY_SA_KEY        JSON da SA de leitura (o AE já usa uma: github-actions-dbt-docs@).
+#                          Precisa só de bigquery.tables.get no dataset `futebol`.
+#   SUPABASE_PG_URL_PRD_RO papel `detector_atraso` — porta 5432, NUNCA 6543.
+#   SUPABASE_PG_URL_DEV_RO idem no DEV.
+#   GMAIL_USER / GMAIL_APP_PASSWORD / NOTIFY_EMAIL   os mesmos do resumo diário.
+#
+# ⚠️ As URLs de Postgres aqui são do papel `detector_atraso` (só enxerga `_sync_state` e
+# `_detector_state`), NÃO as de escrita do sync. Este repositório é PÚBLICO: secret de
+# escrita em produção não tem por que existir aqui.
+
+name: detector de atraso do sync
+
+on:
+  schedule:
+    # Minuto 40: fora do :00 (sync horário), do :20 (deriva de imagem no AE) e dos ciclos
+    # */15 dos workflows de odds. Dá ~40 min para o sync da hora ter terminado.
+    - cron: '40 * * * *'
+  workflow_dispatch:
+
+jobs:
+  atraso:
+    name: atraso do sync (prd + dev)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Dependências
+        # As do próprio serviço de sync, de propósito: o detector lê as mesmas tabelas com
+        # as mesmas libs, e versões divergentes aqui seriam uma diferença invisível entre
+        # o que o detector vê e o que o sync faz.
+        run: pip install -r cloud_run/sync_bq_to_postgres/requirements.txt
+
+      - name: Autenticar no GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.BIGQUERY_SA_KEY }}
+
+      - name: Medir atraso
+        env:
+          BIGQUERY_PROJECT_ID: smartbetting-dados
+          GCP_PROJECT_ID: smartbetting-dados
+          SUPABASE_PG_URL_PRD_RO: ${{ secrets.SUPABASE_PG_URL_PRD_RO }}
+          SUPABASE_PG_URL_DEV_RO: ${{ secrets.SUPABASE_PG_URL_DEV_RO }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+        run: python scripts/detector_atraso_sync.py

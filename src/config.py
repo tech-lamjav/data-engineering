@@ -1,4 +1,5 @@
 """Configurações centralizadas do projeto."""
+import logging
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -682,6 +683,31 @@ def get_pg_url(env: str) -> str:
             f"Settar env var (porta 5432, NÃO 6543 pgbouncer)."
         )
     return url
+
+
+def get_pg_url_ro(env: str) -> str:
+    """URL do papel de leitura usado pelos detectores (`SUPABASE_PG_URL_<ENV>_RO`).
+
+    Existe separada porque o detector de atraso roda no GitHub Actions: a credencial vira
+    secret de repositório PÚBLICO, e não há razão para expor ali a URL de escrita do banco
+    de produção. O papel `detector_atraso` só enxerga `_sync_state` e sua própria tabela de
+    estado.
+
+    Sem a variável RO, cai na URL de escrita — conveniência para rodar local com o .env que
+    já existe. O aviso é deliberado: em produção esse fallback é um degrau de privilégio
+    silencioso, e ninguém deveria descobrir isso pelo comportamento.
+    """
+    env = (env or "prd").lower()
+    url = os.getenv(f"SUPABASE_PG_URL_{env.upper()}_RO")
+    if url:
+        return url
+    # logging da stdlib, não `src.utils.logger`: aquele importa src.config e o import
+    # circular quebraria TODO extractor.
+    logging.getLogger(__name__).warning(
+        f"SUPABASE_PG_URL_{env.upper()}_RO não configurado; caindo na URL de escrita. "
+        f"Aceitável em execução local, NÃO no GitHub Actions."
+    )
+    return get_pg_url(env)
 
 # Ordem deliberada: dimensões primeiro, depois fatos, depois marts derivadas.
 # Reduz janela de inconsistência cross-table durante o sync.

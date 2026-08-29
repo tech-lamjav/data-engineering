@@ -1,0 +1,76 @@
+# Checa se o mapa commitado de RPCs de serving ainda bate com o PRD.
+#
+# POR QUE ESTE CHECK EXISTE:
+# o mapa RPC×tabela era mantido à mão em dois lugares e os dois derivaram. Em 29/08/2026 o
+# `analytics-engineering/dbt_futebol/docs/contrato-serving-rpcs.md` dizia "2 RPCs cada"
+# para as tabelas de premissas, quando o PRD tinha 4 lendo a `premissas_ou`; e o
+# `prop-play-predictor/docs/futebol-prod-deploy.sql` listava 18 das 20 RPCs vivas. Gerar
+# não basta — um arquivo gerado e nunca comparado deriva igual. O valor está no diff.
+#
+# POR QUE SEMANAL, e não de hora em hora como o detector de atraso:
+# RPC muda raro, e a diferença aqui não é incidente: é registro desatualizado. Cadência
+# horária só produziria a mesma notificação 168×/semana até virar ruído.
+#
+# POR QUE A NOTIFICAÇÃO NATIVA DO ACTIONS SERVE AQUI (e não serve no detector de atraso):
+# esta falha é acionável e some assim que alguém regenera e commita — não fica vermelha por
+# dias como um sync parado. O limite conhecido continua valendo: a notificação de workflow
+# agendado vai só para quem criou/editou o cron.
+#
+# ⚠️ SECRET NECESSÁRIO: SUPABASE_PG_URL_PRD_RO (papel `detector_atraso`, porta 5432).
+
+name: contrato de serving
+
+on:
+  schedule:
+    # Segunda 09:40 UTC (06:40 BRT) — antes do expediente, e fora do minuto :00.
+    - cron: '40 9 * * 1'
+  workflow_dispatch:
+  pull_request:
+    # Num PR, só quando o próprio mapa ou o gerador mudam: é onde a regeneração à mão
+    # entra, e onde faz sentido conferir que ela foi feita de verdade.
+    paths:
+      - 'docs/contrato-serving-gerado.md'
+      - 'src/monitoring/contrato_serving.py'
+      - 'scripts/gera_contrato_serving.py'
+
+jobs:
+  contrato:
+    name: mapa commitado x PRD
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Sem o secret não há como comparar, e o job falharia por falta de credencial com uma
+    # cara idêntica à de deriva real de contrato — vermelho que mente. Acontece em PR de
+    # fork e enquanto o secret não existir.
+    #
+    # ⚠️ A guarda mora aqui e não num `if:` de job: o contexto `secrets` NÃO é permitido em
+    # `jobs.<id>.if` (só `github`, `needs`, `vars`, `inputs`), e o workflow inteiro vira
+    # inválido — falha em 0s, sem job e sem log. Aconteceu no run 33268412215. Em
+    # `jobs.<id>.env` o `secrets` é permitido, e o `if:` de STEP enxerga `env`.
+    env:
+      TEM_CREDENCIAL: ${{ secrets.SUPABASE_PG_URL_PRD_RO != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Dependências
+        run: pip install -r cloud_run/sync_bq_to_postgres/requirements.txt
+
+      - name: Sem credencial, sem comparação
+        if: env.TEM_CREDENCIAL != 'true'
+        run: |
+          echo "SUPABASE_PG_URL_PRD_RO indisponível (PR de fork, ou secret ausente)."
+          echo "Pulando: um vermelho aqui seria indistinguível de deriva real de contrato."
+
+      - name: Comparar
+        if: env.TEM_CREDENCIAL == 'true'
+        env:
+          CONTRATO_CHECK: '1'
+          SUPABASE_PG_URL_PRD_RO: ${{ secrets.SUPABASE_PG_URL_PRD_RO }}
+        run: python scripts/gera_contrato_serving.py
