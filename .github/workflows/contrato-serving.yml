@@ -37,12 +37,18 @@ jobs:
   contrato:
     name: mapa commitado x PRD
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # Sem o secret não há como comparar, e o job falharia por falta de credencial com uma
     # cara idêntica à de deriva real de contrato — vermelho que mente. Acontece em PR de
     # fork e enquanto o secret não existir.
-    if: ${{ github.event_name != 'pull_request' || secrets.SUPABASE_PG_URL_PRD_RO != '' }}
-    permissions:
-      contents: read
+    #
+    # ⚠️ A guarda mora aqui e não num `if:` de job: o contexto `secrets` NÃO é permitido em
+    # `jobs.<id>.if` (só `github`, `needs`, `vars`, `inputs`), e o workflow inteiro vira
+    # inválido — falha em 0s, sem job e sem log. Aconteceu no run 33268412215. Em
+    # `jobs.<id>.env` o `secrets` é permitido, e o `if:` de STEP enxerga `env`.
+    env:
+      TEM_CREDENCIAL: ${{ secrets.SUPABASE_PG_URL_PRD_RO != '' }}
 
     steps:
       - name: Checkout
@@ -56,7 +62,14 @@ jobs:
       - name: Dependências
         run: pip install -r cloud_run/sync_bq_to_postgres/requirements.txt
 
+      - name: Sem credencial, sem comparação
+        if: env.TEM_CREDENCIAL != 'true'
+        run: |
+          echo "SUPABASE_PG_URL_PRD_RO indisponível (PR de fork, ou secret ausente)."
+          echo "Pulando: um vermelho aqui seria indistinguível de deriva real de contrato."
+
       - name: Comparar
+        if: env.TEM_CREDENCIAL == 'true'
         env:
           CONTRATO_CHECK: '1'
           SUPABASE_PG_URL_PRD_RO: ${{ secrets.SUPABASE_PG_URL_PRD_RO }}
