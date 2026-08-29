@@ -152,4 +152,18 @@ Materialização das marts do BigQuery no Postgres de serving (Supabase), por es
 Condição que corta etapas downstream quando não há novidade ou o passo anterior falhou (ex.: dbt só roda se algo foi salvo; sync PRD só roda se o dbt passou).
 
 **PARTIAL_FAILURE**:
-Desfecho de workflow em que serviços falharam mas a execução termina "SUCCEEDED" no GCP. A detecção real é pelo resumo diário (1 e-mail/dia) e pelos logs de WARNING — nunca pelo status do workflow.
+Desfecho de workflow em que serviços falharam mas a execução termina "SUCCEEDED" no GCP — nunca confiar no status do workflow. A detecção é pelo resumo diário (1 e-mail/dia) e pelos logs de WARNING; para o sync especificamente, também pelo detector de atraso, que fala por transição de estado e não por dia.
+
+**Parity check**:
+Conferência pré-flight do sync que compara coluna a coluna o BigQuery e o Postgres antes de qualquer TRUNCATE. Protege a integridade da cópia, não os leitores: mudança de grão passa por ele inteira. Deriva de coluna faz o sync abortar por completo (as 22 tabelas, nos dois ambientes) até o DDL correspondente ser aplicado no Postgres.
+
+**Detector**:
+Vigia que roda **fora** do sistema que observa, para enxergar a classe de falha que apaga o próprio alarme (imagem velha que não roda a guarda nova; infra parada que também para o vigia). Mora no GitHub Actions, nunca no GCP. Ver `docs/adr/0002`.
+_Avoid_: guarda (é outra coisa, abaixo)
+
+**Guarda**:
+Teste de dado do dbt (`tag:guarda`), que roda **de dentro** da mesma imagem que protege e reporta sem derrubar o produto. Complementar ao detector, não sinônimo: guarda vê dado errado, detector vê o sistema parado.
+
+**Atraso do sync**:
+Há quanto tempo o BigQuery está à frente do Postgres, por tabela. Zero quando não há nada pendente — o que o torna independente da cadência de cada tabela, ao contrário da idade da última sincronização. É o sinal do detector de atraso, com limiar global de 3h.
+_Avoid_: frescor, idade do dado (medem outra coisa e reintroduzem limiar por tabela)
