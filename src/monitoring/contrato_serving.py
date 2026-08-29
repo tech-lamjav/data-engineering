@@ -36,8 +36,17 @@ de mexer no mart.
 **Limites conhecidos.** A associação coluna→tabela é por nome: uma função que lê duas
 tabelas com uma coluna homônima (`season`, `fixture_id`) lista a coluna nas duas. E
 referência em literal de texto (`'linha_subindo'` entre aspas) não conta como leitura —
-é a diferença entre quebrar e não quebrar num `DROP COLUMN`. A suposição de **grão** não
-está aqui; mora em `analytics-engineering/dbt_futebol/docs/contrato-serving-rpcs.md`.
+é a diferença entre quebrar e não quebrar num `DROP COLUMN`.
+
+⚠️ **O limite que erra para o lado perigoso:** só contam referências QUALIFICADAS
+(`alias.coluna`). Uma função de tabela única pode escrever `select linha_subindo from
+futebol.int_futebol_premissas_ou` sem alias — legal mesmo com `search_path` vazio, que
+obriga a qualificar *tabelas*, não *colunas* — e aparecer aqui como leitora sem nenhuma
+coluna. Ler "_nenhuma coluna nomeada_" como "não lê nada" é o erro que este doc existe
+para impedir: quando aparecer, abrir a função. Hoje não há nenhuma ocorrência.
+
+A suposição de **grão** não está aqui; mora em
+`analytics-engineering/dbt_futebol/docs/contrato-serving-rpcs.md`.
 """
 
 
@@ -60,7 +69,10 @@ def coleta_mapa(pg_conn, schema: str, tabelas) -> dict:
             select p.oid::regprocedure::text, pg_get_functiondef(p.oid)
             from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
-            where n.nspname = 'public'
+            -- prokind='f' (função comum): pg_get_functiondef LEVANTA em agregado ('a') e
+            -- window ('w'), e derrubaria o gerador inteiro por causa de uma entrada que
+            -- nem é RPC de serving.
+            where n.nspname = 'public' and p.prokind = 'f'
             order by 1
             """
         )

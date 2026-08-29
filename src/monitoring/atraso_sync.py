@@ -64,13 +64,32 @@ class Atraso:
     """Quanto tempo o BQ está à frente do Postgres, para uma tabela."""
 
     tabela: str
-    bq_modified: datetime
+    bq_modified: datetime | None
     sincronizado: datetime | None  # None = tabela nunca sincronizada
     atraso: timedelta
+    # Falha ao MEDIR esta tabela (sumiu do BQ, foi renomeada, IAM). Vira vermelho em vez de
+    # derrubar a execução: um detector que morre porque uma tabela sumiu deixa de anunciar
+    # o apagão que ele existe para anunciar.
+    erro: str | None = None
 
     @property
     def vermelho(self) -> bool:
-        return self.atraso >= LIMIAR_ATRASO
+        return self.erro is not None or self.atraso >= LIMIAR_ATRASO
+
+
+@dataclass(frozen=True)
+class Avaliacao:
+    """O que se sabe de um ambiente neste ciclo — inclusive por que ele vai falar.
+
+    O e-mail é montado a partir disto, e não só das tabelas vermelhas: sem o motivo e o
+    início do episódio, uma recuperação em PRD desaparece quando o DEV ainda está vermelho,
+    e a transição é consumida sem ninguém ser avisado.
+    """
+
+    env: str
+    atrasos: list
+    motivo: str | None  # 'abriu' | 'recuperou' | 'lembrete' | None
+    desde: datetime | None  # início do episódio (para a duração na recuperação)
 
 
 @dataclass(frozen=True)
@@ -111,8 +130,18 @@ def mede_ambiente(bq_client, pg_conn, dataset: str, schema: str, tabelas, agora)
 
     atrasos = []
     for tabela in tabelas:
-        # get_table() lê metadado: não escaneia bytes e não custa nada.
-        bq_modified = bq_client.get_table(f"{dataset}.{tabela}").modified
+        try:
+            # get_table() lê metadado: não escaneia bytes e não custa nada.
+            bq_modified = bq_client.get_table(f"{dataset}.{tabela}").modified
+        except Exception as e:
+            # Por tabela, nunca abortando o ciclo: uma tabela acrescentada à allowlist antes
+            # do modelo existir, ou renomeada no BQ, derrubaria a medição dos OUTROS 21 e o
+            # detector ficaria mudo justamente enquanto alguém mexe no pipeline.
+            logger.error(f"{tabela}: falha ao ler metadado do BQ: {type(e).__name__}: {e}")
+            atrasos.append(
+                Atraso(tabela, None, sincronizados.get(tabela), timedelta(0), erro=type(e).__name__)
+            )
+            continue
         atrasos.append(calcula_atraso(tabela, bq_modified, sincronizados.get(tabela), agora))
     return atrasos
 
@@ -180,66 +209,107 @@ def _fmt_dur(delta: timedelta) -> str:
     return f"{horas}h{minutos:02d}m" if horas else f"{minutos}min"
 
 
-def monta_email(por_ambiente: dict, motivos: dict, agora: datetime) -> tuple[str, str]:
-    """Assunto + HTML. O assunto carrega ambiente e duração — quem lê decide sem abrir."""
-    vermelhos = {
-        env: [a for a in atrasos if a.vermelho] for env, atrasos in por_ambiente.items()
-    }
-    vermelhos = {env: v for env, v in vermelhos.items() if v}
+def _situacao(a) -> str:
+    if a.erro:
+        return f"falha ao medir ({a.erro})"
+    return "nunca sincronizada" if a.sincronizado is None else "atrás do BigQuery"
 
-    if vermelhos:
-        pior = max((a.atraso for v in vermelhos.values() for a in v), default=timedelta(0))
-        envs = ", ".join(sorted(vermelhos))
-        token = "[ATRASO]" if "lembrete" not in motivos.values() else "[ATRASO · LEMBRETE]"
-        subject = f"{token} Sync futebol atrasado — {envs} há {_fmt_dur(pior)}"
-    else:
-        subject = "[RECUPERADO] Sync futebol voltou a acompanhar o BigQuery"
 
+def _tabela_html(avaliacao) -> str:
     linhas = []
-    for env in sorted(por_ambiente):
-        for a in sorted(por_ambiente[env], key=lambda x: x.atraso, reverse=True):
-            if not a.vermelho:
-                continue
-            visto = "nunca sincronizada" if a.sincronizado is None else "atrás do BigQuery"
-            linhas.append(
-                "<tr>"
-                + _cell(escape(env))
-                + _cell(escape(a.tabela))
-                + _cell(_fmt_dur(a.atraso), align="right", color=RED)
-                + _cell(escape(visto), color=MUTED)
-                + "</tr>"
+    for a in sorted(avaliacao.atrasos, key=lambda x: x.atraso, reverse=True):
+        if not a.vermelho:
+            continue
+        linhas.append(
+            "<tr>"
+            + _cell(escape(a.tabela))
+            + _cell("—" if a.erro else _fmt_dur(a.atraso), align="right", color=RED)
+            + _cell(escape(_situacao(a)), color=MUTED)
+            + "</tr>"
+        )
+    return (
+        '<table style="border-collapse:collapse;font-family:system-ui,sans-serif;'
+        'font-size:13px;margin-bottom:16px">'
+        '<tr style="background:#f6f8fa">'
+        + _cell("<strong>tabela</strong>")
+        + _cell("<strong>atraso</strong>", align="right")
+        + _cell("<strong>situação</strong>")
+        + "</tr>"
+        + "".join(linhas)
+        + "</table>"
+    )
+
+
+def monta_email(avaliacoes, agora: datetime) -> tuple[str, str]:
+    """Assunto + HTML, montados a partir das TRANSIÇÕES, não do vermelho corrente.
+
+    Montar a partir do vermelho corrente perde a recuperação de um ambiente enquanto o
+    outro segue vermelho — e como o estado é gravado de qualquer jeito, a transição é
+    consumida e nunca mais será anunciada. Um ciclo em que o PRD volta e o DEV continua
+    caído precisa dizer as duas coisas.
+    """
+    falantes = [a for a in avaliacoes if a.motivo]
+    if not falantes:
+        raise ValueError("monta_email chamado sem nenhuma transição")
+
+    atrasados = [a for a in falantes if a.motivo in ("abriu", "lembrete")]
+    recuperados = [a for a in falantes if a.motivo == "recuperou"]
+
+    partes_assunto = []
+    if atrasados:
+        pior = max(
+            (t.atraso for a in atrasados for t in a.atrasos if t.vermelho),
+            default=timedelta(0),
+        )
+        envs = ", ".join(sorted(a.env for a in atrasados))
+        # "abriu" domina "lembrete": num ciclo misto o que importa é o episódio novo.
+        token = (
+            "[ATRASO · LEMBRETE]"
+            if all(a.motivo == "lembrete" for a in atrasados)
+            else "[ATRASO]"
+        )
+        partes_assunto.append(f"{token} Sync futebol atrasado — {envs} há {_fmt_dur(pior)}")
+    if recuperados:
+        envs = ", ".join(sorted(a.env for a in recuperados))
+        if atrasados:
+            partes_assunto.append(f"{envs} recuperado")
+        else:
+            partes_assunto.append(
+                f"[RECUPERADO] Sync futebol voltou a acompanhar o BigQuery — {envs}"
             )
 
-    if linhas:
-        corpo = (
-            '<p>O BigQuery produziu dado que o Postgres de serving não recebeu. O app '
+    subject = " · ".join(partes_assunto)
+
+    corpo = []
+    for a in sorted(atrasados, key=lambda x: x.env):
+        corpo.append(f'<h3 style="margin:16px 0 6px">{escape(a.env)}</h3>')
+        corpo.append(
+            "<p>O BigQuery produziu dado que o Postgres de serving não recebeu. O app "
             "continua respondendo — com o dado da última sincronização bem-sucedida.</p>"
-            '<table style="border-collapse:collapse;font-family:system-ui,sans-serif;'
-            'font-size:13px">'
-            '<tr style="background:#f6f8fa">'
-            + _cell("<strong>ambiente</strong>")
-            + _cell("<strong>tabela</strong>")
-            + _cell("<strong>atraso</strong>", align="right")
-            + _cell("<strong>situação</strong>")
-            + "</tr>"
-            + "".join(linhas)
-            + "</table>"
-            "<p style=\"color:#57606a;font-size:12px\">Limiar: "
-            f"{_fmt_dur(LIMIAR_ATRASO)}. Onde olhar: execuções do "
-            "<code>workflow-futebol-sync</code> e logs do serviço "
+        )
+        corpo.append(_tabela_html(a))
+
+    for a in sorted(recuperados, key=lambda x: x.env):
+        duracao = f" Ficou atrasado por {_fmt_dur(agora - a.desde)}." if a.desde else ""
+        corpo.append(
+            f'<h3 style="margin:16px 0 6px">{escape(a.env)} — recuperado</h3>'
+            f"<p>Todas as tabelas da allowlist voltaram a acompanhar o BigQuery.{duracao}"
+            " Nenhuma ação necessária.</p>"
+        )
+
+    if atrasados:
+        corpo.append(
+            f'<p style="color:#57606a;font-size:12px">Limiar: {_fmt_dur(LIMIAR_ATRASO)}. '
+            "Onde olhar: execuções do <code>workflow-futebol-sync</code> e logs do serviço "
             "<code>sync-bq-to-postgres</code> (o abort por deriva de schema aparece como "
             "ERROR sem truncar nada).</p>"
-        )
-    else:
-        corpo = (
-            "<p>Todas as tabelas da allowlist voltaram a acompanhar o BigQuery. "
-            "Nenhuma ação necessária.</p>"
         )
 
     html = (
         '<div style="font-family:system-ui,sans-serif;font-size:14px">'
-        f"<h2 style=\"margin:0 0 12px\">Detector de atraso do sync</h2>{corpo}"
-        f'<p style="color:#57606a;font-size:12px">Medido em '
+        '<h2 style="margin:0 0 12px">Detector de atraso do sync</h2>'
+        + "".join(corpo)
+        + f'<p style="color:#57606a;font-size:12px">Medido em '
         f'{escape(agora.isoformat(timespec="seconds"))} (UTC).</p></div>'
     )
     return subject, html
@@ -297,6 +367,7 @@ def roda_detector(agora: datetime | None = None) -> dict:
 
     por_ambiente: dict[str, list[Atraso]] = {}
     motivos: dict[str, str] = {}
+    avaliacoes: list[Avaliacao] = []
     pendentes = []
 
     # O finally cobre a MEDIÇÃO e o envio juntos: se o segundo ambiente levantar, as
@@ -314,6 +385,9 @@ def roda_detector(agora: datetime | None = None) -> dict:
                 pendentes.append((conn, schema, novo))
                 if motivo:
                     motivos[env] = motivo
+                # `anterior.desde` e não `novo.desde`: na recuperação o novo estado já
+                # reescreveu o marco, e o que o e-mail precisa é quanto durou o episódio.
+                avaliacoes.append(Avaliacao(env, atrasos, motivo, anterior.desde))
                 logger.info(
                     f"{env}: {sum(1 for a in atrasos if a.vermelho)}/{len(atrasos)} tabela(s) "
                     f"acima do limiar; estado {anterior.estado} -> {novo.estado}; "
@@ -328,7 +402,7 @@ def roda_detector(agora: datetime | None = None) -> dict:
         resultado = _monta_resultado(por_ambiente, motivos)
 
         if motivos:
-            subject, html = monta_email(por_ambiente, motivos, agora)
+            subject, html = monta_email(avaliacoes, agora)
             if os.getenv("DETECTOR_DRY_RUN"):
                 logger.info(f"[DRY_RUN] e-mail NAO enviado. subject={subject!r}")
             else:

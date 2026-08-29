@@ -6,8 +6,13 @@ só quando o estado muda. Ver src/monitoring/atraso_sync.py para o porquê de ca
 Teste local (sem enviar e-mail e sem gravar estado):
     DETECTOR_DRY_RUN=1 .venv/bin/python3 scripts/detector_atraso_sync.py
 
-Sai com 1 se houver atraso acima do limiar, para que a aba Actions também mostre vermelho
-— o e-mail é o canal principal, mas o job verde com serving parado seria mentira.
+CÓDIGO DE SAÍDA — 1 só nos ciclos que FALAM (transição ou lembrete), não em todo ciclo
+vermelho. Falhar de hora em hora enquanto o problema dura reintroduziria pela porta dos
+fundos exatamente o que o ADR 0002 recusa: o GitHub notifica por execução, então um
+vermelho de 3 dias viraria ~72 e-mails para o último committer do workflow — o mesmo papel
+de parede que fez este incidente durar. Assim, um episódio produz no máximo um job vermelho
+por dia, e a aba Actions continua registrando o momento em que algo mudou. Erro de execução
+(exit 2) é sempre vermelho: aí o detector não mediu nada e o silêncio seria cego.
 """
 import sys
 from pathlib import Path
@@ -29,7 +34,9 @@ def main():
 
     if resultado["vermelho"]:
         logger.error(f"Atraso acima do limiar: {resultado['por_ambiente']}")
-        return 1
+        # Vermelho já conhecido e já avisado: o e-mail não saiu neste ciclo, então o job
+        # também não vira vermelho. Ver o bloco CÓDIGO DE SAÍDA no topo.
+        return 1 if resultado["motivos"] else 0
 
     logger.info("Sync acompanhando o BigQuery nos dois ambientes.")
     return 0

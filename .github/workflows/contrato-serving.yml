@@ -37,6 +37,10 @@ jobs:
   contrato:
     name: mapa commitado x PRD
     runs-on: ubuntu-latest
+    # Sem o secret não há como comparar, e o job falharia por falta de credencial com uma
+    # cara idêntica à de deriva real de contrato — vermelho que mente. Acontece em PR de
+    # fork e enquanto o secret não existir.
+    if: ${{ github.event_name != 'pull_request' || secrets.SUPABASE_PG_URL_PRD_RO != '' }}
     permissions:
       contents: read
 

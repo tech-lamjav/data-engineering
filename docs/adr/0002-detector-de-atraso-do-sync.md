@@ -107,8 +107,20 @@ vira causa.
 ## Consequências
 
 - O repositório passa a ter CI. Antes não tinha nenhum.
-- Cinco secrets novos precisam existir no repo (listados no cabeçalho do workflow). Enquanto não
-  existirem, o job falha — visível, não silencioso.
+- **Pré-requisitos que precisam existir ANTES de o workflow entrar no master**, sob pena de o job
+  falhar de hora em hora:
+  1. `scripts/sql/detector_atraso.sql` rodado em PRD **e** DEV (cria `futebol._detector_state` e o
+     papel `detector_atraso`). Ao contrário do `_sync_state`, esta tabela **não** é auto-criada:
+     o papel do detector não tem CREATE, e dar DDL a ele anularia a razão de o papel existir.
+  2. Os cinco secrets listados no cabeçalho do workflow.
+- O código de saída do script é 1 apenas nos ciclos que **falam** (transição ou lembrete), não em
+  todo ciclo vermelho. Falhar de hora em hora enquanto o episódio dura reintroduziria pela porta
+  dos fundos a inundação que a decisão C recusa — o GitHub notifica por execução. O custo aceito é
+  que a aba Actions fica verde durante um episódio já anunciado; o estado vivo está no e-mail e no
+  log, e um episódio ainda produz um job vermelho por dia.
+- Falha ao medir UMA tabela (sumiu do BQ, renomeada, IAM) vira linha vermelha no relatório, não
+  exceção: o detector precisa sobreviver a mexidas no pipeline, que é justamente quando ele mais
+  importa.
 - O detector cobre **qualquer** causa de serving parado, não só deriva de schema: incidente de
   pooler, OOM, timeout, abort silencioso. Todas já aconteceram neste sync.
 - O que ele **não** cobre: dado que chega fresco e **errado**. Mudança de grão passa o parity e

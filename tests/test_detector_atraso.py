@@ -18,6 +18,7 @@ from src.monitoring.atraso_sync import (
     INTERVALO_LEMBRETE,
     LIMIAR_ATRASO,
     Atraso,
+    Avaliacao,
     EstadoDetector,
     calcula_atraso,
     decide_envio,
@@ -123,43 +124,92 @@ def test_verde_continuado_fica_calado():
 
 
 # --------------------------------------------------------------------------------------
-# O e-mail
+# Falha de medição não pode calar o detector
 # --------------------------------------------------------------------------------------
-def _atraso(tabela, horas, env_sincronizado=True):
-    bq = AGORA - timedelta(hours=horas)
-    return calcula_atraso(tabela, bq, AGORA - timedelta(days=3) if env_sincronizado else None, AGORA)
+def test_falha_ao_medir_uma_tabela_vira_vermelho_e_nao_excecao():
+    """Tabela some do BQ: tem que APARECER, não derrubar a medição das outras 21."""
+    a = Atraso("fact_sumida", None, None, timedelta(0), erro="NotFound")
+    assert a.vermelho
 
 
-def test_assunto_carrega_ambiente_e_duracao():
-    por_ambiente = {
-        "prd": [_atraso("int_futebol_premissas_ou", 5)],
-        "dev": [_atraso("int_futebol_premissas_ou", 5)],
-    }
-    subject, html = monta_email(por_ambiente, {"prd": "abriu"}, AGORA)
-    assert "[ATRASO]" in subject
-    assert "dev, prd" in subject
-    assert "5h00m" in subject
-    assert "int_futebol_premissas_ou" in html
+# --------------------------------------------------------------------------------------
+# O e-mail é montado das TRANSIÇÕES, não do vermelho corrente
+# --------------------------------------------------------------------------------------
+def _av(env, motivo, horas_atraso=None, desde_h=None):
+    atrasos = []
+    if horas_atraso is not None:
+        bq = AGORA - timedelta(hours=horas_atraso)
+        atrasos.append(calcula_atraso("int_futebol_premissas_ou", bq, None, AGORA))
+    else:
+        bq = AGORA - timedelta(minutes=10)
+        atrasos.append(calcula_atraso("int_futebol_premissas_ou", bq, bq, AGORA))
+    desde = AGORA - timedelta(hours=desde_h) if desde_h else None
+    return Avaliacao(env, atrasos, motivo, desde)
 
 
-def test_assunto_de_lembrete_se_distingue():
-    por_ambiente = {"prd": [_atraso("t", 30)]}
-    subject, _ = monta_email(por_ambiente, {"prd": "lembrete"}, AGORA)
+def test_recuperacao_de_um_ambiente_nao_some_com_o_outro_vermelho():
+    """O caso que a revisão pegou.
+
+    PRD volta enquanto o DEV segue caído. Montar o e-mail a partir do vermelho corrente
+    produzia um assunto só de ATRASO, e como o estado do PRD é gravado como verde de
+    qualquer jeito, a transição era CONSUMIDA — ninguém jamais saberia que o PRD voltou.
+    """
+    avaliacoes = [
+        _av("prd", "recuperou", horas_atraso=None, desde_h=40),
+        _av("dev", None, horas_atraso=40),
+    ]
+    subject, html = monta_email(avaliacoes, AGORA)
+    assert "RECUPERADO" in subject
+    assert "prd" in subject
+    assert "recuperado" in html
+    assert "40h00m" in html  # a duração do episódio que o ADR promete
+
+
+def test_ciclo_misto_diz_as_duas_coisas():
+    avaliacoes = [
+        _av("prd", "recuperou", horas_atraso=None, desde_h=10),
+        _av("dev", "abriu", horas_atraso=6),
+    ]
+    subject, _ = monta_email(avaliacoes, AGORA)
+    assert subject.startswith("[ATRASO]")
+    assert "dev" in subject
+    assert "prd recuperado" in subject
+
+
+def test_abriu_domina_lembrete_no_token_do_assunto():
+    avaliacoes = [_av("prd", "abriu", horas_atraso=4), _av("dev", "lembrete", horas_atraso=40)]
+    subject, _ = monta_email(avaliacoes, AGORA)
+    assert subject.startswith("[ATRASO]")
+    assert "LEMBRETE" not in subject
+
+
+def test_lembrete_puro_se_distingue():
+    avaliacoes = [_av("prd", "lembrete", horas_atraso=40)]
+    subject, _ = monta_email(avaliacoes, AGORA)
     assert "LEMBRETE" in subject
 
 
-def test_recuperacao_nao_lista_tabela():
-    por_ambiente = {"prd": [_atraso("t", 1)], "dev": [_atraso("t", 1)]}
-    subject, html = monta_email(por_ambiente, {"prd": "recuperou"}, AGORA)
-    assert subject.startswith("[RECUPERADO]")
-    assert "<table" not in html
+def test_ambiente_sem_transicao_nao_entra_no_corpo():
+    avaliacoes = [_av("prd", "abriu", horas_atraso=6), _av("dev", None, horas_atraso=40)]
+    _, html = monta_email(avaliacoes, AGORA)
+    assert "<h3" in html
+    assert html.count("<h3") == 1  # só o prd
 
 
-def test_tabela_verde_nao_aparece_no_corpo():
-    por_ambiente = {"prd": [_atraso("atrasada", 6), _atraso("em_dia", 1)]}
-    _, html = monta_email(por_ambiente, {"prd": "abriu"}, AGORA)
-    assert "atrasada" in html
-    assert "em_dia" not in html
+def test_sem_transicao_nenhuma_nao_monta_email():
+    import pytest
+
+    with pytest.raises(ValueError):
+        monta_email([_av("prd", None, horas_atraso=40)], AGORA)
+
+
+def test_tabela_com_erro_aparece_com_a_situacao():
+    avaliacao = Avaliacao(
+        "prd", [Atraso("fact_sumida", None, None, timedelta(0), erro="NotFound")], "abriu", None
+    )
+    _, html = monta_email([avaliacao], AGORA)
+    assert "fact_sumida" in html
+    assert "falha ao medir" in html
 
 
 def test_dataclass_atraso_e_imutavel():
