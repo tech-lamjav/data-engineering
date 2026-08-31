@@ -14,11 +14,13 @@ logger = setup_logger(__name__)
 # o que a seção de cota existe para impedir. Leitura best-effort, 1x/dia: 1 tentativa curta.
 STATUS_TIMEOUT = 15
 
-# NÃO CONFIRMADO CONTRA A API VIVA (DE#60, item 2 do escopo). Documentação de terceiros
-# sugere ~20 fixtures por chamada de `?ids=` — usado só como CANÁRIO de log (avisa quando
-# alguém manda um lote grande demais), nunca como corte silencioso, porque adivinhar um
-# teto errado e truncar esconderia fixtures inteiros do refresh sem log nenhum.
-FIXTURES_BY_IDS_SUSPECTED_CAP = 20
+# CONFIRMADO contra a API viva em 2026-08-31 (DE#60, Fase B): 20 ids passa (testado
+# exatamente no limite), 21 devolve erro explícito de parâmetro — "The Ids field does not
+# match the regular expression: [id-id-id...] or integer. Maximum of 20 ids allowed."
+# Não é estouro de cota (não passa por _raise_if_quota) nem truncamento silencioso: a API
+# rejeita a chamada inteira. Por isso get_fixtures_by_ids RECUSA lotes maiores — quem
+# precisa de mais de 20 candidatos por ciclo tem de fatiar (ver FixturesExtractor.extract_live).
+FIXTURES_BY_IDS_MAX_BATCH = 20
 
 
 class ApiFootballClient(BaseClient):
@@ -274,9 +276,13 @@ class ApiFootballClient(BaseClient):
         mundo inteiro. Quem chama filtra pelo fixture_id já conhecido (via GCSStorage, a
         partir do snapshot `_current.json`/`_live.json`).
 
-        ⚠️ NÃO CONFIRMADO CONTRA A API VIVA (DE#60, item 2 do escopo — sondar, não afirmar):
-        se um fixture some de `live=all` no instante exato do apito ou permanece por mais um
-        ciclo, e se o shape do item é idêntico ao de `get_fixtures(league, season)`.
+        CONFIRMADO em 2026-08-31 (DE#60 Fase B): shape do item idêntico ao de
+        `get_fixtures(league, season)` (`{fixture, league, teams, goals, score}`).
+
+        ⚠️ AINDA NÃO CONFIRMADO: se um fixture some de `live=all` no instante exato do apito
+        ou permanece por mais um ciclo. Não é load-bearing para a correção do desenho — a
+        seleção de candidatos (`select_live_candidates` + `get_fixtures_by_ids`) não depende
+        dessa suposição, só se aproveitaria dela para gastar menos chamadas.
 
         Returns:
             Envelope cru: {response: [{fixture, league, teams, goals, score}, ...], errors,
@@ -295,23 +301,24 @@ class ApiFootballClient(BaseClient):
         que terminou entre dois polls simplesmente volta como FT aqui, sem depender de
         `get_fixtures_live()` "segurar" o jogo por mais um ciclo após o apito.
 
-        ⚠️ NÃO CONFIRMADO CONTRA A API VIVA (DE#60, item 2 do escopo): separador do parâmetro
-        (`-` assumido aqui) e teto de fixtures por lote (documentação de terceiros sugere
-        ~20 — a confirmar, não afirmar) ainda não foram sondados. Não aumentar o lote sem medir.
+        CONFIRMADO contra a API viva em 2026-08-31 (DE#60 Fase B): separador `-`, shape do
+        item idêntico ao de `get_fixtures(league, season)`, teto exatamente
+        FIXTURES_BY_IDS_MAX_BATCH (20 passa, 21 é rejeitado com erro de parâmetro — não é
+        estouro de cota nem truncamento silencioso).
+
+        Levanta ValueError de propósito ANTES de gastar a chamada se `fixture_ids` passar do
+        teto — mais barato e mais claro que deixar a API rejeitar com o próprio erro de
+        regex. Quem tem mais de 20 candidatos por ciclo precisa fatiar (ver
+        `FixturesExtractor.extract_live`).
 
         Returns:
             Envelope cru: {response: [{fixture, league, teams, goals, score}, ...], errors,
             quota_remaining}.
         """
-        if len(fixture_ids) > FIXTURES_BY_IDS_SUSPECTED_CAP:
-            # Não corta a lista: um teto ADIVINHADO que trunca em silêncio esconderia
-            # fixtures inteiros do refresh sem log nenhum (pior que estourar e a API
-            # avisar). Loga para a Fase B da DE#60 ter evidência real de quando isso
-            # acontece em produção, em vez de descobrir por fixture sumido.
-            logger.warning(
-                f"get_fixtures_by_ids: lote de {len(fixture_ids)} fixtures excede o teto "
-                f"NÃO CONFIRMADO de {FIXTURES_BY_IDS_SUSPECTED_CAP} — a API pode truncar ou "
-                "rejeitar em silêncio. Ver DE#60 item 2 (sondar, não afirmar)."
+        if len(fixture_ids) > FIXTURES_BY_IDS_MAX_BATCH:
+            raise ValueError(
+                f"get_fixtures_by_ids: {len(fixture_ids)} ids excede o teto confirmado da "
+                f"API ({FIXTURES_BY_IDS_MAX_BATCH}). Fatie a lista antes de chamar."
             )
         response = self._make_request(
             "GET",

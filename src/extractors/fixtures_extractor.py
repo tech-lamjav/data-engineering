@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from src.utils.helpers import utcnow_iso
 from src.extractors.base_extractor import BaseExtractor
-from src.clients.api_football_client import ApiFootballClient
+from src.clients.api_football_client import ApiFootballClient, FIXTURES_BY_IDS_MAX_BATCH
 from src.config import FIXTURES_BACKFILL, FIXTURES_CURRENT, FUTEBOL_STATUS_TERMINAL
 from src.utils.logger import setup_logger
 
@@ -248,12 +248,15 @@ class FixturesExtractor(BaseExtractor):
         already_fresh_ids = {_fixture_id(row) for row in fresh_rows}
         ids_to_query = [fid for fid in candidate_ids if fid not in already_fresh_ids]
 
-        if ids_to_query:
-            ids_envelope = self.client.get_fixtures_by_ids(ids_to_query)
+        # Fatiado em lotes de FIXTURES_BY_IDS_MAX_BATCH (20, confirmado contra a API viva
+        # em 2026-08-31 — acima disso ela rejeita a chamada inteira com erro de parâmetro).
+        for i in range(0, len(ids_to_query), FIXTURES_BY_IDS_MAX_BATCH):
+            batch = ids_to_query[i : i + FIXTURES_BY_IDS_MAX_BATCH]
+            ids_envelope = self.client.get_fixtures_by_ids(batch)
             ids_errors = ids_envelope.get("errors")
             if ids_errors:
                 raise RuntimeError(
-                    f"fixtures (mode=live, ids={ids_to_query}): API errors: {ids_errors}"
+                    f"fixtures (mode=live, ids={batch}): API errors: {ids_errors}"
                 )
             fresh_rows.extend(
                 {

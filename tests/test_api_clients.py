@@ -143,27 +143,23 @@ def test_get_fixtures_by_ids_quota_levanta_excecao(af_client):
             af_client.get_fixtures_by_ids([1])
 
 
-def test_get_fixtures_by_ids_lote_grande_loga_aviso_sem_truncar(af_client, caplog):
-    import logging
+def test_get_fixtures_by_ids_lote_acima_do_teto_confirmado_recusa_sem_chamar(af_client):
+    """DE#60 Fase B (sondado 2026-08-31): 21 ids é rejeitado pela própria API com erro de
+    parâmetro. get_fixtures_by_ids recusa ANTES de gastar a chamada — mais barato e mais
+    claro que deixar a API devolver o erro de regex."""
+    ids = list(range(1, 22))  # 21 > FIXTURES_BY_IDS_MAX_BATCH (20)
+    with patch.object(af_client, "_make_request") as mock_req:
+        with pytest.raises(ValueError):
+            af_client.get_fixtures_by_ids(ids)
+    mock_req.assert_not_called()
+
+
+def test_get_fixtures_by_ids_exatamente_no_teto_passa(af_client):
     envelope = {"errors": None, "response": []}
-    ids = list(range(1, 25))  # 24 > FIXTURES_BY_IDS_SUSPECTED_CAP (20)
-    with patch.object(af_client, "_make_request", return_value=_resp(envelope)) as mock_req, \
-         caplog.at_level(logging.WARNING):
+    ids = list(range(1, 21))  # exatamente 20 — confirmado que passa
+    with patch.object(af_client, "_make_request", return_value=_resp(envelope)) as mock_req:
         af_client.get_fixtures_by_ids(ids)
-
-    _, kwargs = mock_req.call_args
-    assert kwargs["params"]["ids"] == "-".join(str(i) for i in ids)  # não truncou
-    assert any("lote" in r.message and "24" in r.message for r in caplog.records)
-
-
-def test_get_fixtures_by_ids_lote_pequeno_nao_loga_aviso(af_client, caplog):
-    import logging
-    envelope = {"errors": None, "response": []}
-    with caplog.at_level(logging.WARNING):
-        with patch.object(af_client, "_make_request", return_value=_resp(envelope)):
-            af_client.get_fixtures_by_ids([1, 2, 3])
-
-    assert not any("lote" in r.message for r in caplog.records)
+    mock_req.assert_called_once()
 
 
 def test_quota_remaining_le_do_header_do_endpoint_real(af_client):

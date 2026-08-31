@@ -162,6 +162,25 @@ def test_erro_de_api_no_by_ids_aborta_sem_upload(ext):
     ext.storage.upload_json.assert_not_called()
 
 
+def test_mais_de_20_candidatos_fatia_em_lotes_de_ate_20(ext):
+    """DE#60 Fase B (confirmado 2026-08-31): a API rejeita lote de ?ids= acima de 20 —
+    o extractor precisa fatiar, nunca mandar tudo numa chamada só."""
+    rows_25 = [_current_row(i, status="1H") for i in range(1, 26)]  # 25 candidatos
+    ext.storage.get_fixture_rows_from_storage.side_effect = lambda mode: {
+        "current": rows_25, "live": [],
+    }[mode]
+    ext.client.get_fixtures_live.return_value = {"errors": None, "response": []}
+    ext.client.get_fixtures_by_ids.return_value = {"errors": None, "response": []}
+    ext.storage.upload_json.return_value = "gs://b/x.json"
+
+    ext.extract_and_save()
+
+    tamanhos = [len(c.args[0]) for c in ext.client.get_fixtures_by_ids.call_args_list]
+    assert ext.client.get_fixtures_by_ids.call_count == 2
+    assert tamanhos == [20, 5]
+    assert all(t <= 20 for t in tamanhos)
+
+
 def test_last_fresh_count_reflete_atualizados_no_ciclo_nao_o_total_retido(ext):
     # ciclo anterior: fixture 3 já FT no _live.json (retido pelo merge, não é "fresh" agora).
     ext.storage.get_fixture_rows_from_storage.side_effect = lambda mode: {
