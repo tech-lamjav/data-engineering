@@ -228,6 +228,61 @@ load_env() {
     print_info "Variáveis de ambiente carregadas com sucesso"
 }
 
+# Carimbo de procedência (DE #44 / #50) para UM serviço, ou string vazia se o serviço
+# ainda não está no manifesto do `procedencia_servicos.sh` — hoje só `extract-games`
+# (tracer bullet; os outros 28 entram na DE #51, junto da extensão desta função às
+# quatro ramificações de verdade).
+#
+# Falha (return 1) só quando o serviço ESTÁ no manifesto e ALGUM dos três hashes não
+# pôde ser calculado (path declarada sumiu do disco, ou falha transitória do git) —
+# isso é manifesto quebrado, não escopo, e não pode deployar em silêncio com um
+# componente vazio. Serviço fora do manifesto (exit 3 do procedencia_servicos.sh) não
+# é erro: devolve vazio e o deploy segue como sempre foi.
+#
+# $2 (opcional): path de um arquivo onde o hash COMBINADO é gravado, para o chamador
+# reler sem recalcular — `comuns=$(carimbo_env_vars ...)` roda em SUBSHELL, então uma
+# variável setada aqui dentro não escapa; um arquivo escapa.
+carimbo_env_vars() {
+    local service_name=$1
+    local hash_file="${2:-}"
+    local hash_combinado hash_nucleo hash_svc sha
+    local tmp_err rc=0
+
+    tmp_err=$(mktemp)
+    hash_combinado=$("$SCRIPT_DIR/procedencia_servicos.sh" "$service_name" 2>"$tmp_err") || rc=$?
+
+    if [ "$rc" -eq 3 ]; then
+        rm -f "$tmp_err"
+        echo ""
+        return 0
+    elif [ "$rc" -ne 0 ]; then
+        print_error "carimbo de procedencia falhou para $service_name:"
+        cat "$tmp_err" >&2
+        rm -f "$tmp_err"
+        return 1
+    fi
+    rm -f "$tmp_err"
+
+    rc=0
+    hash_nucleo=$("$SCRIPT_DIR/procedencia_servicos.sh" "$service_name" --nucleo) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        print_error "carimbo de procedencia (--nucleo) falhou para $service_name"
+        return 1
+    fi
+
+    rc=0
+    hash_svc=$("$SCRIPT_DIR/procedencia_servicos.sh" "$service_name" --svc) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        print_error "carimbo de procedencia (--svc) falhou para $service_name"
+        return 1
+    fi
+
+    sha=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "sem-git")
+
+    [ -n "$hash_file" ] && printf '%s' "$hash_combinado" > "$hash_file"
+    echo "PROCEDENCIA_HASH=${hash_combinado},PROCEDENCIA_HASH_NUCLEO=${hash_nucleo},PROCEDENCIA_HASH_SVC=${hash_svc},PROCEDENCIA_SHA=${sha}"
+}
+
 # Ponto ÚNICO de montagem do --set-env-vars de runtime dos 29 serviços.
 #
 # Apenas config NÃO sensível. As chaves de API vão via Secret Manager (build_secrets).
@@ -244,9 +299,15 @@ load_env() {
 # edição, não quatro. Foi "esquecer uma ramificação" que deixou o fix do de-vig 2
 # dias fora de produção; é a mesma classe de falha que o carimbo de procedência dos
 # serviços existe para pegar (DE #44; o ADR chega em docs/adr/ pelo PR #57).
+#
+# Devolve 1 (sem imprimir nada em stdout) se o carimbo de um serviço coberto falhar —
+# ver carimbo_env_vars(). O chamador (deploy_service) precisa checar o código de saída;
+# `local vars=$(build_service_env_vars ...)` mascararia isso (o exit status vira o do
+# `local`, não o do comando substituído).
 build_service_env_vars() {
     local service_name=$1
     local entry_point=$2
+    local hash_file="${3:-}"
     local vars
 
     case "$service_name" in
@@ -265,10 +326,10 @@ build_service_env_vars() {
             ;;
     esac
 
-    # Bloco COMUM: o que vale para os 29, independente da ramificação. Vazio hoje —
-    # este ticket é prefactor puro e não introduz variável nenhuma. É aqui que as
-    # quatro do carimbo (PROCEDENCIA_*) entram.
-    local comuns=""
+    # Bloco COMUM: o que vale para os 29, independente da ramificação — hoje só o
+    # carimbo de procedência, e só para quem já está no manifesto (ver acima).
+    local comuns
+    comuns=$(carimbo_env_vars "$service_name" "$hash_file") || return 1
     if [ -n "$comuns" ]; then
         vars="${vars},${comuns}"
     fi
@@ -354,9 +415,29 @@ deploy_service() {
     echo "  - src/: $(test -d "$TEMP_DIR/src" && echo "✓" || echo "✗")"
     echo "  - scripts/: $(test -d "$TEMP_DIR/scripts" && echo "✓" || echo "✗")"
     
-    # Constrói env vars — todas as ramificações abaixo consomem este mesmo $ENV_VARS
-    local ENTRY_POINT=$(get_entry_point "$SERVICE_NAME")
-    local ENV_VARS=$(build_service_env_vars "$SERVICE_NAME" "$ENTRY_POINT")
+    # Constrói env vars — todas as ramificações abaixo consomem este mesmo $ENV_VARS.
+    # Declaração e atribuição SEPARADAS de propósito: `local x=$(cmd)` mascara o exit
+    # code de `cmd` pelo do próprio `local` — `set -e` não pegaria uma falha aqui.
+    #
+    # PROCEDENCIA_HASH_FILE: onde build_service_env_vars()/carimbo_env_vars() gravam o
+    # hash combinado, para a leitura de conferência pós-deploy reler em vez de chamar o
+    # procedencia_servicos.sh uma terceira vez (ele já roda 3x por dentro do bloco
+    # acima — combinado, --nucleo, --svc). Fica vazio (mktemp intocado) se o serviço
+    # não estiver no manifesto.
+    local ENTRY_POINT
+    ENTRY_POINT=$(get_entry_point "$SERVICE_NAME")
+    local PROCEDENCIA_HASH_FILE
+    PROCEDENCIA_HASH_FILE=$(mktemp)
+    local ENV_VARS
+    ENV_VARS=$(build_service_env_vars "$SERVICE_NAME" "$ENTRY_POINT" "$PROCEDENCIA_HASH_FILE") || {
+        print_error "Não foi possível montar as env vars de $SERVICE_NAME (carimbo de procedência)"
+        rm -f "$PROCEDENCIA_HASH_FILE"
+        rm -rf "$TEMP_DIR"
+        return 1
+    }
+    local PROCEDENCIA_ESPERADA
+    PROCEDENCIA_ESPERADA=$(cat "$PROCEDENCIA_HASH_FILE")
+    rm -f "$PROCEDENCIA_HASH_FILE"
 
     # Faz deploy
     print_info "Executando gcloud run deploy..."
@@ -477,6 +558,55 @@ deploy_service() {
             fi
         else
             print_warning "Não foi possível obter a URL do serviço, mas o deploy pode ter sido bem-sucedido"
+        fi
+
+        # Leitura de conferência do carimbo (DE #50): carimbo que o próprio deploy não
+        # confirma é carimbo que some na primeira refatoração — foi exatamente o
+        # "segundo comando manual" que deixou o fix do de-vig 2 dias fora de produção
+        # (decisão 6 do ADR 0001). Só roda para serviço já coberto pelo manifesto.
+        if [ -n "$PROCEDENCIA_ESPERADA" ]; then
+            # Erro de LEITURA (API/IAM/parse) é estado diferente de "carimbo ausente" —
+            # mesma distinção do checa_deriva_servicos.sh. Sem isto, uma falha
+            # transitória do `describe` logo após um deploy bom seria relatada como
+            # "carimbo não voltou", que é a notícia errada.
+            local CARIMBO_JSON DESC_RC=0
+            CARIMBO_JSON=$(gcloud run services describe "$SERVICE_NAME" \
+                --region "$REGION" \
+                --project "$GCP_PROJECT_ID" \
+                --format=json 2>&1) || DESC_RC=$?
+
+            if [ "$DESC_RC" -ne 0 ]; then
+                print_error "✗ Erro de LEITURA ao reler $SERVICE_NAME para conferir o carimbo (não é deriva):"
+                echo "$CARIMBO_JSON" | sed 's/^/     /' >&2
+                rm -rf "$TEMP_DIR"
+                return 1
+            fi
+
+            local CARIMBO_LIDO PARSE_RC=0
+            CARIMBO_LIDO=$(echo "$CARIMBO_JSON" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+spec = doc["spec"]["template"]["spec"]
+for var in spec["containers"][0].get("env") or []:
+    if var.get("name") == "PROCEDENCIA_HASH":
+        print(var.get("value") or "")
+        break
+') || PARSE_RC=$?
+
+            if [ "$PARSE_RC" -ne 0 ]; then
+                print_error "✗ Erro de LEITURA: não consegui interpretar a resposta de $SERVICE_NAME (não é deriva)"
+                rm -rf "$TEMP_DIR"
+                return 1
+            fi
+
+            if [ "$CARIMBO_LIDO" != "$PROCEDENCIA_ESPERADA" ]; then
+                print_error "✗ O carimbo de procedência não voltou na leitura de conferência de $SERVICE_NAME"
+                print_error "  esperado: $PROCEDENCIA_ESPERADA"
+                print_error "  lido:     ${CARIMBO_LIDO:-<ausente>}"
+                rm -rf "$TEMP_DIR"
+                return 1
+            fi
+            print_info "✓ Carimbo de procedência conferido: $PROCEDENCIA_ESPERADA"
         fi
     else
         print_error "✗ Falha no deploy de $SERVICE_NAME"
@@ -651,6 +781,16 @@ main() {
         if [ $FAIL_COUNT -eq 0 ]; then
             list_services
         fi
+    fi
+
+    # `if deploy_service ...; then ...; else ...; fi` sempre "sucede" como construção —
+    # o corpo executado é uma atribuição aritmética, que sempre retorna 0 — então sem
+    # isto o script inteiro saía com exit 0 mesmo com FAIL_COUNT>0, e isso incluía a
+    # leitura de conferência do carimbo (DE #50) falhando num deploy de 1 serviço só,
+    # o caso comum (`./deploy_cloud_run.sh extract-games`), onde nem o resumo acima
+    # chega a imprimir. "O deploy falha" no aceite da issue tem de valer no exit code.
+    if [ "$FAIL_COUNT" -gt 0 ]; then
+        exit 1
     fi
 }
 

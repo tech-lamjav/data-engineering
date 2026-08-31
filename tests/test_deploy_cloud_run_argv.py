@@ -42,8 +42,12 @@ FAKE_ENV = {
 }
 
 # O stub responde o que o script consulta: autenticação, número do projeto e as
-# duas leituras pós-deploy (URL e condição de readiness). Todo `gcloud run deploy`
-# vira um arquivo de argv, um argumento por linha.
+# leituras pós-deploy (URL, condição de readiness e — DE #50 — o JSON de conferência
+# do carimbo). Todo `gcloud run deploy` vira um arquivo de argv, um argumento por
+# linha; o `--format=json` lê esse arquivo de volta e monta um `env[]` fiel ao que o
+# `--set-env-vars` daquele deploy realmente mandou — sem isso o stub sempre devolveria
+# "sem carimbo" e a leitura de conferência da DE #50 falharia para extract-games em
+# TODO teste, mesmo quando o script está correto.
 GCLOUD_STUB = r"""#!/bin/bash
 if [ "$1" = "run" ] && [ "$2" = "deploy" ]; then
     for arg in "$@"; do printf '%s\n' "$arg"; done > "$CAPTURE_DIR/$3.argv"
@@ -58,6 +62,26 @@ if [ "$1" = "run" ] && [ "$2" = "services" ] && [ "$3" = "describe" ]; then
         case "$arg" in
             --format=*status.url*) echo "https://fake.run.app"; exit 0 ;;
             --format=*conditions*) echo "True"; exit 0 ;;
+            --format=json)
+                # $3 é "describe" aqui, não o serviço — em `run services describe <x>`
+                # o nome é o 4º posicional, diferente de `run deploy <x>` (3º).
+                ARGV_FILE="$CAPTURE_DIR/$4.argv" python3 -c '
+import json, os
+
+env_vars = []
+try:
+    lines = open(os.environ["ARGV_FILE"]).read().splitlines()
+    idx = lines.index("--set-env-vars")
+    for pair in lines[idx + 1].split(","):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            env_vars.append({"name": k, "value": v})
+except (FileNotFoundError, ValueError):
+    pass
+print(json.dumps({"spec": {"template": {"spec": {"containers": [{"env": env_vars}]}}}}))
+'
+                exit 0
+                ;;
         esac
     done
 fi
@@ -83,12 +107,23 @@ def _service_dirs():
     return dirs
 
 
+PROCEDENCIA_SCRIPT = REPO_ROOT / "scripts" / "procedencia_servicos.sh"
+
+
 def _build_fake_repo(root: Path, api_football_key: bool):
-    """Árvore mínima com a mesma forma que o `deploy_service()` valida."""
+    """Árvore mínima com a mesma forma que o `deploy_service()` valida.
+
+    Precisa ser um repo git de verdade (DE #50): `procedencia_servicos.sh` só toca git
+    (`rev-parse --show-toplevel`, `ls-files`) DEPOIS de reconhecer o serviço no
+    manifesto — hoje só `extract-games`. Os outros 28 saem antes disso (exit 3, sem
+    tocar git) e não precisariam de `.git`; é só `extract-games` que exige a árvore
+    ser um repo de verdade e ter as paths do manifesto no disco (ver abaixo).
+    """
     (root / "src").mkdir()
     (root / "src" / "__init__.py").write_text("", encoding="utf-8")
     (root / "scripts").mkdir()
     shutil.copy2(DEPLOY_SCRIPT, root / "scripts" / "deploy_cloud_run.sh")
+    shutil.copy2(PROCEDENCIA_SCRIPT, root / "scripts" / "procedencia_servicos.sh")
 
     for service_dir in _service_dirs():
         target = root / "cloud_run" / service_dir
@@ -99,12 +134,26 @@ def _build_fake_repo(root: Path, api_football_key: bool):
         if (REPO_ROOT / "cloud_run" / service_dir / "Procfile").exists():
             (target / "Procfile").write_text("", encoding="utf-8")
 
+    # Paths que o manifesto do `procedencia_servicos.sh` declara para `extract-games` —
+    # o único serviço coberto no tracer bullet (DE #50). Conteúdo vazio: só a EXISTÊNCIA
+    # importa para o fail-closed do hasher; o VALOR do hash não é o que este teste cobre
+    # (isso é `tests/test_procedencia_servicos.py`).
+    (root / "src" / "config.py").write_text("", encoding="utf-8")
+    for pasta in ("clients", "storage", "utils", "bigquery"):
+        (root / "src" / pasta).mkdir()
+        (root / "src" / pasta / "__init__.py").write_text("", encoding="utf-8")
+    (root / "src" / "extractors").mkdir()
+    (root / "src" / "extractors" / "games_extractor.py").write_text("", encoding="utf-8")
+    (root / "scripts" / "extract_games.py").write_text("", encoding="utf-8")
+
     env = dict(FAKE_ENV)
     if api_football_key:
         env["API_FOOTBALL_KEY"] = "fake-api-football-key"
     (root / ".env").write_text(
         "".join(f"{k}={v}\n" for k, v in env.items()), encoding="utf-8"
     )
+
+    subprocess.run(["git", "init", "-q"], cwd=str(root), check=True)
 
 
 def capture_deploy_argv(tmp_path: Path, api_football_key: bool):
