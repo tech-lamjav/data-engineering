@@ -1,6 +1,6 @@
 """Cliente para API-Football v3 (https://www.api-football.com)."""
 import time
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from src.clients.base_client import BaseClient, ApiQuotaExceededError, is_quota_error
 from src.config import API_FOOTBALL_BASE_URL, API_FOOTBALL_KEY
 from src.utils.logger import setup_logger
@@ -13,6 +13,12 @@ logger = setup_logger(__name__)
 # —, então uma indisponibilidade do /status derrubaria o e-mail inteiro, que é exatamente
 # o que a seção de cota existe para impedir. Leitura best-effort, 1x/dia: 1 tentativa curta.
 STATUS_TIMEOUT = 15
+
+# NÃO CONFIRMADO CONTRA A API VIVA (DE#60, item 2 do escopo). Documentação de terceiros
+# sugere ~20 fixtures por chamada de `?ids=` — usado só como CANÁRIO de log (avisa quando
+# alguém manda um lote grande demais), nunca como corte silencioso, porque adivinhar um
+# teto errado e truncar esconderia fixtures inteiros do refresh sem log nenhum.
+FIXTURES_BY_IDS_SUSPECTED_CAP = 20
 
 
 class ApiFootballClient(BaseClient):
@@ -237,6 +243,84 @@ class ApiFootballClient(BaseClient):
             params={"league": league_id, "season": season},
         )
         return self._raise_if_quota(response.json(), f"fixtures league={league_id} season={season}")
+
+    @staticmethod
+    def _parse_quota_remaining(response) -> Optional[int]:
+        """Lê `x-ratelimit-requests-remaining` do header de UM ENDPOINT DE DADO REAL.
+
+        Deliberadamente NÃO lido de `get_status()`: tanto o corpo (`requests.current`) quanto
+        o header da resposta do `/status` são CACHEADOS — um backfill de calibração rodou 5
+        chamadas a `/teams` que decrementaram esse header corretamente (5685 → 5680) enquanto
+        o `/status` ficou parado (ver memória `reference_api_football_quota_meter`, medido
+        em 2026-08-06). Qualquer chamada normal do cliente já carrega esse número de graça —
+        por isso ele entra pelas chamadas de fixtures ao vivo (DE#60), sem chamada dedicada a
+        `/timezone`.
+
+        Retorna None (não levanta) se o header faltar ou vier num formato inesperado — leitura
+        de cota é diagnóstico, nunca deve derrubar a extração.
+        """
+        raw = response.headers.get("x-ratelimit-requests-remaining")
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def get_fixtures_live(self) -> Dict[str, Any]:
+        """GET /fixtures?live=all — todos os fixtures EM ANDAMENTO globalmente, 1 chamada.
+
+        Diferente de `get_fixtures(league, season)`, não filtra por liga/temporada — cobre o
+        mundo inteiro. Quem chama filtra pelo fixture_id já conhecido (via GCSStorage, a
+        partir do snapshot `_current.json`/`_live.json`).
+
+        ⚠️ NÃO CONFIRMADO CONTRA A API VIVA (DE#60, item 2 do escopo — sondar, não afirmar):
+        se um fixture some de `live=all` no instante exato do apito ou permanece por mais um
+        ciclo, e se o shape do item é idêntico ao de `get_fixtures(league, season)`.
+
+        Returns:
+            Envelope cru: {response: [{fixture, league, teams, goals, score}, ...], errors,
+            quota_remaining}. `quota_remaining` é chave de controle (não vem da API), lida do
+            header desta resposta — ver `_parse_quota_remaining`.
+        """
+        response = self._make_request("GET", "fixtures", params={"live": "all"})
+        envelope = self._raise_if_quota(response.json(), "fixtures live=all")
+        envelope["quota_remaining"] = self._parse_quota_remaining(response)
+        return envelope
+
+    def get_fixtures_by_ids(self, fixture_ids: List[int]) -> Dict[str, Any]:
+        """GET /fixtures?ids={id1-id2-id3} — status atual de um lote de fixtures específicos.
+
+        Busca por id sempre devolve o status CORRENTE do fixture, qualquer que seja — um jogo
+        que terminou entre dois polls simplesmente volta como FT aqui, sem depender de
+        `get_fixtures_live()` "segurar" o jogo por mais um ciclo após o apito.
+
+        ⚠️ NÃO CONFIRMADO CONTRA A API VIVA (DE#60, item 2 do escopo): separador do parâmetro
+        (`-` assumido aqui) e teto de fixtures por lote (documentação de terceiros sugere
+        ~20 — a confirmar, não afirmar) ainda não foram sondados. Não aumentar o lote sem medir.
+
+        Returns:
+            Envelope cru: {response: [{fixture, league, teams, goals, score}, ...], errors,
+            quota_remaining}.
+        """
+        if len(fixture_ids) > FIXTURES_BY_IDS_SUSPECTED_CAP:
+            # Não corta a lista: um teto ADIVINHADO que trunca em silêncio esconderia
+            # fixtures inteiros do refresh sem log nenhum (pior que estourar e a API
+            # avisar). Loga para a Fase B da DE#60 ter evidência real de quando isso
+            # acontece em produção, em vez de descobrir por fixture sumido.
+            logger.warning(
+                f"get_fixtures_by_ids: lote de {len(fixture_ids)} fixtures excede o teto "
+                f"NÃO CONFIRMADO de {FIXTURES_BY_IDS_SUSPECTED_CAP} — a API pode truncar ou "
+                "rejeitar em silêncio. Ver DE#60 item 2 (sondar, não afirmar)."
+            )
+        response = self._make_request(
+            "GET",
+            "fixtures",
+            params={"ids": "-".join(str(fid) for fid in fixture_ids)},
+        )
+        envelope = self._raise_if_quota(response.json(), f"fixtures ids={fixture_ids}")
+        envelope["quota_remaining"] = self._parse_quota_remaining(response)
+        return envelope
 
     def get_fixture_statistics(self, fixture_id: int) -> Dict[str, Any]:
         """GET /fixtures/statistics?fixture={fixture_id}. 1 chamada por jogo.

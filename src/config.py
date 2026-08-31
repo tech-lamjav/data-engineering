@@ -326,6 +326,14 @@ FIXTURES_CURRENT = [
     (PRIMEIRA_LIGA_ID, 2026),  # 2026/27 (opener 07/08 — HOJE, a mais cedo do portfólio)
 ]
 
+# Status terminais (`fixture.status.short`) — jogo não vai mudar de estado sozinho a partir
+# daqui. Usado pela extração de cadência de placar (DE#60) para decidir quando um fixture
+# PARA de ser candidato a refresh. Duplicação CONSCIENTE de
+# `dbt_futebol/macros/futebol_expurgo.sql` (analytics-engineering) — os dois repos não
+# compartilham pacote, e a lista muda raramente (a API-Football não introduz status novo).
+# Se um dos dois mudar, o outro precisa mudar junto.
+FUTEBOL_STATUS_TERMINAL = {"FT", "AET", "PEN", "CANC", "ABD", "AWD", "WO"}
+
 # Standings (/standings) — snapshot diário da tabela do campeonato (1 chamada por
 # liga×season, ~20 linhas Brasileirão). Diferente dos demais (latest-only), o arquivo
 # é date-stampado (raw_futebol_standings_{mode}_{YYYY-MM-DD}.json): o GCS acumula 1
@@ -1028,7 +1036,7 @@ def get_gcs_path(
         season_type: Tipo de temporada para season_averages (ex: regular, playoffs, ist)
         period: Quarto/período (NBA) — grava em subdiretório q{period}/ quando combinado com date
         sport: Identificador do esporte ("nba" default, "futebol" para API-Football)
-        mode: Sufixo de modo para endpoints futebol ("current"|"backfill"), opcional
+        mode: Sufixo de modo para endpoints futebol ("current"|"backfill"|"live"), opcional
 
     Returns:
         Caminho completo no formato: nba/{endpoint}/{season}/raw_nba_{endpoint}_{season}.json
@@ -1065,7 +1073,7 @@ def get_gcs_path(
         # `date` opcional: endpoints de snapshot diário (ex.: standings) date-stampam
         # o arquivo p/ acumular histórico no GCS (1 arquivo/dia; re-run no mesmo dia
         # sobrescreve). Os demais endpoints não passam date → latest-only, como antes.
-        suffix = f"_{mode}" if mode in ("backfill", "current") else ""
+        suffix = f"_{mode}" if mode in ("backfill", "current", "live") else ""
         datepart = f"_{date}" if date else ""
         filename = f"raw_futebol_{endpoint}{suffix}{datepart}.json"
         return f"futebol/{endpoint}/{filename}"

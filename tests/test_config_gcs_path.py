@@ -44,7 +44,7 @@ def test_futebol_mode_desconhecido_nao_vaza_no_nome():
     )
 
 
-@pytest.mark.parametrize("mode", ["current", "backfill"])
+@pytest.mark.parametrize("mode", ["current", "backfill", "live"])
 def test_futebol_latest_only_mode(mode):
     assert (
         get_gcs_path("fixtures", 2025, sport="futebol", mode=mode)
