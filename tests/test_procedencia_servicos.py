@@ -51,6 +51,17 @@ def test_paths_lista_as_paths_declaradas_e_sai_sem_hashear():
     assert "scripts/extract_games.py" in linhas
 
 
+def test_todos_devolve_as_tres_linhas_na_mesma_ordem_das_flags_separadas():
+    combinado = run("extract-games").stdout.strip()
+    nucleo = run("extract-games", "--nucleo").stdout.strip()
+    svc = run("extract-games", "--svc").stdout.strip()
+
+    resultado = run("extract-games", "--todos")
+    assert resultado.returncode == 0
+    linhas = resultado.stdout.splitlines()
+    assert linhas == [combinado, nucleo, svc]
+
+
 def test_diretorio_orfao_fica_fora_do_manifesto_de_proposito():
     """`cloud_run/extract_player_props/` foi substituído pelas 3 variantes por vendor
     e não é deployado por `deploy_cloud_run.sh` — exit 3, não erro de path."""

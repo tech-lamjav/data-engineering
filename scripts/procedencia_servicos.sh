@@ -11,6 +11,7 @@
 #   scripts/procedencia_servicos.sh <servico> --nucleo   # só o núcleo compartilhado
 #   scripts/procedencia_servicos.sh <servico> --svc      # só a parte própria do serviço
 #   scripts/procedencia_servicos.sh <servico> --paths    # lista as paths declaradas e sai
+#   scripts/procedencia_servicos.sh <servico> --todos    # combinado, nucleo e svc (3 linhas), 1 chamada só
 #   scripts/procedencia_servicos.sh --list-servicos      # lista os serviços cobertos e sai
 #
 # `--list-servicos` é o que `checa_deriva_servicos.sh` usa para o default (sem args) e
@@ -479,6 +480,15 @@ case "$FLAG" in
     --svc)
         echo "$HASH_SVC"
         ;;
+    --todos)
+        # Os três numa chamada só, uma linha cada (combinado / núcleo / svc) — quem
+        # precisa dos três (checa_deriva_servicos.sh, para classificar a CAUSA da
+        # deriva) evita rodar o processo inteiro 3x por serviço (checagem de
+        # existência das paths + `git ls-files`/`hash-object` repetidos à toa).
+        hash_paths "${NUCLEO_PATHS[@]}" "${SVC_PATHS[@]}"
+        echo "$HASH_NUCLEO"
+        echo "$HASH_SVC"
+        ;;
     "")
         # Combinado = hash sobre a UNIÃO das duas listas de paths, não sobre a
         # concatenação dos dois hashes já prontos — assim ele reproduz exatamente o
@@ -487,7 +497,7 @@ case "$FLAG" in
         hash_paths "${NUCLEO_PATHS[@]}" "${SVC_PATHS[@]}"
         ;;
     *)
-        echo "ERROR: flag desconhecida: $FLAG (esperado --paths, --nucleo ou --svc)" >&2
+        echo "ERROR: flag desconhecida: $FLAG (esperado --paths, --nucleo, --svc ou --todos)" >&2
         exit 2
         ;;
 esac
