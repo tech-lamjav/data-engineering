@@ -91,10 +91,13 @@ exit 0
 SLEEP_STUB = "#!/bin/bash\nexit 0\n"
 
 
-def _service_dirs():
-    """Extrai `cloud_run/<dir>` de cada serviço das listas do próprio script."""
+def _parse_service_table():
+    """Extrai `(nome, cloud_run/<dir>)` de cada entrada das listas
+    NBA_SERVICES/FUTEBOL_SERVICES/SHARED_SERVICES do `deploy_cloud_run.sh` — fonte
+    única para quem precisa da tabela (esta suíte e `test_manifesto_fecho_de_imports.py`,
+    que resolve `cloud_run/<dir>/main.py` por nome de serviço)."""
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    dirs = []
+    entries = []
     for line in text.splitlines():
         line = line.strip()
         if not (line.startswith('"') and line.endswith('"') and ":" in line):
@@ -102,7 +105,13 @@ def _service_dirs():
         entry = line.strip('"')
         name, _, service_dir = entry.partition(":")
         if name and service_dir and "=" not in entry and " " not in entry:
-            dirs.append(service_dir)
+            entries.append((name, service_dir))
+    return entries
+
+
+def _service_dirs():
+    """Extrai `cloud_run/<dir>` de cada serviço das listas do próprio script."""
+    dirs = [service_dir for _, service_dir in _parse_service_table()]
     assert len(dirs) == 29, f"esperado 29 serviços nas listas do script, achei {len(dirs)}"
     return dirs
 

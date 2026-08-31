@@ -1,0 +1,49 @@
+# Roda a suíte de testes (`pytest`) em todo PR — DE #55.
+#
+# Este repositório não tinha CI de teste nenhum antes deste workflow (os outros dois
+# workflows daqui, `detector-atraso-sync.yml` e `contrato-serving.yml`, são detectores
+# agendados, não testes de PR). O gatilho concreto é o auditor de fecho de imports
+# (`tests/test_manifesto_fecho_de_imports.py`, DE #55): o manifesto de procedência
+# apodrece para dentro sem um teste rodando em CI para pegar isso ANTES do merge.
+#
+# POR QUE INSTALA CADA `cloud_run/<svc>/requirements.txt` TAMBÉM: o auditor de fecho
+# de imports resolve dependência externa via `importlib.util.find_spec`, no MESMO
+# interpretador que roda o pytest. `functions-framework` (todo `main.py`) e
+# `psycopg[binary]` (só `sync-bq-to-postgres`) só existem nesses requirements.txt por
+# serviço, não no da raiz — descoberto batendo a cara na primeira execução deste
+# workflow (`psycopg` não instalado ainda quebrou o CI local que rodou antes daqui).
+# Sem instalar, esses dois caem no fallback documentado no próprio teste e ainda
+# passam — mas instalar aqui faz a checagem valer de verdade, e evita achar o próximo
+# gap só quando o CI quebrar de novo.
+name: testes
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Dependências
+        run: |
+          pip install -r requirements-dev.txt
+          for req in cloud_run/*/requirements.txt cloud_run/futebol/*/requirements.txt; do
+            pip install -r "$req"
+          done
+
+      - name: pytest
+        run: python -m pytest tests/ -v

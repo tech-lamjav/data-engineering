@@ -142,12 +142,20 @@ declarar_paths() {
     # núcleo não é fail-open (o risco do manifesto é declarar de MENOS, não de mais).
     # Falta só o `requirements.txt`, que é por serviço porque cada imagem builda suas
     # próprias dependências.
+    #
+    # `src/extractors/base_extractor.py`: achado do auditor de fecho de imports (DE
+    # #55) — os 26 serviços com extrator herdam de `BaseExtractor`
+    # (`from src.extractors.base_extractor import BaseExtractor`, em CADA
+    # `<x>_extractor.py`), e essa path tinha ficado FORA do manifesto desde a DE #51.
+    # É a classe de bug que o auditor existe pra pegar, e pegou no próprio manifesto
+    # que o introduziu.
     local NUCLEO_COMUM=(
         src/config.py
         src/clients
         src/storage
         src/utils
         src/bigquery
+        src/extractors/base_extractor.py
     )
 
     case "$servico" in
@@ -291,16 +299,23 @@ declarar_paths() {
             )
             ;;
         extract-fixture-statistics)
+            # `fixture_statistics_extractor.py` herda de `PerFixtureExtractor` — base
+            # PRÓPRIA (não é a `BaseExtractor` do núcleo), compartilhada só entre os 3
+            # extratores "por fixture" (statistics/events/player-stats). Achado do
+            # auditor de fecho de imports (DE #55), fora do manifesto desde a DE #51.
             NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_fixture_statistics/requirements.txt)
             SVC_PATHS=(
+                src/extractors/per_fixture_extractor.py
                 src/extractors/fixture_statistics_extractor.py
                 scripts/futebol/extract_fixture_statistics.py
                 cloud_run/futebol/extract_fixture_statistics/main.py
             )
             ;;
         extract-fixture-events)
+            # Ver nota do `PerFixtureExtractor` em extract-fixture-statistics acima.
             NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_fixture_events/requirements.txt)
             SVC_PATHS=(
+                src/extractors/per_fixture_extractor.py
                 src/extractors/fixture_events_extractor.py
                 scripts/futebol/extract_fixture_events.py
                 cloud_run/futebol/extract_fixture_events/main.py
@@ -318,8 +333,10 @@ declarar_paths() {
             )
             ;;
         extract-fixture-player-stats)
+            # Ver nota do `PerFixtureExtractor` em extract-fixture-statistics acima.
             NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_fixture_player_stats/requirements.txt)
             SVC_PATHS=(
+                src/extractors/per_fixture_extractor.py
                 src/extractors/fixture_player_stats_extractor.py
                 scripts/futebol/extract_fixture_player_stats.py
                 cloud_run/futebol/extract_fixture_player_stats/main.py
