@@ -640,6 +640,53 @@ for var in spec["containers"][0].get("env") or []:
     return 0
 }
 
+# Fail-closed nos dois sentidos entre a tabela de deploy (SERVICES, acima) e o
+# manifesto de procedência (`procedencia_servicos.sh --list-servicos`) — DE #51.
+#
+# Um manifesto que "esquece" um serviço da tabela ficaria mudo sobre a deriva dele
+# (a mesma classe de bug que este mecanismo inteiro existe para consertar, uma camada
+# abaixo); um manifesto com uma entrada órfã (serviço removido da tabela, esquecido no
+# manifesto) é o espelho do mesmo erro. Os dois abortam ANTES de qualquer `gcloud run
+# deploy`, e para QUALQUER invocação — mesmo `./deploy_cloud_run.sh extract-games` —
+# porque a checagem é sobre a tabela inteira, não sobre o alvo pedido: um drift em
+# outro serviço não pode passar batido só porque ninguém pediu para deployá-lo agora.
+#
+# `--paths` de `procedencia_servicos.sh` só consulta o `case` em memória (sem tocar
+# disco/git) — checagem rápida e sem efeito colateral.
+checar_manifesto() {
+    local faltando_no_manifesto=()
+    local orfaos_no_manifesto=()
+    local entry svc
+
+    for entry in "${SERVICES[@]}"; do
+        svc="${entry%%:*}"
+        if ! "$SCRIPT_DIR/procedencia_servicos.sh" "$svc" --paths >/dev/null 2>&1; then
+            faltando_no_manifesto+=("$svc")
+        fi
+    done
+
+    local manifesto_svc
+    while IFS= read -r manifesto_svc; do
+        [ -z "$manifesto_svc" ] && continue
+        if ! get_service_dir "$manifesto_svc" >/dev/null; then
+            orfaos_no_manifesto+=("$manifesto_svc")
+        fi
+    done < <("$SCRIPT_DIR/procedencia_servicos.sh" --list-servicos)
+
+    if [ "${#faltando_no_manifesto[@]}" -gt 0 ] || [ "${#orfaos_no_manifesto[@]}" -gt 0 ]; then
+        print_error "Manifesto de procedencia fora de sincronia com a tabela de deploy:"
+        if [ "${#faltando_no_manifesto[@]}" -gt 0 ]; then
+            print_error "  na tabela do deploy mas AUSENTE do manifesto (procedencia_servicos.sh): ${faltando_no_manifesto[*]}"
+        fi
+        if [ "${#orfaos_no_manifesto[@]}" -gt 0 ]; then
+            print_error "  no manifesto mas AUSENTE da tabela do deploy: ${orfaos_no_manifesto[*]}"
+        fi
+        print_error "Os dois arquivos evoluem juntos (DE #51) — corrija antes de fazer deploy."
+        return 1
+    fi
+    return 0
+}
+
 # Lista serviços deployados
 list_services() {
     print_info "Serviços deployados:"
@@ -659,7 +706,11 @@ main() {
     check_gcloud
     check_auth
     load_env
-    
+
+    if ! checar_manifesto; then
+        exit 1
+    fi
+
     echo ""
     print_info "Configurações:"
     echo "  Região: $REGION"

@@ -17,6 +17,10 @@ CHECA_SCRIPT = REPO_ROOT / "scripts" / "checa_deriva_servicos.sh"
 HASH_ESPERADO = "abc123esperado"
 
 FAKE_PROCEDENCIA = f"""#!/bin/bash
+if [ "$1" = "--list-servicos" ]; then
+    printf '%s\\n' em-dia em-deriva sem-carimbo
+    exit 0
+fi
 echo "{HASH_ESPERADO}"
 """
 
@@ -127,6 +131,50 @@ def test_erro_de_leitura_nao_conta_como_deriva(sandbox):
     assert "SEM CARIMBO" not in resultado.stdout
     assert "0 em deriva" in resultado.stdout
     assert "1 erro" in resultado.stdout
+
+
+def test_sem_argumento_usa_a_lista_do_manifesto(sandbox):
+    """Sem args, os alvos vêm de `procedencia_servicos.sh --list-servicos`
+    (DE #51) — aqui o stub devolve 3 nomes, então os 3 (não 1) aparecem no relatório."""
+    resultado = run(sandbox)
+    assert "── em-dia" in resultado.stdout
+    assert "── em-deriva" in resultado.stdout
+    assert "── sem-carimbo" in resultado.stdout
+    assert resultado.returncode == 1
+
+
+def test_sem_argumento_falha_fail_closed_se_list_servicos_falhar(tmp_path):
+    """Se `procedencia_servicos.sh --list-servicos` falhar (não vazio-e-verde), o
+    detector tem de abortar — não reportar 'todos os alvos em dia' sem checar nenhum."""
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    checa_copy = scripts_dir / "checa_deriva_servicos.sh"
+    checa_copy.write_text(CHECA_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    checa_copy.chmod(0o755)
+
+    procedencia_quebrado = scripts_dir / "procedencia_servicos.sh"
+    procedencia_quebrado.write_text("#!/bin/bash\nexit 1\n", encoding="utf-8")
+    procedencia_quebrado.chmod(0o755)
+
+    resultado = subprocess.run(["bash", str(checa_copy)], capture_output=True, text=True)
+    assert resultado.returncode != 0
+    assert "todos os alvos em dia" not in resultado.stdout
+
+
+def test_sem_argumento_falha_fail_closed_se_list_servicos_vier_vazio(tmp_path):
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    checa_copy = scripts_dir / "checa_deriva_servicos.sh"
+    checa_copy.write_text(CHECA_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    checa_copy.chmod(0o755)
+
+    procedencia_vazio = scripts_dir / "procedencia_servicos.sh"
+    procedencia_vazio.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    procedencia_vazio.chmod(0o755)
+
+    resultado = subprocess.run(["bash", str(checa_copy)], capture_output=True, text=True)
+    assert resultado.returncode != 0
+    assert "todos os alvos em dia" not in resultado.stdout
 
 
 def test_os_quatro_estados_juntos_contam_separado(sandbox):

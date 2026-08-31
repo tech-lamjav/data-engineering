@@ -19,9 +19,6 @@
 #                 deriva — é o detector não sabendo, e reportar como deriva esconderia
 #                 um problema de acesso atrás de um problema de código
 #
-# TRACER BULLET (DE #50): a tabela de alvos abaixo tem só `extract-games` — os outros
-# 28 nascem sem cobertura (nem verde nem vermelho: não aparecem) até a DE #51.
-#
 # Ver docs/adr/0001-carimbo-de-procedencia-dos-servicos-cloud-run.md
 
 set -uo pipefail
@@ -31,13 +28,32 @@ GCP_REGION="${GCP_REGION:-us-east1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Tabela declarativa de alvos cobertos por este detector. Acrescentar um alvo aqui só
-# faz sentido depois de declará-lo no `procedencia_servicos.sh` — os dois evoluem
-# juntos (DE #51).
+# Sem argumento, os alvos são os 29 do manifesto (`procedencia_servicos.sh
+# --list-servicos`) — fonte única, os dois scripts evoluem juntos (DE #51). Isto
+# reflete só o QUINTO estado ainda não coberto por este arquivo: serviço VIVO no Cloud
+# Run e ausente do manifesto continua invisível aqui de propósito — é a reconciliação
+# da DE #53, um mecanismo diferente (lista vs. universo real).
 if [ $# -gt 0 ]; then
     ALVOS=("$@")
 else
-    ALVOS=(extract-games)
+    # Fail-closed: se `--list-servicos` falhar ou nao imprimir nada, o loop abaixo
+    # rodaria zero vezes e o script sairia dizendo "todos os alvos em dia" sem ter
+    # checado UM sequer — o oposto do que um detector fail-closed pode fazer. Captura
+    # em variavel (nao em process substitution) justamente para poder checar o exit
+    # code do comando e o conteudo antes de popular ALVOS.
+    LISTA_SERVICOS=$("$SCRIPT_DIR/procedencia_servicos.sh" --list-servicos) || {
+        echo "ERRO: nao consegui obter a lista de servicos do manifesto (procedencia_servicos.sh --list-servicos falhou)." >&2
+        exit 1
+    }
+    if [ -z "$LISTA_SERVICOS" ]; then
+        echo "ERRO: procedencia_servicos.sh --list-servicos nao devolveu nenhum servico." >&2
+        exit 1
+    fi
+    ALVOS=()
+    while IFS= read -r svc; do
+        [ -z "$svc" ] && continue
+        ALVOS+=("$svc")
+    done <<< "$LISTA_SERVICOS"
 fi
 
 derivas=0
