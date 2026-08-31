@@ -47,9 +47,10 @@ REPO_DETECTOR = "tech-lamjav/analytics-engineering"
 WORKFLOW_DETECTOR = "deriva-imagem.yml"
 
 # O detector é horário. Passou disso sem rodar, ele próprio é o problema — e o e-mail vira o
-# único lugar onde isso aparece. Folga de 3h absorve atraso de agendamento do GitHub, que é
-# best-effort e rotineiramente atrasa dezenas de minutos.
-IDADE_MAXIMA_DETECTOR = timedelta(hours=3)
+# único lugar onde isso aparece. O agendamento do GitHub Actions em repo de baixa atividade é
+# best-effort e atrasa rotineiramente por horas (visto 2-7h entre execuções, não minutos) —
+# 8h absorve essa variação sem descaracterizar o alarme. Ver falso positivo de 2026-08-31.
+IDADE_MAXIMA_DETECTOR = timedelta(hours=8)
 
 TIMEOUT = 15
 
