@@ -459,6 +459,44 @@ class GCSStorage:
         logger.info(f"{len(dates)} game_ids com data mapeados (season={season})")
         return dates
 
+    def _read_ndjson_blob(
+        self, blob_path: str, missing_label: str = "Arquivo"
+    ) -> List[Dict[str, Any]]:
+        """Baixa e faz parse de um blob NDJSON do GCS, linha a linha.
+
+        Compartilhado por todos os leitores de fixtures/teams abaixo. Extraído depois que
+        cinco cópias quase-idênticas deste loop divergiram sutilmente entre si (DE#60,
+        achado do code review) — mudança de formato agora se faz num lugar só.
+
+        Args:
+            blob_path: path completo do blob (sem o bucket).
+            missing_label: prefixo da mensagem de log quando o blob não existe (ex.:
+                "Arquivo de fixtures").
+
+        Returns:
+            Lista de dicts, um por linha válida. [] se o blob não existir. Linha
+            individualmente inválida é logada e pulada — não aborta as demais.
+        """
+        import json
+
+        blob = self.bucket.blob(blob_path)
+        if not blob.exists():
+            logger.warning(f"{missing_label} não encontrado: {blob_path}")
+            return []
+
+        content = blob.download_as_text()
+        rows = []
+        for line_num, line in enumerate(content.strip().split("\n"), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                logger.warning(f"Linha {line_num} inválida em {blob_path}: {str(e)}")
+                continue
+        return rows
+
     def get_fixture_ids_from_storage(self, mode: str) -> List[Dict[str, Any]]:
         """
         Lê o arquivo de fixtures do GCS (raw_futebol_fixtures_{mode}.json) e retorna
@@ -471,30 +509,15 @@ class GCSStorage:
             Lista de dicts {"fixture_id": int, "date_utc": "YYYY-MM-DD"} dos jogos com
             status FT/AET/PEN (finalizados; inclui mata-mata por prorrogação/pênaltis).
         """
-        import json
         from datetime import datetime, timezone
 
         finished_statuses = {"FT", "AET", "PEN"}
         blob_path = get_gcs_path("fixtures", 0, sport="futebol", mode=mode)
         logger.info(f"Lendo fixtures de gs://{self.bucket_name}/{blob_path}...")
+        rows = self._read_ndjson_blob(blob_path, missing_label="Arquivo de fixtures")
 
-        blob = self.bucket.blob(blob_path)
-        if not blob.exists():
-            logger.warning(f"Arquivo de fixtures não encontrado: {blob_path}")
-            return []
-
-        content = blob.download_as_text()
         fixtures = []
-        for line_num, line in enumerate(content.strip().split("\n"), 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Linha {line_num} inválida em {blob_path}: {str(e)}")
-                continue
-
+        for row in rows:
             fixture = row.get("fixture") or {}
             status_short = (fixture.get("status") or {}).get("short")
             if status_short not in finished_statuses:
@@ -513,6 +536,31 @@ class GCSStorage:
         )
         return fixtures
 
+    def get_fixture_rows_from_storage(self, mode: str) -> List[Dict[str, Any]]:
+        """
+        Lê o arquivo de fixtures do GCS (raw_futebol_fixtures_{mode}.json) e devolve as
+        linhas CRUAS, sem filtro nenhum (DE#60 — cadência da coleta de placar).
+
+        Diferente de get_fixture_ids_from_storage/get_upcoming_fixture_ids (que já filtram
+        por status e devolvem só fixture_id/date_utc), este método existe para quem precisa
+        da linha INTEIRA — seleção de candidatos a refresh e merge do arquivo `_live.json`
+        são funções puras (src/extractors/fixtures_extractor.py) que operam sobre esta lista
+        sem tocar GCS, para ficarem testáveis sem rede.
+
+        Args:
+            mode: "current" | "backfill" | "live" — seleciona qual arquivo de fixtures ler.
+
+        Returns:
+            Lista de rows crus (dict), na mesma forma gravada por FixturesExtractor.extract()
+            (requested_league_id, requested_season, loaded_at, fixture, league, teams, goals,
+            score). [] se o arquivo não existir.
+        """
+        blob_path = get_gcs_path("fixtures", 0, sport="futebol", mode=mode)
+        logger.info(f"Lendo fixtures de gs://{self.bucket_name}/{blob_path}...")
+        rows = self._read_ndjson_blob(blob_path, missing_label="Arquivo de fixtures")
+        logger.info(f"{len(rows)} linhas cruas em {blob_path} (mode={mode})")
+        return rows
+
     def get_team_ids_from_storage(self, mode: str) -> List[Dict[str, Any]]:
         """
         Lê o arquivo de teams do GCS (raw_futebol_teams_{mode}.json) e retorna a lista
@@ -529,28 +577,12 @@ class GCSStorage:
         Returns:
             Lista de dicts {"team_id": int, "league_id": int, "season": int}.
         """
-        import json
-
         blob_path = get_gcs_path("teams", 0, sport="futebol", mode=mode)
         logger.info(f"Lendo teams de gs://{self.bucket_name}/{blob_path}...")
+        rows = self._read_ndjson_blob(blob_path, missing_label="Arquivo de teams")
 
-        blob = self.bucket.blob(blob_path)
-        if not blob.exists():
-            logger.warning(f"Arquivo de teams não encontrado: {blob_path}")
-            return []
-
-        content = blob.download_as_text()
         teams = []
-        for line_num, line in enumerate(content.strip().split("\n"), 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Linha {line_num} inválida em {blob_path}: {str(e)}")
-                continue
-
+        for row in rows:
             team_id = (row.get("team") or {}).get("id")
             league_id = row.get("requested_league_id")
             season = row.get("requested_season")
@@ -582,32 +614,17 @@ class GCSStorage:
             Lista de dicts {"fixture_id": int, "date_utc": "YYYY-MM-DD"} dos jogos NS
             com kickoff iminente.
         """
-        import json
         from datetime import datetime, timezone, timedelta
 
         blob_path = get_gcs_path("fixtures", 0, sport="futebol", mode="current")
         logger.info(f"Lendo fixtures de gs://{self.bucket_name}/{blob_path}...")
-
-        blob = self.bucket.blob(blob_path)
-        if not blob.exists():
-            logger.warning(f"Arquivo de fixtures não encontrado: {blob_path}")
-            return []
+        rows = self._read_ndjson_blob(blob_path, missing_label="Arquivo de fixtures")
 
         now = datetime.now(timezone.utc)
         horizon = now + timedelta(minutes=window_min)
 
-        content = blob.download_as_text()
         fixtures = []
-        for line_num, line in enumerate(content.strip().split("\n"), 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Linha {line_num} inválida em {blob_path}: {str(e)}")
-                continue
-
+        for row in rows:
             fixture = row.get("fixture") or {}
             status_short = (fixture.get("status") or {}).get("short")
             if status_short != "NS":  # Not Started — jogo ainda por começar
@@ -649,32 +666,17 @@ class GCSStorage:
             Lista de dicts {"fixture_id": int, "kickoff_ts": int (unix UTC),
             "league_id": int, "season": int} dos jogos NS dentro da janela.
         """
-        import json
         from datetime import datetime, timezone, timedelta
 
         blob_path = get_gcs_path("fixtures", 0, sport="futebol", mode="current")
         logger.info(f"Lendo fixtures de gs://{self.bucket_name}/{blob_path}...")
-
-        blob = self.bucket.blob(blob_path)
-        if not blob.exists():
-            logger.warning(f"Arquivo de fixtures não encontrado: {blob_path}")
-            return []
+        rows = self._read_ndjson_blob(blob_path, missing_label="Arquivo de fixtures")
 
         now = datetime.now(timezone.utc)
         horizon = now + timedelta(minutes=window_min)
 
-        content = blob.download_as_text()
         fixtures = []
-        for line_num, line in enumerate(content.strip().split("\n"), 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Linha {line_num} inválida em {blob_path}: {str(e)}")
-                continue
-
+        for row in rows:
             fixture = row.get("fixture") or {}
             status_short = (fixture.get("status") or {}).get("short")
             if status_short != "NS":  # Not Started — jogo ainda por começar

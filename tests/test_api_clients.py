@@ -17,11 +17,12 @@ import pytest
 from src.clients.base_client import ApiQuotaExceededError, is_quota_error
 
 
-def _resp(json_payload):
-    """Constrói um objeto tipo requests.Response mockado com .json()."""
+def _resp(json_payload, headers=None):
+    """Constrói um objeto tipo requests.Response mockado com .json() e .headers."""
     r = MagicMock()
     r.json.return_value = json_payload
     r.status_code = 200
+    r.headers = headers or {}
     return r
 
 
@@ -107,6 +108,82 @@ def test_get_fixtures_erro_de_parametro_nao_levanta(af_client):
     with patch.object(af_client, "_make_request", return_value=_resp(envelope)):
         out = af_client.get_fixtures(league_id=71, season=2025)
     assert out["errors"] == {"league": "required"}
+
+
+# --------------------------------------------------------------------------- #
+# DE#60 — get_fixtures_live / get_fixtures_by_ids / leitura de cota pelo header
+# --------------------------------------------------------------------------- #
+def test_get_fixtures_live_chama_com_live_all(af_client):
+    envelope = {"errors": None, "response": [{"fixture": {"id": 1}}]}
+    with patch.object(af_client, "_make_request", return_value=_resp(envelope)) as mock_req:
+        out = af_client.get_fixtures_live()
+    mock_req.assert_called_once_with("GET", "fixtures", params={"live": "all"})
+    assert out["response"] == [{"fixture": {"id": 1}}]
+
+
+def test_get_fixtures_live_quota_levanta_excecao(af_client):
+    envelope = {"errors": {"requests": "limit reached"}, "response": []}
+    with patch.object(af_client, "_make_request", return_value=_resp(envelope)):
+        with pytest.raises(ApiQuotaExceededError):
+            af_client.get_fixtures_live()
+
+
+def test_get_fixtures_by_ids_monta_parametro_com_os_ids(af_client):
+    envelope = {"errors": None, "response": []}
+    with patch.object(af_client, "_make_request", return_value=_resp(envelope)) as mock_req:
+        af_client.get_fixtures_by_ids([111, 222, 333])
+    _, kwargs = mock_req.call_args
+    assert kwargs["params"]["ids"] == "111-222-333"
+
+
+def test_get_fixtures_by_ids_quota_levanta_excecao(af_client):
+    envelope = {"errors": {"requests": "limit reached"}, "response": []}
+    with patch.object(af_client, "_make_request", return_value=_resp(envelope)):
+        with pytest.raises(ApiQuotaExceededError):
+            af_client.get_fixtures_by_ids([1])
+
+
+def test_get_fixtures_by_ids_lote_acima_do_teto_confirmado_recusa_sem_chamar(af_client):
+    """DE#60 Fase B (sondado 2026-08-31): 21 ids é rejeitado pela própria API com erro de
+    parâmetro. get_fixtures_by_ids recusa ANTES de gastar a chamada — mais barato e mais
+    claro que deixar a API devolver o erro de regex."""
+    ids = list(range(1, 22))  # 21 > FIXTURES_BY_IDS_MAX_BATCH (20)
+    with patch.object(af_client, "_make_request") as mock_req:
+        with pytest.raises(ValueError):
+            af_client.get_fixtures_by_ids(ids)
+    mock_req.assert_not_called()
+
+
+def test_get_fixtures_by_ids_exatamente_no_teto_passa(af_client):
+    envelope = {"errors": None, "response": []}
+    ids = list(range(1, 21))  # exatamente 20 — confirmado que passa
+    with patch.object(af_client, "_make_request", return_value=_resp(envelope)) as mock_req:
+        af_client.get_fixtures_by_ids(ids)
+    mock_req.assert_called_once()
+
+
+def test_quota_remaining_le_do_header_do_endpoint_real(af_client):
+    envelope = {"errors": None, "response": []}
+    resp = _resp(envelope, headers={"x-ratelimit-requests-remaining": "5680"})
+    with patch.object(af_client, "_make_request", return_value=resp):
+        out = af_client.get_fixtures_live()
+    assert out["quota_remaining"] == 5680
+
+
+def test_quota_remaining_ausente_vira_none_sem_quebrar(af_client):
+    envelope = {"errors": None, "response": []}
+    resp = _resp(envelope, headers={})
+    with patch.object(af_client, "_make_request", return_value=resp):
+        out = af_client.get_fixtures_live()
+    assert out["quota_remaining"] is None
+
+
+def test_quota_remaining_nao_numerico_vira_none_sem_quebrar(af_client):
+    envelope = {"errors": None, "response": []}
+    resp = _resp(envelope, headers={"x-ratelimit-requests-remaining": "not-a-number"})
+    with patch.object(af_client, "_make_request", return_value=resp):
+        out = af_client.get_fixtures_live()
+    assert out["quota_remaining"] is None
 
 
 def test_get_players_quota_na_pagina_2_aborta(af_client):

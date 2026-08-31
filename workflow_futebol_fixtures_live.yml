@@ -1,0 +1,220 @@
+# ============================================================
+# WORKFLOW FUTEBOL FIXTURES LIVE (cadência de placar — DE#60)
+# Poll de alta frequência do status/placar dos fixtures em andamento e recém-encerrados
+# (mode=live), SEM varrer a temporada inteira. Existe porque fact_fixtures só era
+# reconstruída 1x/dia (workflow_futebol.yml, 0 9 * * *) — entre o apito e as 9h UTC
+# seguintes o status ficava desatualizado, gerando até 43 versões espúrias/dia no
+# histórico append-only (AE#86). Este workflow fecha a faixa 0-10h dessa medição.
+#
+# Disparado pelo Cloud Scheduler a cada ~15min (SA schedulerde@, tem workflows.invoker) —
+# mesma cadência de futebol-odds-pregame/futebol-lineups-pregame.
+#
+# Workflow DEDICADO, não dobrado no workflow_futebol_odds.yml: aquele só roda o dbt
+# quando há odds NOVAS (saved_count>0 de odds), e na madrugada/pós-apito raramente há —
+# o dbt seria pulado justo quando a atualização de status importa. Clonado da estrutura
+# de workflow_futebol_lineups.yml (o análogo mais próximo: poll + gate em saved_count +
+# dbt enxuto + recovery --full-refresh).
+#
+# O dbt usa --select SEM '+' (enxuto): fixtures não depende de mais nada upstream, e o
+# resto do funil (fact_odds_snapshot, fact_value_funnel, ...) pega o fact_fixtures fresco
+# no ciclo de odds seguinte (mesma cadência de 15min) — resíduo declarado no item 4 do
+# escopo da DE#60: até 15min de defasagem entre status atualizado e funil recalculado.
+# ============================================================
+
+main:
+    steps:
+    - init:
+        assign:
+        - workflow_start_time: ${sys.now()}
+        - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
+        - workflow_status: "SUCCESS"
+        - saved_count: 0
+
+    - log_start:
+        call: sys.log
+        args:
+            severity: INFO
+            data:
+                message: "Workflow fixtures live (cadência de placar) started"
+                workflow_name: "workflow_futebol_fixtures_live"
+                execution_id: ${execution_id}
+
+    # ========================================================================
+    # FASE 1: Extração do placar/status ao vivo (mode=live)
+    # ========================================================================
+    - phase1_extract_fixtures_live:
+        try:
+            steps:
+            - call_extract_fixtures_live:
+                try:
+                    call: http.get
+                    args:
+                        url: https://extract-fixtures-r52p4w2f2a-ue.a.run.app
+                        auth:
+                            type: OIDC
+                        query:
+                            mode: "live"
+                        timeout: 300
+                    result: fixtures_live_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - read_saved_count:
+                assign:
+                - saved_count: ${default(map.get(fixtures_live_result.body, "saved_count"), 0)}
+            - log_phase1_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "Fixtures live extraction completed"
+                        saved_count: ${saved_count}
+        except:
+            as: e
+            steps:
+            - log_phase1_error:
+                call: sys.log
+                args:
+                    severity: ERROR
+                    data:
+                        message: "Fixtures live extraction failed"
+                        error: ${e.message}
+            - handle_phase1_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
+
+    # ========================================================================
+    # GATE: só roda o dbt se algo foi atualizado neste ciclo (saved_count > 0).
+    # ========================================================================
+    - check_new_fixtures:
+        switch:
+            - condition: ${saved_count > 0}
+              next: phase2_dbt
+        next: skip_dbt
+
+    - skip_dbt:
+        steps:
+        - log_skip:
+            call: sys.log
+            args:
+                severity: INFO
+                data:
+                    message: "Nenhum fixture atualizado neste ciclo — dbt pulado"
+                    saved_count: ${saved_count}
+        - skip_to_finalize:
+            next: finalize
+
+    # ========================================================================
+    # FASE 2: dbt enxuto (só fixtures). Cai em finalize ao terminar.
+    # ========================================================================
+    - phase2_dbt:
+        try:
+            steps:
+            - init_job_config:
+                assign:
+                - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+                - job_full_name: ${"projects/" + project_id + "/locations/us-east1/jobs/dbt-futebol"}
+            - execute_cloud_run_job:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "stg_futebol_fixtures", "fact_fixtures", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: job_execution_result
+                # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+            - log_job_success:
+                call: sys.log
+                args:
+                    severity: INFO
+                    data:
+                        message: "dbt fixtures rebuild completed"
+                        saved_count: ${saved_count}
+                        execution_name: ${job_execution_result.name}
+        except:
+            as: e
+            steps:
+            - log_job_error:
+                call: sys.log
+                args:
+                    severity: WARNING
+                    data:
+                        message: "dbt fixtures rebuild falhou — recovery com --full-refresh"
+                        error: ${e.message}
+            # RECOVERY: reexecuta o MESMO select com --full-refresh. Resolve o caso DETERMINÍSTICO de
+            # drift table<->view (relação existe no BQ como table mas o modelo virou view, ou vice-versa)
+            # — que o retry acima não conserta por reexecutar o comando idêntico. Custo ~0: dbt_futebol
+            # não tem modelo incremental, então fact_fixtures já faz rebuild completo a cada run.
+            - recover_full_refresh:
+                try:
+                    call: googleapis.run.v2.projects.locations.jobs.run
+                    args:
+                        name: ${job_full_name}
+                        body:
+                            overrides:
+                                containerOverrides:
+                                    - args: ["dbt", "run", "--select", "stg_futebol_fixtures", "fact_fixtures", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                    result: recover_result
+                retry:
+                    predicate: ${http.default_retry_predicate}
+                    max_retries: 3
+                    backoff:
+                        initial_delay: 5
+                        max_delay: 60
+                        multiplier: 2
+                except:
+                    as: e2
+                    steps:
+                    - log_recover_failed:
+                        call: sys.log
+                        args:
+                            severity: ERROR
+                            data:
+                                message: "dbt recovery (--full-refresh) também falhou"
+                                error: ${e2.message}
+                    - handle_job_errors:
+                        assign:
+                        - workflow_status: "PARTIAL_FAILURE"
+            - log_recover_done:
+                call: sys.log
+                args:
+                    severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+                    data:
+                        message: ${if(workflow_status == "SUCCESS", "dbt fixtures rebuild recuperado via --full-refresh", "dbt fixtures rebuild falhou mesmo após --full-refresh")}
+                        status: ${workflow_status}
+
+    - finalize:
+        assign:
+        - workflow_end_time: ${sys.now()}
+        - duration_seconds: ${workflow_end_time - workflow_start_time}
+
+    - log_completion:
+        call: sys.log
+        args:
+            severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
+            data:
+                message: "Workflow fixtures live completed"
+                workflow_name: "workflow_futebol_fixtures_live"
+                status: ${workflow_status}
+                saved_count: ${saved_count}
+                duration_seconds: ${duration_seconds}
+
+    - return_result:
+        return:
+            status: ${workflow_status}
+            saved_count: ${saved_count}
+            duration_seconds: ${duration_seconds}

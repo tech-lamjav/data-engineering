@@ -16,6 +16,10 @@ sys.path.insert(0, scripts_dir)
 sys.path.insert(0, os.path.join(scripts_dir, "futebol"))
 
 from extract_fixtures import main as extract_main
+# DE#60: mode=live NÃO passa pelo main() do script (que só ecoa status/mode, sem contagem)
+# — chama o extractor direto, como extract_fixture_lineups/main.py, porque o workflow novo
+# (poll de alta frequência) precisa de saved_count para decidir se vale rodar o dbt.
+from src.extractors.fixtures_extractor import FixturesExtractor
 
 
 @functions_framework.http
@@ -23,10 +27,26 @@ def extract_fixtures(request):
     """API-Football /fixtures pipeline.
 
     Query params:
-        mode: "current" (default, ano corrente) | "backfill" (anos anteriores)
+        mode: "current" (default, ano corrente) | "backfill" (anos anteriores) |
+              "live" (DE#60 — poll de alta frequência, sem varrer a temporada; devolve
+              saved_count)
     """
+    mode = request.args.get("mode", "current")
+
+    if mode == "live":
+        try:
+            extractor = FixturesExtractor(mode="live")
+            extractor.extract_and_save()
+            return {
+                "status": "success",
+                "mode": mode,
+                "saved_count": extractor.last_fresh_count,
+                "message": "Pipeline executed successfully",
+            }, 200
+        except Exception as e:
+            return {"status": "error", "mode": mode, "error": str(e)}, 500
+
     try:
-        mode = request.args.get("mode", "current")
         # O script lê o modo de FIXTURES_MODE dentro do main(). Setamos a env var
         # imediatamente antes da chamada e restauramos no finally, evitando que o
         # valor vaze para requisições subsequentes na mesma instância (warm).

@@ -26,6 +26,7 @@ WORKFLOWS=(
     "workflow-bets:workflow_bets.yml"
     "workflow-futebol:workflow_futebol.yml"
     "workflow-futebol-lineups:workflow_futebol_lineups.yml"
+    "workflow-futebol-fixtures-live:workflow_futebol_fixtures_live.yml"
     "workflow-futebol-team-stats:workflow_futebol_team_stats.yml"
     "workflow-futebol-odds:workflow_futebol_odds.yml"
     "workflow-futebol-predictions:workflow_futebol_predictions.yml"

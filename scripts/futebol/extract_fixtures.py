@@ -3,6 +3,8 @@
 Sem argparse (regra `.cursorrules`). Modo via env var `FIXTURES_MODE`:
 - current (default): ano corrente — schedule diário (atualiza status/placar)
 - backfill: anos anteriores — one-shot manual
+- live (DE#60): poll de alta frequência, sem varrer a temporada — grava
+  raw_futebol_fixtures_live.json (arquivo-fase irmão do current, ver FixturesExtractor)
 """
 import sys
 from pathlib import Path
