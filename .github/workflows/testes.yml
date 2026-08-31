@@ -6,12 +6,15 @@
 # (`tests/test_manifesto_fecho_de_imports.py`, DE #55): o manifesto de procedência
 # apodrece para dentro sem um teste rodando em CI para pegar isso ANTES do merge.
 #
-# POR QUE INSTALA `functions-framework` À PARTE: só existe nos `requirements.txt` de
-# cada `cloud_run/<svc>/`, não no da raiz (é dependência do wrapper HTTP do Cloud Run,
-# não da extração em si). O auditor de fecho de imports resolve `functions_framework`
-# como dependência externa via `importlib.util.find_spec` — sem instalar, o teste
-# ainda passa graças a um fallback documentado, mas instalar aqui faz a checagem via
-# `find_spec` valer de verdade em vez de cair no fallback.
+# POR QUE INSTALA CADA `cloud_run/<svc>/requirements.txt` TAMBÉM: o auditor de fecho
+# de imports resolve dependência externa via `importlib.util.find_spec`, no MESMO
+# interpretador que roda o pytest. `functions-framework` (todo `main.py`) e
+# `psycopg[binary]` (só `sync-bq-to-postgres`) só existem nesses requirements.txt por
+# serviço, não no da raiz — descoberto batendo a cara na primeira execução deste
+# workflow (`psycopg` não instalado ainda quebrou o CI local que rodou antes daqui).
+# Sem instalar, esses dois caem no fallback documentado no próprio teste e ainda
+# passam — mas instalar aqui faz a checagem valer de verdade, e evita achar o próximo
+# gap só quando o CI quebrar de novo.
 name: testes
 
 on:
@@ -38,7 +41,9 @@ jobs:
       - name: Dependências
         run: |
           pip install -r requirements-dev.txt
-          pip install functions-framework==3.10.2
+          for req in cloud_run/*/requirements.txt cloud_run/futebol/*/requirements.txt; do
+            pip install -r "$req"
+          done
 
       - name: pytest
         run: python -m pytest tests/ -v
