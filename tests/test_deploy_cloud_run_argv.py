@@ -110,14 +110,35 @@ def _service_dirs():
 PROCEDENCIA_SCRIPT = REPO_ROOT / "scripts" / "procedencia_servicos.sh"
 
 
+def _manifest_paths():
+    """Todas as paths (`--paths`, um serviço por vez) que os 29 do manifesto real
+    declaram — usado para replicar a mesma árvore, vazia, no repo falso. Fonte única:
+    lê do `procedencia_servicos.sh` de verdade, não duplica a lista aqui à mão (a
+    DE #51 já duplica NBA_SERVICES/FUTEBOL_SERVICES/SHARED_SERVICES vs. o manifesto
+    uma vez; duplicar de novo neste fixture seria a terceira cópia)."""
+    paths = set()
+    servicos = subprocess.run(
+        ["bash", str(PROCEDENCIA_SCRIPT), "--list-servicos"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT), check=True,
+    ).stdout.splitlines()
+    for servico in servicos:
+        if not servico.strip():
+            continue
+        resultado = subprocess.run(
+            ["bash", str(PROCEDENCIA_SCRIPT), servico, "--paths"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT), check=True,
+        )
+        paths.update(l for l in resultado.stdout.splitlines() if l.strip())
+    return paths
+
+
 def _build_fake_repo(root: Path, api_football_key: bool):
     """Árvore mínima com a mesma forma que o `deploy_service()` valida.
 
-    Precisa ser um repo git de verdade (DE #50): `procedencia_servicos.sh` só toca git
-    (`rev-parse --show-toplevel`, `ls-files`) DEPOIS de reconhecer o serviço no
-    manifesto — hoje só `extract-games`. Os outros 28 saem antes disso (exit 3, sem
-    tocar git) e não precisariam de `.git`; é só `extract-games` que exige a árvore
-    ser um repo de verdade e ter as paths do manifesto no disco (ver abaixo).
+    Precisa ser um repo git de verdade (DE #50/#51): `procedencia_servicos.sh` só toca
+    git (`rev-parse --show-toplevel`, `ls-files`) DEPOIS de reconhecer o serviço no
+    manifesto, e agora os 29 estão cobertos — a árvore precisa ter TODAS as paths que o
+    manifesto real declara, não só as de `extract-games`.
     """
     (root / "src").mkdir()
     (root / "src" / "__init__.py").write_text("", encoding="utf-8")
@@ -134,17 +155,28 @@ def _build_fake_repo(root: Path, api_football_key: bool):
         if (REPO_ROOT / "cloud_run" / service_dir / "Procfile").exists():
             (target / "Procfile").write_text("", encoding="utf-8")
 
-    # Paths que o manifesto do `procedencia_servicos.sh` declara para `extract-games` —
-    # o único serviço coberto no tracer bullet (DE #50). Conteúdo vazio: só a EXISTÊNCIA
-    # importa para o fail-closed do hasher; o VALOR do hash não é o que este teste cobre
-    # (isso é `tests/test_procedencia_servicos.py`).
-    (root / "src" / "config.py").write_text("", encoding="utf-8")
+    # Conteúdo vazio: só a EXISTÊNCIA importa para o fail-closed do hasher; o VALOR do
+    # hash não é o que este teste cobre (isso é `tests/test_procedencia_servicos.py`).
     for pasta in ("clients", "storage", "utils", "bigquery"):
-        (root / "src" / pasta).mkdir()
+        (root / "src" / pasta).mkdir(exist_ok=True)
         (root / "src" / pasta / "__init__.py").write_text("", encoding="utf-8")
-    (root / "src" / "extractors").mkdir()
-    (root / "src" / "extractors" / "games_extractor.py").write_text("", encoding="utf-8")
-    (root / "scripts" / "extract_games.py").write_text("", encoding="utf-8")
+
+    for path in _manifest_paths():
+        alvo = root / path
+        # cloud_run/<dir>/{main.py,requirements.txt,Procfile} já foram criados acima —
+        # pular para não sobrescrever (write_text de novo seria inofensivo, mas
+        # `alvo.parent.mkdir` de um arquivo cujo pai já existe também é).
+        if alvo.exists():
+            continue
+        if path in ("src/sync", "src/reporting"):
+            # Diretório declarado inteiro (sync-bq-to-postgres/daily-summary): precisa
+            # de pelo menos um arquivo dentro para o `git ls-files` do hasher não achar
+            # "vazio" (fail-closed do próprio `procedencia_servicos.sh`).
+            alvo.mkdir(parents=True, exist_ok=True)
+            (alvo / "__init__.py").write_text("", encoding="utf-8")
+            continue
+        alvo.parent.mkdir(parents=True, exist_ok=True)
+        alvo.write_text("", encoding="utf-8")
 
     env = dict(FAKE_ENV)
     if api_football_key:

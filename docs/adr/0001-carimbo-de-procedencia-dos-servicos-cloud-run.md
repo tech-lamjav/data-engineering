@@ -90,13 +90,22 @@ Manifesto de três blocos, por serviço:
 | bloco | conteúdo | alcance |
 |---|---|---|
 | **núcleo** | `src/config.py`, `src/clients/`, `src/storage/`, `src/utils/`, `src/bigquery/`, `cloud_run/<dir>/requirements.txt` | todos os 29 |
-| **módulo** | `src/extractors/<x>_extractor.py`; `scripts/<x>.py` **só para NBA**; `src/reporting/` (daily-summary); `src/sync/` (sync-bq-to-postgres) | um serviço |
+| **módulo** | `src/extractors/<x>_extractor.py`; `scripts/<x>.py` **quando o `main.py` importa dele** (ver correção abaixo); `src/reporting/` (daily-summary); `src/sync/` (sync-bq-to-postgres) | um serviço |
 | **serviço** | `cloud_run/<dir>/main.py`, `Procfile` quando existir | um serviço |
 
-O `scripts/` é comportamental **apenas para os 13 serviços de NBA**: eles fazem
-`sys.path.insert(0, scripts_dir)` e importam `from extract_games import main`, que resolve em
-`scripts/extract_games.py`. Os 13 de futebol e o `daily-summary` inserem o path mas importam de
-`src.*` — para eles, `scripts/` está na imagem e não é executado.
+**Correção pós-implementação (DE #51):** a frase original aqui dizia que `scripts/` era
+comportamental "apenas para os 13 serviços de NBA" e que os 13 de futebol importavam de
+`src.*`. A leitura dos 29 `main.py` (feita na implementação, não por suposição de convenção)
+mostrou que isso é falso para 9 dos 13 de futebol — `extract-leagues`, `extract-teams`,
+`extract-players`, `extract-fixtures`, `extract-fixture-statistics`, `extract-fixture-events`,
+`extract-fixture-player-stats`, `extract-team-season-stats` e `extract-standings` seguem o
+**mesmo padrão do NBA** (`from extract_X import main`, resolve em `scripts/futebol/extract_X.py`).
+Só `extract-odds`, `extract-predictions` e `extract-fixture-lineups` chamam o extractor de
+`src/extractors/` direto; `extract-injuries` usa os **dois** caminhos (current/backfill por
+`scripts/`, pregame direto). O manifesto (`scripts/procedencia_servicos.sh`) segue o que cada
+`main.py` de fato importa, não esta tabela — o comentário de cabeçalho do script tem o
+detalhamento por serviço. Ver `docs/adr/` como registro histórico da decisão de desenho; a fonte
+de verdade sobre comportamento é sempre o código.
 
 Ganho medido: a deriva de frota cai de 52 para **38 eventos/92d** (−27%), e **100%** dos
 alarmes cruzados futebol↔NBA desaparecem. O núcleo continua dominando, e isso é a verdade —

@@ -11,11 +11,14 @@
 #   scripts/procedencia_servicos.sh <servico> --nucleo   # só o núcleo compartilhado
 #   scripts/procedencia_servicos.sh <servico> --svc      # só a parte própria do serviço
 #   scripts/procedencia_servicos.sh <servico> --paths    # lista as paths declaradas e sai
+#   scripts/procedencia_servicos.sh --list-servicos      # lista os serviços cobertos e sai
 #
-# TRACER BULLET (DE #50): só `extract-games` está declarado. Os outros 28 entram na
-# DE #51, que também estende o `deploy_cloud_run.sh` às quatro ramificações do
-# `deploy_service()`. Pedir o hash de um serviço não declarado sai com exit 3 — é
-# escopo, não erro de path (esse é o exit 1, abaixo).
+# `--list-servicos` é o que `checa_deriva_servicos.sh` usa para o default (sem args) e
+# o que `deploy_cloud_run.sh` usa para o cross-check fail-closed nos dois sentidos: a
+# tabela do deploy (29 alvos) tem de bater exatamente com `SERVICOS_CONHECIDOS` abaixo.
+# Pedir o hash de um serviço fora dessa lista sai com exit 3 (escopo, não erro de path
+# — esse é o exit 1, abaixo). `cloud_run/extract_player_props/` é o caso deliberado: o
+# diretório é órfão (ver comentário em `deploy_cloud_run.sh`) e não entra aqui.
 #
 # POR QUE O HASH É DO DISCO, e não de `git rev-parse HEAD:<path>`:
 # o `gcloud run deploy --source` empacota o diretório temporário que o
@@ -39,6 +42,28 @@
 # compara; os dois componentes existem para o relatório (DE #52) agrupar por causa
 # comum sem reduzir a verdade por serviço a uma média.
 #
+# POR QUE `scripts/<x>.py` NÃO ENTRA NO MESMO SUBCONJUNTO PARA TODO MUNDO (decisão A′):
+# o manifesto cobre o que o `main.py` de cada serviço EXECUTA, verificado por leitura
+# direta dos 29 `main.py` (não por suposição de convenção) — e a convenção não é
+# uniforme dentro do próprio futebol:
+#   - os 13 de NBA sempre importam `from extract_X import main` (resolve em
+#     `scripts/extract_X.py`, incl. as 3 variantes de player-props que compartilham
+#     `scripts/extract_player_props.py`)
+#   - 9 dos 13 de futebol seguem o mesmo padrão (leagues, teams, players, fixtures,
+#     fixture_statistics, fixture_events, fixture_player_stats, team_season_stats,
+#     standings)
+#   - odds, predictions e fixture_lineups chamam o extractor de `src/extractors/`
+#     DIRETO — `scripts/futebol/extract_{odds,predictions,fixture_lineups}.py` existem
+#     no disco (a imagem os copia) mas nenhum `main.py` os importa: não são
+#     comportamentais e ficam FORA do manifesto desses três
+#   - injuries usa OS DOIS: current/backfill passam por
+#     `scripts/futebol/extract_injuries.py`, pregame chama `InjuriesExtractor` direto —
+#     os dois caminhos estão em produção (ver `cloud_run/futebol/extract_injuries/main.py`)
+# Declarar `scripts/futebol/` inteiro para os 13 (a leitura ingênua do ADR) cobriria
+# menos precisamente o que roda e reintroduziria alarme cruzado dentro do próprio
+# futebol; declarar de menos (achando que nenhum futebol usa `scripts/`) apagaria
+# deriva real dos 9 que usam. A tabela abaixo é o resultado de ler os 29 `main.py`.
+#
 # Ver docs/adr/0001-carimbo-de-procedencia-dos-servicos-cloud-run.md
 
 set -euo pipefail
@@ -49,11 +74,55 @@ set -euo pipefail
 # código — parecendo bug misterioso em vez de diferença de ambiente.
 export LC_ALL=C
 
+# Fonte da verdade para "quais 29 serviços este manifesto cobre" — consumida por
+# `--list-servicos`. Tem de bater 1:1 com os nomes das tabelas NBA_SERVICES /
+# FUTEBOL_SERVICES / SHARED_SERVICES do `deploy_cloud_run.sh` (checado em CI por
+# `tests/test_procedencia_servicos.py` e, em runtime, pelo cross-check fail-closed do
+# próprio `deploy_cloud_run.sh`). Acrescentar um nome aqui sem um `case` correspondente
+# em `declarar_paths()` quebra alto (a checagem de consistência do teste), não em
+# silêncio.
+SERVICOS_CONHECIDOS=(
+    extract-active-players
+    extract-games
+    extract-game-player-stats
+    extract-game-player-stats-period
+    extract-game-player-advanced-stats
+    extract-season-averages
+    extract-team-season-averages
+    extract-player-injuries
+    extract-team-standings
+    extract-player-props-draftkings
+    extract-player-props-caesars
+    extract-player-props-betrivers
+    extract-betting-odds
+    extract-leagues
+    extract-teams
+    extract-players
+    extract-fixtures
+    extract-fixture-statistics
+    extract-fixture-events
+    extract-fixture-lineups
+    extract-fixture-player-stats
+    extract-team-season-stats
+    extract-standings
+    extract-injuries
+    extract-odds
+    extract-predictions
+    notify-execution
+    sync-bq-to-postgres
+    daily-summary
+)
+
 SERVICO="${1:-}"
 FLAG="${2:-}"
 
+if [ "$SERVICO" = "--list-servicos" ]; then
+    printf '%s\n' "${SERVICOS_CONHECIDOS[@]}"
+    exit 0
+fi
+
 if [ -z "$SERVICO" ]; then
-    echo "ERROR: uso: $0 <servico> [--paths|--nucleo|--svc]" >&2
+    echo "ERROR: uso: $0 <servico> [--paths|--nucleo|--svc] | $0 --list-servicos" >&2
     exit 2
 fi
 
@@ -62,26 +131,288 @@ fi
 # main.py/Procfile) num só componente, PROCEDENCIA_HASH_SVC — o ADR só grava dois
 # componentes por serviço porque o relatório (#52) só precisa distinguir "é o núcleo
 # compartilhado" de "não é".
-#
-# Acrescentar um serviço aqui é acrescentar um ramo — feito na DE #51 para os outros 28.
 declarar_paths() {
     local servico=$1
+
+    # Núcleo compartilhado (decisão A′ do ADR): o que `BaseExtractor` importa e todo
+    # extrator herda. Uniforme para os 29 por decisão do ADR — inclusive
+    # `notify-execution`, que hoje não importa nada de `src/` (é só `smtplib`): manter o
+    # mecanismo uniforme é mais simples que um quinto caso especial, e over-declarar
+    # núcleo não é fail-open (o risco do manifesto é declarar de MENOS, não de mais).
+    # Falta só o `requirements.txt`, que é por serviço porque cada imagem builda suas
+    # próprias dependências.
+    local NUCLEO_COMUM=(
+        src/config.py
+        src/clients
+        src/storage
+        src/utils
+        src/bigquery
+    )
+
     case "$servico" in
-        extract-games)
-            NUCLEO_PATHS=(
-                src/config.py
-                src/clients
-                src/storage
-                src/utils
-                src/bigquery
-                cloud_run/extract_games/requirements.txt
+        # ---- NBA (13): scripts/extract_X.py é comportamental (sys.path + `from extract_X import main`) ----
+        extract-active-players)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_active_players/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/active_players_extractor.py
+                scripts/extract_active_players.py
+                cloud_run/extract_active_players/main.py
             )
+            ;;
+        extract-games)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_games/requirements.txt)
             SVC_PATHS=(
                 src/extractors/games_extractor.py
                 scripts/extract_games.py
                 cloud_run/extract_games/main.py
             )
             ;;
+        extract-game-player-stats)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_game_player_stats/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/game_player_stats_extractor.py
+                scripts/extract_game_player_stats.py
+                cloud_run/extract_game_player_stats/main.py
+            )
+            ;;
+        extract-game-player-stats-period)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_game_player_stats_period/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/game_player_stats_period_extractor.py
+                scripts/extract_game_player_stats_period.py
+                cloud_run/extract_game_player_stats_period/main.py
+            )
+            ;;
+        extract-game-player-advanced-stats)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_game_player_advanced_stats/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/game_player_advanced_stats_extractor.py
+                scripts/extract_game_player_advanced_stats.py
+                cloud_run/extract_game_player_advanced_stats/main.py
+            )
+            ;;
+        extract-season-averages)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_season_averages/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/season_averages_extractor.py
+                scripts/extract_season_averages.py
+                cloud_run/extract_season_averages/main.py
+            )
+            ;;
+        extract-team-season-averages)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_team_season_averages/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/team_season_averages_extractor.py
+                scripts/extract_team_season_averages.py
+                cloud_run/extract_team_season_averages/main.py
+            )
+            ;;
+        extract-player-injuries)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_player_injuries/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/player_injuries_extractor.py
+                scripts/extract_player_injuries.py
+                cloud_run/extract_player_injuries/main.py
+            )
+            ;;
+        extract-team-standings)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_team_standings/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/team_standings_extractor.py
+                scripts/extract_team_standings.py
+                cloud_run/extract_team_standings/main.py
+            )
+            ;;
+        extract-player-props-draftkings)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_player_props_draftkings/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/player_props_extractor.py
+                scripts/extract_player_props.py
+                cloud_run/extract_player_props_draftkings/main.py
+            )
+            ;;
+        extract-player-props-caesars)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_player_props_caesars/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/player_props_extractor.py
+                scripts/extract_player_props.py
+                cloud_run/extract_player_props_caesars/main.py
+            )
+            ;;
+        extract-player-props-betrivers)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_player_props_betrivers/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/player_props_extractor.py
+                scripts/extract_player_props.py
+                cloud_run/extract_player_props_betrivers/main.py
+            )
+            ;;
+        extract-betting-odds)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/extract_betting_odds/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/betting_odds_extractor.py
+                scripts/extract_betting_odds.py
+                cloud_run/extract_betting_odds/main.py
+            )
+            ;;
+
+        # ---- Futebol (13) — ver nota "POR QUE scripts/<x>.py NÃO ENTRA..." no cabeçalho ----
+        extract-leagues)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_leagues/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/leagues_extractor.py
+                scripts/futebol/extract_leagues.py
+                cloud_run/futebol/extract_leagues/main.py
+            )
+            ;;
+        extract-teams)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_teams/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/teams_extractor.py
+                scripts/futebol/extract_teams.py
+                cloud_run/futebol/extract_teams/main.py
+            )
+            ;;
+        extract-players)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_players/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/players_extractor.py
+                scripts/futebol/extract_players.py
+                cloud_run/futebol/extract_players/main.py
+            )
+            ;;
+        extract-fixtures)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_fixtures/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/fixtures_extractor.py
+                scripts/futebol/extract_fixtures.py
+                cloud_run/futebol/extract_fixtures/main.py
+            )
+            ;;
+        extract-fixture-statistics)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_fixture_statistics/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/fixture_statistics_extractor.py
+                scripts/futebol/extract_fixture_statistics.py
+                cloud_run/futebol/extract_fixture_statistics/main.py
+            )
+            ;;
+        extract-fixture-events)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_fixture_events/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/fixture_events_extractor.py
+                scripts/futebol/extract_fixture_events.py
+                cloud_run/futebol/extract_fixture_events/main.py
+            )
+            ;;
+        extract-fixture-lineups)
+            # main.py chama `FixtureLineupsExtractor` de `src/extractors/` DIRETO.
+            # `scripts/futebol/extract_fixture_lineups.py` existe no disco (a imagem
+            # copia `scripts/` inteiro) mas nenhum import o alcança — fora do manifesto
+            # de propósito, não por esquecimento.
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_fixture_lineups/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/fixture_lineups_extractor.py
+                cloud_run/futebol/extract_fixture_lineups/main.py
+            )
+            ;;
+        extract-fixture-player-stats)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_fixture_player_stats/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/fixture_player_stats_extractor.py
+                scripts/futebol/extract_fixture_player_stats.py
+                cloud_run/futebol/extract_fixture_player_stats/main.py
+            )
+            ;;
+        extract-team-season-stats)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_team_season_stats/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/team_season_stats_extractor.py
+                scripts/futebol/extract_team_season_stats.py
+                cloud_run/futebol/extract_team_season_stats/main.py
+            )
+            ;;
+        extract-standings)
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_standings/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/standings_extractor.py
+                scripts/futebol/extract_standings.py
+                cloud_run/futebol/extract_standings/main.py
+            )
+            ;;
+        extract-injuries)
+            # OS DOIS caminhos estão em produção: current/backfill passam por
+            # `scripts/futebol/extract_injuries.py`; pregame chama `InjuriesExtractor`
+            # direto (ver `cloud_run/futebol/extract_injuries/main.py`).
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_injuries/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/injuries_extractor.py
+                scripts/futebol/extract_injuries.py
+                cloud_run/futebol/extract_injuries/main.py
+            )
+            ;;
+        extract-odds)
+            # main.py chama `OddsExtractor` de `src/extractors/` DIRETO.
+            # `scripts/futebol/extract_odds.py` existe no disco mas não é importado —
+            # fora do manifesto de propósito.
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_odds/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/odds_extractor.py
+                cloud_run/futebol/extract_odds/main.py
+            )
+            ;;
+        extract-predictions)
+            # main.py chama `PredictionsExtractor` de `src/extractors/` DIRETO.
+            # `scripts/futebol/extract_predictions.py` existe no disco mas não é
+            # importado — fora do manifesto de propósito.
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/futebol/extract_predictions/requirements.txt)
+            SVC_PATHS=(
+                src/extractors/predictions_extractor.py
+                cloud_run/futebol/extract_predictions/main.py
+            )
+            ;;
+
+        # ---- Compartilhados (3) ----
+        notify-execution)
+            # Não importa `src/`/`scripts/` nenhum — a lógica inteira (SMTP) mora no
+            # próprio `main.py`. Núcleo continua declarado por uniformidade (ver acima).
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/notify_execution/requirements.txt)
+            SVC_PATHS=(
+                cloud_run/notify_execution/main.py
+                cloud_run/notify_execution/Procfile
+            )
+            ;;
+        sync-bq-to-postgres)
+            # `src/sync/` declarado como diretório (não arquivo a arquivo): o serviço
+            # importa `src.sync.bq_to_postgres`, e o módulo é pequeno o bastante para o
+            # diretório inteiro ser a granularidade certa (ADR: "sync-bq-to-postgres
+            # declara src/sync/").
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/sync_bq_to_postgres/requirements.txt)
+            SVC_PATHS=(
+                src/sync
+                cloud_run/sync_bq_to_postgres/main.py
+            )
+            ;;
+        daily-summary)
+            # `src/reporting/` declarado como diretório pela mesma razão do sync — e
+            # porque é o próprio canal de alarme (ADR, "escopo: 29 alvos, não 26").
+            NUCLEO_PATHS=("${NUCLEO_COMUM[@]}" cloud_run/daily_summary/requirements.txt)
+            SVC_PATHS=(
+                src/reporting
+                cloud_run/daily_summary/main.py
+                cloud_run/daily_summary/Procfile
+            )
+            ;;
+
+        extract-player-props)
+            # Diretório ÓRFÃO (ver comentário em `deploy_cloud_run.sh`, junto de
+            # NBA_SERVICES): substituído pelas 3 variantes por vendor acima. Não é
+            # deployado por `deploy_cloud_run.sh` e não entra no manifesto de
+            # propósito — DE #51 AC. Confirmar que não há serviço Cloud Run órfão
+            # rodando esse código defasado em produção é a DE #53.
+            return 3
+            ;;
+
         *)
             return 3
             ;;
@@ -90,8 +421,8 @@ declarar_paths() {
 }
 
 if ! declarar_paths "$SERVICO"; then
-    echo "ERROR: servico '$SERVICO' ainda nao esta no manifesto do procedencia_servicos.sh." >&2
-    echo "       Tracer bullet da DE #50 cobre so extract-games; os outros 28 entram na DE #51." >&2
+    echo "ERROR: servico '$SERVICO' nao esta no manifesto do procedencia_servicos.sh." >&2
+    echo "       Rode '$0 --list-servicos' para ver os 29 cobertos." >&2
     exit 3
 fi
 
