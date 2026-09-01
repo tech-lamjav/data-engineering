@@ -65,15 +65,24 @@ def _carimbos_ok():
     ]
 
 
+def _veredito(frota="imagens dbt", conclusion="success", quando=None, error=None):
+    return VereditoDetector(
+        frota=frota,
+        repo="tech-lamjav/analytics-engineering",
+        remedio="Rode ./build-and-push.sh.",
+        conclusion=conclusion,
+        quando=quando if quando is not None else AGORA - timedelta(minutes=20),
+        url="https://github.com/tech-lamjav/analytics-engineering/actions/runs/1",
+        error=error,
+    )
+
+
 def _info(conclusion="success", quando=None, error=None):
+    """UMA frota (imagens dbt), verde por padrão nas outras chamadas do teste — mantém a
+    forma antiga dos testes que não têm nada a ver com a generalização da DE #56."""
     return ProcedenciaInfo(
         carimbos=_carimbos_ok(),
-        veredito=VereditoDetector(
-            conclusion=conclusion,
-            quando=quando if quando is not None else AGORA - timedelta(minutes=20),
-            url="https://github.com/tech-lamjav/analytics-engineering/actions/runs/1",
-            error=error,
-        ),
+        vereditos=[_veredito(conclusion=conclusion, quando=quando, error=error)],
     )
 
 
@@ -102,10 +111,10 @@ def test_erro_de_leitura_nao_vira_alarme():
     """Assimetria deliberada: erro de leitura degrada o corpo, nao pisca o assunto."""
     info = ProcedenciaInfo(
         carimbos=_carimbos_ok(),
-        veredito=VereditoDetector(error="ConnectionError: timeout"),
+        vereditos=[_veredito(error="ConnectionError: timeout")],
     )
     assert info.alarme is False
-    assert "indisponivel" in build_procedencia_section(info)
+    assert "indispon" in build_procedencia_section(info)
 
 
 # ---------------------------------------------------------------- assunto
@@ -153,7 +162,7 @@ def test_job_sem_carimbo_aparece_marcado():
     """Fail-closed: carimbo ausente e o estado de um job nunca deployado pelo script novo."""
     info = ProcedenciaInfo(
         carimbos=[CarimboJob(job="dbt-nba"), *_carimbos_ok()[:1]],
-        veredito=VereditoDetector(conclusion="failure", quando=AGORA),
+        vereditos=[_veredito(conclusion="failure", quando=AGORA)],
     )
     html = build_procedencia_section(info)
     assert "SEM CARIMBO" in html
@@ -197,7 +206,54 @@ def test_detector_inexistente_e_estado_nomeado_e_nao_alarme(monkeypatch):
             raise AssertionError("404 nao deveria chegar a ser desserializado")
 
     monkeypatch.setattr(mod.requests, "get", lambda *a, **k: _Resp())
-    v = mod.collect_veredito()
+    v = mod.collect_veredito("imagens dbt", "tech-lamjav/analytics-engineering", "deriva-imagem.yml")
     assert v.conclusion is None
     assert "nao encontrado" in v.error
-    assert ProcedenciaInfo(carimbos=[], veredito=v).alarme is False
+    assert ProcedenciaInfo(carimbos=[], vereditos=[v]).alarme is False
+
+
+def test_collect_vereditos_cobre_as_duas_frotas(monkeypatch):
+    """DE #56: uma leitura por frota, na ordem declarada em FROTAS."""
+    import src.reporting.procedencia as mod
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"workflow_runs": [{"conclusion": "success", "updated_at": None, "html_url": None}]}
+
+    monkeypatch.setattr(mod.requests, "get", lambda *a, **k: _Resp())
+    vereditos = mod.collect_vereditos()
+    assert [v.frota for v in vereditos] == ["imagens dbt", "serviços Cloud Run"]
+    assert all(v.conclusion == "success" for v in vereditos)
+
+
+def test_qualquer_frota_vermelha_vira_alarme():
+    """O OR entre frotas: só a segunda (serviços) derivou, e ainda assim vira [DERIVA]."""
+    info = ProcedenciaInfo(
+        carimbos=_carimbos_ok(),
+        vereditos=[
+            _veredito(frota="imagens dbt", conclusion="success"),
+            _veredito(frota="serviços Cloud Run", conclusion="failure"),
+        ],
+    )
+    assert info.alarme is True
+
+
+def test_corpo_nomeia_a_frota_que_derivou():
+    """O aceite da DE #56: o corpo diz QUAL frota derivou, não só que alguma derivou."""
+    info = ProcedenciaInfo(
+        carimbos=_carimbos_ok(),
+        vereditos=[
+            _veredito(frota="imagens dbt", conclusion="success"),
+            _veredito(frota="serviços Cloud Run", conclusion="failure"),
+        ],
+    )
+    html = build_procedencia_section(info)
+    assert "serviços Cloud Run" in html
+    assert "imagens dbt" in html
+    # a frota verde não é descrita como tendo derivado
+    assert "imagens dbt</b>: o detector horário acusou deriva" not in html

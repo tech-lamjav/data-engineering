@@ -1,0 +1,67 @@
+# Detector de deriva dos 29 serviços Cloud Run (NBA + futebol).
+#
+# Pergunta, de hora em hora: os serviços que o Cloud Run está rodando correspondem ao
+# código no master? Compara o carimbo de procedência gravado em cada serviço
+# (`scripts/deploy_cloud_run.sh` + `scripts/procedencia_servicos.sh`) com o hash
+# recalculado deste checkout. Ver docs/adr/0001-carimbo-de-procedencia-dos-servicos-cloud-run.md.
+#
+# POR QUE ESTE DETECTOR EXISTE (DE #44): até aqui essa conferência era manual e
+# dependia de alguém lembrar. Os 13 serviços da NBA rodaram de 25/06 a 24/08/2026 — dois
+# meses — com `src/` defasado, incluindo a ausência do retry de upload ao GCS, sem que
+# nada acusasse. O que expôs isso foi investigação manual, não um alarme.
+#
+# POR QUE ARQUIVO PRÓPRIO, e não um alvo a mais na matrix do `deriva-imagem.yml` do
+# analytics-engineering: aquele arquivo já documenta a lição, em 104 execuções vermelhas
+# seguidas — o GitHub notifica por EXECUÇÃO, não por job, então um alvo permanentemente
+# vermelho anestesia a notificação de um alvo novo na mesma execução. Aqui não há matrix
+# nem múltiplos jobs porque `checa_deriva_servicos.sh` já cobre os 29 alvos numa
+# invocação só, agrupados por causa comum (DE #52) — é o próprio script que resolve o
+# "29 alarmes por commit rotineiro", não a estrutura do workflow.
+#
+# ⚠️ Repositório público: workflow agendado é desativado após 60 dias sem atividade no
+# repo. Só COMMIT reseta o contador.
+#
+# ⚠️ SETUP PENDENTE (ver comentário do PR/issue DE#54): este é o primeiro GitHub
+# Actions deste repositório. O secret referenciado abaixo (`GCP_SA_KEY`) ainda não
+# existe nas settings — precisa de uma service account com `roles/run.viewer` sobre
+# Cloud Run SERVICES (o papel que a SA do detector dbt do analytics-engineering já tem
+# cobre JOBS; serviço é outro tipo de recurso, e não foi possível confirmar/conceder
+# nesta sessão por falta de acesso ao gcloud). Até o secret existir, este workflow falha
+# na etapa de autenticação — falha de setup, não deriva.
+
+name: Deriva de serviços Cloud Run
+
+on:
+  schedule:
+    # Minuto 35 para não cair junto com o minuto 20 do deriva-imagem.yml (analytics-engineering)
+    # nem com os ciclos */15 dos workflows de coleta.
+    - cron: '35 * * * *'
+  workflow_dispatch:
+
+jobs:
+  checa-deriva:
+    name: deriva serviços
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Autenticar no GCP
+        uses: google-github-actions/auth@v2
+        with:
+          # ⚠️ Secret ainda não criado nas settings deste repo — ver nota de SETUP
+          # PENDENTE no cabeçalho. Precisa de roles/run.viewer em Cloud Run services.
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Instalar gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: smartbetting-dados
+
+      - name: Checar deriva
+        # Sem argumento: os 29 alvos do manifesto (procedencia_servicos.sh --list-servicos).
+        run: ./scripts/checa_deriva_servicos.sh
