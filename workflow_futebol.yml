@@ -597,15 +597,22 @@ main:
                         job_name: ${job_name}
 
             # ------------------------------------------------------------------
-            # O SEED DO DENOMINADOR CONGELADO (AE #105, ADR 0005).
+            # O SEED DO DENOMINADOR CONGELADO (AE #105, ADR 0005; declarado desde a
+            # PPP#365, AE#144, ADR 0013 — 2026-09-04).
             #
             # `dbt run` NAO constroi seed — ele so constroi modelo. Sem este passo a tabela
-            # `futebol_p95_nota_contexto` nunca e atualizada a partir do CSV versionado, e o
+            # `futebol_teto_nota_contexto` nunca e atualizada a partir do CSV versionado, e o
             # `fact_value_funnel` normaliza a nota por um denominador velho, em silencio:
             # nenhuma guarda de esquema acende, porque a tabela existe e tem linhas.
             #
-            # FICA SO NO DIARIO. O CSV muda por commit — uma remedicao do p95 —, nunca a cada
-            # 15 minutos; por-lo tambem no workflow_futebol_odds.yml pagaria carga por nada.
+            # TROCADO de `futebol_p95_nota_contexto` para `futebol_teto_nota_contexto` na
+            # AE#144: o denominador vivo deixou de ser medido (percentil sobre janela) e
+            # passou a ser declarado (soma dos pesos do catalogo, lida do codigo). O seed
+            # antigo e a guarda dele continuam no repo AE, aposentados — este step parou de
+            # reseeda-lo porque nada le mais a freshness dele em producao.
+            #
+            # FICA SO NO DIARIO. O CSV muda por commit — uma remedicao do catalogo —, nunca a
+            # cada 15 minutos; por-lo tambem no workflow_futebol_odds.yml pagaria carga por nada.
             #
             # ANTES do `dbt run`, porque o funil LE o seed.
             #
@@ -622,7 +629,7 @@ main:
                         body:
                             overrides:
                                 containerOverrides:
-                                    - args: ["dbt", "seed", "--select", "futebol_p95_nota_contexto", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
+                                    - args: ["dbt", "seed", "--select", "futebol_teto_nota_contexto", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
                     result: seed_result
                 retry:
                     predicate: ${http.default_retry_predicate}
@@ -639,7 +646,7 @@ main:
                         args:
                             severity: WARNING
                             data:
-                                message: "dbt seed (futebol_p95_nota_contexto) falhou — o funil vai normalizar pelo denominador que ja estava no BigQuery"
+                                message: "dbt seed (futebol_teto_nota_contexto) falhou — o funil vai normalizar pelo denominador que ja estava no BigQuery"
                                 error: ${e_seed.message}
                     - mark_seed_failed:
                         assign:
