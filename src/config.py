@@ -492,11 +492,27 @@ FUTEBOL_ODDS_WINDOWS = {
     "t15m": (0, 15),       # 0–15min antes (alvo ~15min — linha de fechamento p/ CLV real)
 }
 
-# Janelas de odds que DATE-STAMPAM o arquivo (raw_futebol_odds_{fixture}_{janela}_{data}.json)
-# → skip-if-exists por (fixture, janela, DIA), ou seja 1 captura/dia enquanto o fixture ficar
-# na banda. Só a "daily": as bandas de fechamento são 1 captura única por fixture e o nome sem
-# data é o que a external table e o fato já leem — date-stampá-las seria regressão.
+# Janelas de odds que DATE-STAMPAM o arquivo (raw_futebol_odds_{fixture}_{janela}_{stamp}.json)
+# → skip-if-exists por (fixture, janela, BLOCO — ver FUTEBOL_ODDS_DAILY_BUCKET_HOURS). Só a
+# "daily": as bandas de fechamento são 1 captura única por fixture e o nome sem data é o que
+# a external table e o fato já leem — date-stampá-las seria regressão.
 FUTEBOL_ODDS_WINDOWS_DIARIAS = {"daily"}
+
+# PPP#366: a janela "daily" tem DIAS de largura (até FUTEBOL_ODDS_HORIZON_MIN), e sem
+# sub-particionar o dia o skip-if-exists trava em 1 captura por fixture por dia — o preço que
+# o assinante vê pode chegar a ~1 dia de idade. Este número quebra o dia em blocos de N
+# horas; skip-if-exists passa a valer por (fixture, janela, BLOCO), então o mesmo fixture
+# pode ser recapturado a cada N horas, sem mudar a cadência do poll (~15min) nem a banda.
+#
+# ⚠️ NÃO É SÓ FRESCOR, É COTA. O "vazio registrado" (odds_extractor.py) existe porque um
+# fixture sem odds publicadas nunca grava arquivo por si só — sem ele, cada bloco novo
+# reperguntaria o mesmo vazio a cada poll de 15min DENTRO do bloco. O bucket multiplica o
+# PIOR CASO (fixture sem odds, banda inteira) por 24/FUTEBOL_ODDS_DAILY_BUCKET_HOURS
+# capturas/dia — descer para 1h volta a ser ~96x/dia/fixture, o mesmo "bomba de cota" que o
+# vazio registrado foi criado pra evitar. Medido em 2026-09-04: 6h dá no máximo 4
+# capturas/dia/fixture; com ~100-150 fixtures na banda hoje isso é até ~600 chamadas
+# extras/dia, contra headroom de milhares na cota diária de 7.500 (x-ratelimit-requests-limit).
+FUTEBOL_ODDS_DAILY_BUCKET_HOURS = 6
 
 # Ligas com coverage.odds=TRUE (validado em dim_leagues). O poll filtra os jogos NS
 # por esses league_ids. Diferente de /injuries (Copa excluída), odds de Copa do Mundo
