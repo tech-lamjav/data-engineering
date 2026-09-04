@@ -1,9 +1,10 @@
 """Testes do poll pré-jogo de odds (OddsExtractor).
 
-Cobre a janela DIÁRIA nova (horizonte de 7 dias, 1 captura por fixture por dia,
-date-stampada) e a disjunção das bandas — que é requisito, não detalhe: bandas
-sobrepostas fazem a mesma passada bucketar o mesmo fixture duas vezes, gastando duas
-chamadas e gravando duas linhas com rótulos diferentes para o mesmo preço.
+Cobre a janela DIÁRIA (horizonte de 7 dias, N capturas por fixture por dia em blocos de
+FUTEBOL_ODDS_DAILY_BUCKET_HOURS horas — PPP#366, date-stampada por bloco) e a disjunção
+das bandas — que é requisito, não detalhe: bandas sobrepostas fazem a mesma passada
+bucketar o mesmo fixture duas vezes, gastando duas chamadas e gravando duas linhas com
+rótulos diferentes para o mesmo preço.
 
 Infra (GCS/API) é mockada — nenhum acesso de rede, no idioma de
 tests/test_per_fixture_extractor.py.
@@ -15,10 +16,12 @@ import pytest
 
 from src.config import (
     BRASILEIRAO_ID,
+    FUTEBOL_ODDS_DAILY_BUCKET_HOURS,
     FUTEBOL_ODDS_HORIZON_MIN,
     FUTEBOL_ODDS_WINDOWS,
     FUTEBOL_ODDS_WINDOWS_DIARIAS,
 )
+from src.extractors.odds_extractor import _daily_bucket_stamp
 
 
 @pytest.fixture
@@ -192,7 +195,7 @@ def test_nenhum_fixture_cai_em_duas_janelas_na_mesma_passada(ext):
 
 
 # --------------------------------------------------------------------------- #
-# Date-stamp e idempotencia diaria
+# Date-stamp e idempotencia diaria (PPP#366: bloco de horas, nao mais o dia inteiro)
 # --------------------------------------------------------------------------- #
 def test_a_captura_diaria_e_date_stampada(ext):
     ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(72)]
@@ -200,8 +203,8 @@ def test_a_captura_diaria_e_date_stampada(ext):
 
     ext.extract_and_save()
 
-    hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    assert ext.storage.upload_json.call_args.kwargs["date"] == hoje
+    esperado = _daily_bucket_stamp(datetime.now(timezone.utc), ext.daily_bucket_hours)
+    assert ext.storage.upload_json.call_args.kwargs["date"] == esperado
 
 
 def test_as_bandas_de_fechamento_nao_date_stampam(ext):
@@ -218,8 +221,8 @@ def test_as_bandas_de_fechamento_nao_date_stampam(ext):
         assert kw.get("date") is None, f"{janela} nao pode date-stampar"
 
 
-def test_captura_diaria_idempotente_dentro_do_dia(ext):
-    # Segunda passada no mesmo dia: skip-if-exists por (fixture, janela, dia).
+def test_captura_diaria_idempotente_dentro_do_bloco(ext):
+    # Segunda passada no MESMO bloco de horas: skip-if-exists por (fixture, janela, bloco).
     ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(72)]
     ext.storage.bucket.blob.return_value.exists.return_value = True
 
@@ -228,15 +231,59 @@ def test_captura_diaria_idempotente_dentro_do_dia(ext):
     ext.storage.upload_json.assert_not_called()
 
 
-def test_o_skip_if_exists_da_diaria_olha_o_caminho_date_stampado(ext):
+def test_captura_diaria_repete_num_bloco_novo(ext):
+    # PPP#366: e o ponto inteiro da mudanca — o mesmo fixture, no mesmo dia, recaptura
+    # quando o relogio cruza pro proximo bloco de FUTEBOL_ODDS_DAILY_BUCKET_HOURS horas.
+    # Sem mockar o relogio real (os outros testes usam datetime.now de verdade): testa a
+    # funcao pura direto, que e quem decide o stamp.
+    bloco_hours = FUTEBOL_ODDS_DAILY_BUCKET_HOURS
+    inicio_do_dia = datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc)
+
+    stamp_bloco_0 = _daily_bucket_stamp(inicio_do_dia, bloco_hours)
+    stamp_ainda_no_bloco_0 = _daily_bucket_stamp(
+        inicio_do_dia + timedelta(hours=bloco_hours - 1), bloco_hours
+    )
+    stamp_bloco_1 = _daily_bucket_stamp(
+        inicio_do_dia + timedelta(hours=bloco_hours), bloco_hours
+    )
+
+    assert stamp_bloco_0 == stamp_ainda_no_bloco_0, "mesmo bloco tem que dar o mesmo stamp"
+    assert stamp_bloco_0 != stamp_bloco_1, "bloco seguinte tem que destravar o skip-if-exists"
+
+
+def test_daily_bucket_stamp_marca_o_bloco_nao_so_o_dia():
+    # 6h de bloco: 00:00-05:59 cai no bloco "00h", 06:00-11:59 no "06h", etc. Duas horas no
+    # mesmo bloco dao o mesmo stamp; a fronteira do bloco muda o stamp.
+    assert _daily_bucket_stamp(datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc), 6) == "2026-09-04_00h"
+    assert _daily_bucket_stamp(datetime(2026, 9, 4, 5, 59, tzinfo=timezone.utc), 6) == "2026-09-04_00h"
+    assert _daily_bucket_stamp(datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc), 6) == "2026-09-04_06h"
+    assert _daily_bucket_stamp(datetime(2026, 9, 4, 23, 59, tzinfo=timezone.utc), 6) == "2026-09-04_18h"
+    # bucket_hours=1 (o pior caso, so pra provar que a formula generaliza) da 1 bloco/hora.
+    assert _daily_bucket_stamp(datetime(2026, 9, 4, 13, 30, tzinfo=timezone.utc), 1) == "2026-09-04_13h"
+
+
+def test_o_pior_caso_de_capturas_por_dia_e_limitado_pelo_bloco():
+    # E a garantia de cota que FUTEBOL_ODDS_DAILY_BUCKET_HOURS existe pra dar: o numero de
+    # stamps distintos que um fixture pode receber num dia e EXATAMENTE 24/bucket_hours,
+    # nunca 96 (a cadencia do poll de 15min) — ver o comentario "bomba de cota" no config.
+    bloco_hours = FUTEBOL_ODDS_DAILY_BUCKET_HOURS
+    dia = datetime(2026, 9, 4, tzinfo=timezone.utc)
+    stamps_do_dia = {
+        _daily_bucket_stamp(dia + timedelta(minutes=15 * i), bloco_hours)
+        for i in range(24 * 60 // 15)  # toda passada do poll de 15min ao longo do dia
+    }
+    assert len(stamps_do_dia) == 24 // bloco_hours
+
+
+def test_o_skip_if_exists_da_diaria_olha_o_caminho_com_bloco(ext):
     ext.storage.get_upcoming_fixtures_with_kickoff.return_value = [_fixture(72)]
     ext.client.get_odds.return_value = _envelope_com_odds()
 
     ext.extract_and_save()
 
-    hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    esperado = _daily_bucket_stamp(datetime.now(timezone.utc), ext.daily_bucket_hours)
     consultado = ext.storage.bucket.blob.call_args.args[0]
-    assert consultado == f"futebol/odds/raw_futebol_odds_999_daily_{hoje}.json"
+    assert consultado == f"futebol/odds/raw_futebol_odds_999_daily_{esperado}.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -280,7 +327,7 @@ def test_janela_diaria_sem_odds_grava_o_vazio_registrado(ext):
     assert kw["mode"] == "daily"
     assert kw["data"]["total_bookmakers"] == 0
     assert kw["data"]["fixture_id"] == 999
-    assert kw["date"] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    assert kw["date"] == _daily_bucket_stamp(datetime.now(timezone.utc), ext.daily_bucket_hours)
 
 
 def test_vazio_registrado_da_diaria_nao_abre_o_gate_do_dbt(ext):
