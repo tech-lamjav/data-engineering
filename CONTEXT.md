@@ -146,7 +146,7 @@ Tabela BigQuery `raw_*` que lê os arquivos da landing in place, sem carga: novo
 Tabela final do dbt (repo `analytics-engineering`) pronta para consumo; é o que o sync materializa no Postgres.
 
 **Sync**:
-Materialização das marts do BigQuery no Postgres de serving (Supabase), por esporte e ambiente (PRD/DEV).
+Materialização das marts do BigQuery no Postgres de serving (Supabase), por esporte e ambiente (PRD/DEV). PRD sempre recebe histórico completo; DEV pode receber escopo reduzido por tabela (retenção por dias ou por temporada corrente, hoje em 5 tabelas de futebol) — ver `docs/adr/0003`.
 
 **Gate**:
 Condição que corta etapas downstream quando não há novidade ou o passo anterior falhou (ex.: dbt só roda se algo foi salvo; sync PRD só roda se o dbt passou).
