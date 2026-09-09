@@ -26,6 +26,7 @@ schema `futebol`. Colunas BQ complexas (REPEATED/RECORD) são puladas: o Postgre
 nativo é escalar (no futebol, dim_leagues.coverage é RECORD e os arrays de
 evidências/avisos são reconstruídos nas RPCs a partir de colunas boolean).
 """
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
 import psycopg
@@ -33,6 +34,7 @@ from google.cloud import bigquery
 
 from src.config import (
     BIGQUERY_PROJECT_ID,
+    get_dev_retention_rule,
     get_pg_url,
     get_sync_target,
 )
@@ -249,6 +251,62 @@ def _format_value(v):
 
 
 # ============================================================
+# Filtro de retenção de DEV (DE#75/#76/#77)
+# ============================================================
+# Predicado por linha, resolvido por (esporte, ambiente, tabela) via
+# config.get_dev_retention_rule. Roda no loop de cópia já existente, ANTES do
+# write_row — não muda list_rows(), parity check, nem skip-if-unchanged (todos
+# resolvidos antes deste ponto). PRD e tabela sem regra configurada: rule é None,
+# _row_passes_retention nunca é chamado, byte-idêntico ao comportamento anterior.
+def _row_passes_retention(row, rule: dict, eligible_fixture_ids: set | None) -> bool:
+    """True se a linha deve ir para o COPY, segundo a regra de retenção de DEV.
+
+    Valor NULL na coluna da regra nunca passa: ausência de data/temporada não é
+    retenção, é dado sem como avaliar a janela.
+    """
+    value = row[rule["column"]]
+    if value is None:
+        return False
+
+    kind = rule["kind"]
+    if kind == "timestamp_days":
+        # TIMESTAMP do BQ chega tz-aware; DATE chega como datetime.date puro —
+        # datetime é subclasse de date, por isso a checagem de datetime vem primeiro.
+        # BQ nunca usa timezone local: um DATETIME naive ainda representa um instante
+        # UTC, então o "agora" naive também é derivado de UTC (nunca do relógio local
+        # do processo) para não deslocar o corte pelo fuso do Cloud Run.
+        if isinstance(value, datetime):
+            now = datetime.now(timezone.utc) if value.tzinfo else datetime.now(timezone.utc).replace(tzinfo=None)
+        else:
+            now = date.today()
+        cutoff = now - timedelta(days=rule["days"])
+        return value >= cutoff
+    if kind == "season":
+        return value == rule["season"]
+    if kind == "fixture_window":
+        return eligible_fixture_ids is not None and value in eligible_fixture_ids
+    raise ValueError(f"kind de regra de retenção desconhecido: {kind!r}")
+
+
+def _load_eligible_fixture_ids(pg_conn, schema: str, table_name: str, days: int) -> set:
+    """Conjunto de fixture_id com kickoff dentro da janela de retenção.
+
+    Consulta o Postgres de DESTINO (`table_name`, ex. fact_fixtures), já sincronizado
+    nesta mesma execução — não reconsulta o BigQuery. Chamada uma única vez por
+    execução do sync (uma vez por tabela que usa a regra 'fixture_window', nunca por
+    linha); `run_sync._assert_dev_retention_order` garante que `table_name` já foi
+    sincronizada nesta run antes desta consulta rodar.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            f'SELECT fixture_id FROM "{schema}"."{table_name}" WHERE kickoff_utc >= %s',
+            (cutoff,),
+        )
+        return {row[0] for row in cur.fetchall()}
+
+
+# ============================================================
 # Sync state (skip-if-unchanged)
 # ============================================================
 # Cada Postgres tem seu próprio _sync_state (PRD e DEV são DBs independentes),
@@ -297,6 +355,8 @@ def _sync_one_table(
     schema: str,
     tables_ordered: list[str],
     force: bool = False,
+    env: str = "prd",
+    sport: str = "nba",
 ) -> dict:
     """Sincroniza uma mart: TRUNCATE + COPY dentro de uma única transação.
 
@@ -309,6 +369,10 @@ def _sync_one_table(
 
     Colunas BQ complexas (REPEATED/RECORD) são puladas — o Postgres nativo é
     escalar. O column_list do COPY usa só as escalares, casando com o DDL nativo.
+
+    env/sport resolvem o filtro de retenção de DEV (DE#75/#76/#77) via
+    config.get_dev_retention_rule(sport, env, table_name). PRD e tabela sem regra
+    configurada: rule é None e toda linha vai pro COPY, byte-idêntico ao anterior.
     """
     # Invariante de segurança: table_name vem SEMPRE da allowlist resolvida
     # (via resolve_tables). O assert torna explícita a segurança das f-strings de SQL.
@@ -351,6 +415,13 @@ def _sync_one_table(
         )
     column_list = ", ".join(f'"{c}"' for c in columns)
 
+    rule = get_dev_retention_rule(sport, env, table_name)
+    eligible_fixture_ids = None
+    if rule is not None and rule["kind"] == "fixture_window":
+        eligible_fixture_ids = _load_eligible_fixture_ids(
+            pg_conn, schema, rule["requires"], rule["days"]
+        )
+
     with pg_conn.cursor() as cur:
         # BEGIN é implícito quando autocommit=False; TRUNCATE + COPY + state-update
         # ficam numa única transação. Se qualquer passo falhar, rollback total
@@ -363,6 +434,10 @@ def _sync_one_table(
             f'COPY "{schema}"."{table_name}" ({column_list}) FROM STDIN'
         ) as copy:
             for row in rows_iter:
+                if rule is not None and not _row_passes_retention(
+                    row, rule, eligible_fixture_ids
+                ):
+                    continue
                 copy.write_row([_format_value(row[c]) for c in columns])
                 row_count += 1
         cur.execute(
@@ -380,6 +455,31 @@ def _sync_one_table(
 
     logger.info(f"OK {table_name}: {row_count} linhas")
     return {"table": table_name, "rows": row_count, "skipped": False}
+
+
+def _assert_dev_retention_order(sport: str, env: str, resolved: list[str]) -> None:
+    """Falha explícita se uma tabela com regra 'fixture_window' for sincronizada sem
+    sua dependência ('requires') na MESMA execução (DE#77).
+
+    Sem esta checagem, sincronizar só `int_futebol_odds_devig` em DEV (sem
+    `fact_fixtures` na mesma run) produziria um filtro silenciosamente vazio: a
+    consulta de fixtures elegíveis rodaria contra o Postgres com `fact_fixtures`
+    desatualizada (ou ausente), sem nenhum aviso. Só importa em DEV — em PRD nenhuma
+    regra é aplicada.
+    """
+    if (env or "").lower() != "dev":
+        return
+    for table in resolved:
+        rule = get_dev_retention_rule(sport, env, table)
+        if rule is None:
+            continue
+        requires = rule.get("requires")
+        if requires and requires not in resolved:
+            raise RuntimeError(
+                f"'{table}' usa a regra de retenção de DEV '{rule['kind']}', que depende "
+                f"de '{requires}' sincronizada na MESMA execução do sync. Inclua "
+                f"'{requires}' em `tables` ou rode com tables='all'."
+            )
 
 
 # ============================================================
@@ -410,6 +510,7 @@ def run_sync(
     dataset, schema, tables_ordered = get_sync_target(sport)
     pg_url = get_pg_url(env)
     resolved = resolve_tables(tables, tables_ordered)
+    _assert_dev_retention_order(sport, env, resolved)
     logger.info(
         f"Sync solicitado sport={sport} env={env} para {len(resolved)} "
         f"tabela(s) [{dataset} -> {schema}]: {resolved}"
@@ -449,7 +550,8 @@ def run_sync(
         synced: list[dict] = []
         for table in resolved:
             result = _sync_one_table(
-                bq, pg_conn, table, dataset, schema, tables_ordered, force=force
+                bq, pg_conn, table, dataset, schema, tables_ordered,
+                force=force, env=env, sport=sport,
             )
             synced.append(result)
 

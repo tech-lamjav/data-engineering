@@ -810,6 +810,74 @@ def get_sync_target(sport: str = "nba") -> tuple:
         return BIGQUERY_DATASET_FUTEBOL, FUTEBOL_MART_PG_SCHEMA, list(FUTEBOL_SYNC_TABLES_ORDERED)
     raise ValueError(f"sport inválido: {sport!r}. Use 'nba' ou 'futebol'.")
 
+
+# ============================================================
+# Escopo reduzido de DEV no sync BQ->Postgres (DE#75/#76/#77)
+# ============================================================
+# DEV é ambiente free-tier e não precisa de histórico completo para QA — só das 21
+# tabelas de futebol, as 5 de alto crescimento que já estouraram o free tier em
+# 08/09/2026 (ver memory project_supabase_dev_free_overage_202609). Os números de
+# retenção são REUSADOS do purge que corrigiu aquele incidente, não re-derivados.
+# PRD nunca usa esta configuração (get_dev_retention_rule retorna None fora de DEV).
+SYNC_DEV_RETENTION_DAYS = int(os.getenv("SYNC_DEV_RETENTION_DAYS", "14"))
+FUTEBOL_DEV_CURRENT_SEASON = int(os.getenv("FUTEBOL_DEV_CURRENT_SEASON", "2026"))
+
+# Regra por (esporte, tabela). Três formas:
+# - "timestamp_days": coluna própria (TIMESTAMP ou DATE) >= agora - `days`.
+# - "season": coluna própria `season` == temporada corrente configurada.
+# - "fixture_window": a tabela não carrega coluna de data própria (`int_futebol_odds_devig`);
+#   pertencimento a um conjunto de `fixture_id` derivado de `fact_fixtures.kickoff` (a tabela
+#   nomeada em `requires`), calculado uma única vez por execução do sync contra o Postgres já
+#   sincronizado nesta mesma run — ver _load_eligible_fixture_ids em sync/bq_to_postgres.py.
+#   `requires` também é usado para falhar explicitamente se a tabela-fonte não fizer parte
+#   da mesma execução (run_sync._assert_dev_retention_order), em vez de produzir um filtro
+#   silenciosamente vazio.
+# NBA: estrutura existe (mecanismo é sport-agnostic), mas fica vazia — sem vertical NBA
+# ativa hoje, não há número de retenção real para validar.
+SYNC_DEV_RETENTION_RULES: dict = {
+    "nba": {},
+    "futebol": {
+        "fact_odds_snapshot": {
+            "kind": "timestamp_days",
+            "column": "collection_timestamp",
+            "days": SYNC_DEV_RETENTION_DAYS,
+        },
+        "fact_injuries_snapshot": {
+            "kind": "timestamp_days",
+            "column": "snapshot_date",
+            "days": SYNC_DEV_RETENTION_DAYS,
+        },
+        "fact_fixture_player_stats": {
+            "kind": "season",
+            "column": "season",
+            "season": FUTEBOL_DEV_CURRENT_SEASON,
+        },
+        "fact_fixture_lineups_players": {
+            "kind": "season",
+            "column": "season",
+            "season": FUTEBOL_DEV_CURRENT_SEASON,
+        },
+        "int_futebol_odds_devig": {
+            "kind": "fixture_window",
+            "column": "fixture_id",
+            "days": SYNC_DEV_RETENTION_DAYS,
+            "requires": "fact_fixtures",
+        },
+    },
+}
+
+
+def get_dev_retention_rule(sport: str, env: str, table_name: str) -> dict | None:
+    """Resolve a regra de retenção de DEV para (esporte, ambiente, tabela).
+
+    Só retorna regra quando `env == 'dev'` — em PRD (e em qualquer env desconhecido) é
+    sempre None, byte-idêntico ao comportamento anterior a este mecanismo. Tabela sem
+    entrada configurada para o esporte também retorna None (recebe 100% das linhas).
+    """
+    if (env or "").lower() != "dev":
+        return None
+    return SYNC_DEV_RETENTION_RULES.get((sport or "nba").lower(), {}).get(table_name)
+
 # Season Configuration
 try:
     SEASON = int(os.getenv("SEASON", "2025"))
