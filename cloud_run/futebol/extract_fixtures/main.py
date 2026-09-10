@@ -41,6 +41,9 @@ def extract_fixtures(request):
                 "status": "success",
                 "mode": mode,
                 "saved_count": extractor.last_fresh_count,
+                # DE#80: aditivo — cota restante do header de live=all, pro workflow logar
+                # no log_completion e o resumo diário achar a leitura de perto do reset.
+                "quota_remaining": extractor.last_quota_remaining,
                 "message": "Pipeline executed successfully",
             }, 200
         except Exception as e:

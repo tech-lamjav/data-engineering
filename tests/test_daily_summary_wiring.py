@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.reporting.api_quota import QuotaInfo
+from src.reporting.api_quota import EodQuotaReading, QuotaInfo
 
 DIA = date(2026, 8, 6)
 LEITURA = datetime(2026, 8, 6, 3, 5, tzinfo=timezone.utc)
@@ -84,3 +84,21 @@ def test_secao_degradada_nao_derruba_o_email(daily_summary):
 
     assert "Cota da API-Football" in html
     assert "ConnectionError: timeout" in html
+
+
+def _eod():
+    return EodQuotaReading(
+        read_at=datetime(2026, 8, 6, 23, 50, tzinfo=timezone.utc), remaining=5425, limit_day=7500
+    )
+
+
+def test_build_html_inclui_a_linha_de_fim_de_dia(daily_summary):
+    _, html = daily_summary.build_html(DIA, {}, _quota(), quota_eod=_eod())
+
+    assert "Consumo total do dia" in html
+
+
+def test_build_html_sem_eod_mantem_o_email_de_antes(daily_summary):
+    _, html = daily_summary.build_html(DIA, {}, _quota())
+
+    assert "Consumo total do dia" not in html

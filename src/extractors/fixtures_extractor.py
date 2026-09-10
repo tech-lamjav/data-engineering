@@ -140,6 +140,7 @@ class FixturesExtractor(BaseExtractor):
             else None  # "live" não itera targets — ver extract_live()
         )
         self.last_fresh_count = 0  # populado por extract_live(); ver ali o motivo
+        self.last_quota_remaining = None  # idem — DE#80, cota restante do header de live=all
 
     def extract(self, **kwargs) -> Dict[str, Any]:
         """Itera sobre os targets e mescla resposta + metadata da request.
@@ -223,6 +224,11 @@ class FixturesExtractor(BaseExtractor):
         live_errors = live_envelope.get("errors")
         if live_errors:
             raise RuntimeError(f"fixtures (mode=live, live=all): API errors: {live_errors}")
+        # DE#80: exposto p/ quem chama (cloud_run/futebol/extract_fixtures/main.py) — vira o
+        # dado bruto que o resumo diário usa pra saber o consumo de cota perto do fim do dia,
+        # de graça (a chamada já acontece; só o header estava sendo descartado). None se o
+        # envelope não trouxer a chave (formato antigo/degradado) — nunca levanta por isso.
+        self.last_quota_remaining = live_envelope.get("quota_remaining")
 
         fresh_rows = [
             {
@@ -258,6 +264,14 @@ class FixturesExtractor(BaseExtractor):
                 raise RuntimeError(
                     f"fixtures (mode=live, ids={batch}): API errors: {ids_errors}"
                 )
+            # DE#80, achado do code-review: get_fixtures_by_ids também consome cota e
+            # devolve um quota_remaining mais recente que o de get_fixtures_live() lá
+            # em cima — sem isto, ciclo com candidato (comum perto de kickoff/apito,
+            # justo quando o volume de chamada é maior) reportava cota "sobrando" que já
+            # tinha sido gasta neste mesmo ciclo. Os lotes rodam em ordem — o último a
+            # responder é o mais fresco.
+            if ids_envelope.get("quota_remaining") is not None:
+                self.last_quota_remaining = ids_envelope["quota_remaining"]
             fresh_rows.extend(
                 {
                     "requested_league_id": (item.get("league") or {}).get("id"),

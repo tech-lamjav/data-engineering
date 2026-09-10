@@ -29,6 +29,7 @@ main:
         - execution_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
         - workflow_status: "SUCCESS"
         - saved_count: 0
+        - quota_remaining: null
 
     - log_start:
         call: sys.log
@@ -67,6 +68,11 @@ main:
             - read_saved_count:
                 assign:
                 - saved_count: ${default(map.get(fixtures_live_result.body, "saved_count"), 0)}
+            - read_quota_remaining:
+                # DE#80: aditivo — Cloud Run mais antigo/sem o campo cai no default null,
+                # sem quebrar nada que já lê esta resposta.
+                assign:
+                - quota_remaining: ${default(map.get(fixtures_live_result.body, "quota_remaining"), null)}
             - log_phase1_success:
                 call: sys.log
                 args:
@@ -212,6 +218,11 @@ main:
                 status: ${workflow_status}
                 saved_count: ${saved_count}
                 duration_seconds: ${duration_seconds}
+                # DE#80: aditivo — cota restante no fim deste ciclo. Corre incondicionalmente
+                # (tanto phase2_dbt quanto skip_dbt convergem aqui), então toda execução do
+                # poll de 15min carimba isso, inclusive a mais próxima do reset da cota (21h
+                # BRT / 00h UTC) — é dela que o resumo diário deriva o consumo do dia inteiro.
+                quota_remaining: ${quota_remaining}
 
     - return_result:
         return:

@@ -15,10 +15,13 @@ import pytest
 
 from src.config import QUOTA_ALERT_PCT, SUBSCRIPTION_ALERT_DAYS
 from src.reporting.api_quota import (
+    EodQuotaReading,
     QuotaInfo,
     build_quota_section,
     collect_quota,
+    collect_quota_eod,
     parse_quota,
+    select_eod_reading,
 )
 
 # Dia do relatorio e horario da leitura (00:05 BRT = 03:05 UTC, quando o resumo roda).
@@ -321,3 +324,107 @@ def test_as_log_dict_sobrevive_a_leitura_degradada():
     assert d["pct"] is None
     assert d["days_to_end"] is None
     assert d["error"] == "timeout"
+
+
+# --------------------------------------------------------------------------- #
+# DE#80 — leitura de fim de dia (reset real: 00:00 UTC = 21:00 BRT)
+#
+# Para DIA = 2026-08-06, o reset que cai DENTRO desse dia em BRT e' 21:00 BRT,
+# que em UTC e' 2026-08-07T00:00:00 (meia-noite UTC do dia seguinte).
+# --------------------------------------------------------------------------- #
+_RESET_UTC = datetime(2026, 8, 7, 0, 0, tzinfo=timezone.utc)
+_ANTES_DO_RESET = datetime(2026, 8, 6, 23, 50, tzinfo=timezone.utc)  # 20:50 BRT
+_MEIO_DO_DIA = datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc)
+_DEPOIS_DO_RESET = datetime(2026, 8, 7, 0, 10, tzinfo=timezone.utc)  # 21:10 BRT (dia seguinte)
+
+
+def test_select_eod_reading_escolhe_a_mais_proxima_do_reset_sem_passar():
+    leituras = [(_MEIO_DO_DIA, 7000), (_ANTES_DO_RESET, 5425), (_DEPOIS_DO_RESET, 6000)]
+
+    ts, remaining = select_eod_reading(leituras, DIA)
+
+    assert ts == _ANTES_DO_RESET
+    assert remaining == 5425
+
+
+def test_select_eod_reading_ignora_leituras_depois_do_reset():
+    leituras = [(_DEPOIS_DO_RESET, 6000)]
+
+    assert select_eod_reading(leituras, DIA) is None
+
+
+def test_select_eod_reading_lista_vazia_devolve_none():
+    assert select_eod_reading([], DIA) is None
+
+
+def test_select_eod_reading_ignora_timestamp_none():
+    leituras = [(None, 9999), (_ANTES_DO_RESET, 5425)]
+
+    ts, remaining = select_eod_reading(leituras, DIA)
+
+    assert remaining == 5425
+
+
+def test_collect_quota_eod_devolve_none_sem_leitura_elegivel():
+    assert collect_quota_eod([(_DEPOIS_DO_RESET, 6000)], DIA, limit_day=7500) is None
+
+
+def test_collect_quota_eod_calcula_consumido_e_percentual():
+    eod = collect_quota_eod([(_ANTES_DO_RESET, 5425)], DIA, limit_day=7500)
+
+    assert eod.read_at == _ANTES_DO_RESET
+    assert eod.remaining == 5425
+    assert eod.consumed == 2075
+    assert eod.pct == pytest.approx(27.67, abs=0.01)
+
+
+def test_collect_quota_eod_sem_limit_day_mostra_bruto_sem_percentual():
+    eod = collect_quota_eod([(_ANTES_DO_RESET, 5425)], DIA, limit_day=None)
+
+    assert eod.remaining == 5425
+    assert eod.consumed is None
+    assert eod.pct is None
+
+
+def test_secao_de_cota_inclui_a_linha_de_fim_de_dia():
+    quota = parse_quota(_envelope(), read_at=LEITURA)
+    eod = EodQuotaReading(read_at=_ANTES_DO_RESET, remaining=5425, limit_day=7500)
+
+    html = build_quota_section(quota, DIA, quota_eod=eod)
+
+    assert "Consumo total do dia" in html
+    assert "5425" in html or "2075" in html
+    assert "20:50" in html  # horario da leitura escolhida, em BRT
+
+
+def test_secao_sem_eod_nao_muda_o_html_de_antes():
+    quota = parse_quota(_envelope(), read_at=LEITURA)
+
+    html = build_quota_section(quota, DIA)
+
+    assert "Consumo total do dia" not in html
+
+
+def test_secao_mostra_eod_mesmo_com_leitura_de_madrugada_degradada():
+    html = build_quota_section(
+        QuotaInfo(error="timeout"),
+        DIA,
+        quota_eod=EodQuotaReading(read_at=_ANTES_DO_RESET, remaining=5425, limit_day=7500),
+    )
+
+    assert "Cota da API-Football" in html
+    assert "Consumo total do dia" in html
+
+
+def test_secao_mostra_so_eod_quando_no_status_falhou_totalmente():
+    html = build_quota_section(
+        None,
+        DIA,
+        quota_eod=EodQuotaReading(read_at=_ANTES_DO_RESET, remaining=5425, limit_day=7500),
+    )
+
+    assert "Consumo total do dia" in html
+
+
+def test_secao_vazia_quando_nem_quota_nem_eod():
+    assert build_quota_section(None, DIA, quota_eod=None) == ""

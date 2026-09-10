@@ -32,7 +32,7 @@ from google.cloud.workflows.executions_v1.types import (
 )
 
 from src.config import GCP_PROJECT_ID
-from src.reporting.api_quota import build_quota_section, collect_quota
+from src.reporting.api_quota import build_quota_section, collect_quota, collect_quota_eod
 from src.reporting.guardas import build_guardas_section
 from src.reporting.procedencia import build_procedencia_section, collect_procedencia
 from src.reporting.suite_dbt import SuiteRun, build_suite_section, collect_suite
@@ -95,6 +95,11 @@ class WFAgg:
     # diferente das guardas, o valor aqui e a contagem PASS/WARN/ERROR — e WARN>0 e o estado
     # normal, entao "so guardar quando acende" nao daria nada para acender.
     suite_runs: list = field(default_factory=list)
+    # DE#80: leituras (timestamp UTC, quota_remaining) que o poll de fixtures-live loga
+    # de graça a cada 15min. Guardadas TODAS (não só a última) porque quem decide qual
+    # delas representa "o dia" é collect_quota_eod, não este agregador — o mesmo desenho
+    # de suite_runs.
+    quota_readings: list = field(default_factory=list)
 
 
 def compute_window(target_date: date | None = None):
@@ -159,6 +164,14 @@ def collect_from_logging(client, start_utc, end_utc, agg) -> int:
         suite = payload.get("suite_status")
         if suite:
             a.suite_runs.append(SuiteRun(quando=ts, status=suite))
+        # DE#80: chave ausente = workflow que não faz esse poll (todos menos o de
+        # fixtures-live) — ausência não é "sem leitura", é "não se aplica aqui".
+        quota_remaining = payload.get("quota_remaining")
+        if quota_remaining is not None:
+            try:
+                a.quota_readings.append((ts, int(quota_remaining)))
+            except (TypeError, ValueError):
+                pass
         try:
             a.saved_count += int(payload.get("saved_count") or 0)
         except (TypeError, ValueError):
@@ -219,12 +232,17 @@ def _fmt_dur(seconds: float) -> str:
     return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
 
 
-def build_html(day: date, agg: dict, quota=None, procedencia=None, suite=None) -> tuple[str, str]:
+def build_html(
+    day: date, agg: dict, quota=None, procedencia=None, suite=None, quota_eod=None
+) -> tuple[str, str]:
     """Monta (subject, html) do email consolidado. Sempre renderiza (mesmo vazio).
 
     `quota` (QuotaInfo | None) acrescenta a seção de cota da API-Football; None omite a
-    seção, mantendo o email de antes intacto. `procedencia` (ProcedenciaInfo | None) e
-    `suite` (SuiteInfo | None, o resto da suíte dbt) fazem o mesmo para as suas seções.
+    seção, mantendo o email de antes intacto. `quota_eod` (EodQuotaReading | None,
+    DE#80) acrescenta a linha de consumo total do dia dentro dessa mesma seção — é
+    independente do estado de `quota` (aparece mesmo com a leitura de madrugada
+    degradada ou ausente). `procedencia` (ProcedenciaInfo | None) e `suite`
+    (SuiteInfo | None, o resto da suíte dbt) fazem o mesmo para as suas seções.
     """
     total_runs = sum(a.total for a in agg.values())
     total_ok = sum(a.success for a in agg.values())
@@ -345,7 +363,7 @@ def build_html(day: date, agg: dict, quota=None, procedencia=None, suite=None) -
     # Procedência depois das duas e antes da cota: deriva de imagem é a causa que desliga as
     # DUAS fases de teste (elas rodam da mesma imagem), então lê-se na sequência delas.
     procedencia_section = build_procedencia_section(procedencia)
-    quota_section = build_quota_section(quota, day)
+    quota_section = build_quota_section(quota, day, quota_eod=quota_eod)
 
     html = (
         head + table + fail_section + guardas_section + suite_section
@@ -390,6 +408,13 @@ def run_daily_summary(target_date: date | None = None) -> dict:
     # 1 chamada/dia ao /status. collect_quota nunca levanta: falha vira seção degradada.
     quota = collect_quota()
 
+    # DE#80: nenhuma chamada nova — as leituras já vieram de graça no log_completion do
+    # poll de fixtures-live (a cada 15min), agregadas por collect_from_logging acima.
+    # collect_quota_eod nunca levanta: sem leitura elegível, devolve None e a linha some.
+    quota_eod = collect_quota_eod(
+        [r for a in agg.values() for r in a.quota_readings], day, limit_day=quota.limit_day
+    )
+
     # 2 jobs + 1 GET no GitHub, 1×/dia. Também nunca levanta.
     procedencia = collect_procedencia()
 
@@ -397,7 +422,9 @@ def run_daily_summary(target_date: date | None = None) -> dict:
     # levanta; sem execução da fase 5 no dia devolve None e a seção some.
     suite = collect_suite([r for a in agg.values() for r in a.suite_runs], start_utc, end_utc)
 
-    subject, html = build_html(day, agg, quota, procedencia, suite)
+    subject, html = build_html(
+        day, agg, quota=quota, quota_eod=quota_eod, procedencia=procedencia, suite=suite
+    )
 
     if os.getenv("SUMMARY_DRY_RUN"):
         logger.info(f"[DRY_RUN] email NAO enviado. subject={subject!r}")
@@ -411,6 +438,17 @@ def run_daily_summary(target_date: date | None = None) -> dict:
         # Chave nova (aditiva — o workflow não mapeia campos do body). Cai no Cloud
         # Logging junto da resposta do Cloud Run: série histórica de cota de graça.
         "quota": quota.as_log_dict(day),
+        # DE#80: None quando não houve leitura elegível naquele dia (ver collect_quota_eod).
+        "quota_eod": (
+            {
+                "read_at": quota_eod.read_at.isoformat(),
+                "remaining": quota_eod.remaining,
+                "consumed": quota_eod.consumed,
+                "pct": round(quota_eod.pct, 1) if quota_eod.pct is not None else None,
+            }
+            if quota_eod is not None
+            else None
+        ),
         "totals": {
             "runs": sum(a.total for a in agg.values()),
             "success": sum(a.success for a in agg.values()),
