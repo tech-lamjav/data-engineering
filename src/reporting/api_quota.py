@@ -11,15 +11,23 @@ BRT (03:05 UTC), então o valor lido cobre apenas as primeiras horas do dia da A
 isso a seção carimba o horário da leitura, e por isso o alerta de consumo vale como
 PISO (se disparar às 00:05, o estouro é grave) e não como medida do dia do relatório. O
 alerta de vencimento não depende do horário e vale integralmente.
+
+⚠️ DE#80 — a segunda leitura, de fim de dia. O reset real da cota é 00:00 UTC (doc
+oficial da API-Football), que em BRT (UTC-3, sem horário de verão) é 21:00. A leitura
+de madrugada acima cai só 3h05min depois desse reset — por isso ela é estruturalmente
+baixa. `EodQuotaReading`/`select_eod_reading`/`collect_quota_eod` escolhem, entre as
+leituras de `quota_remaining` que o poll de fixtures-live (a cada 15min) já loga de
+graça no `log_completion`, a mais próxima do reset SEM passar dele — nunca a de depois,
+que pertenceria ao próximo "dia da API". Sem chamada nova à API, sem infra nova.
 """
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from html import escape
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.clients.api_football_client import ApiFootballClient
 from src.config import QUOTA_ALERT_PCT, SUBSCRIPTION_ALERT_DAYS
-from src.reporting.formatting import AMBER, MUTED, RED, cell, fmt_brt
+from src.reporting.formatting import AMBER, MUTED, RED, SAO_PAULO, cell, fmt_brt
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -90,6 +98,76 @@ class QuotaInfo:
             "alert_subscription": self.subscription_alert(day),
             "error": self.error,
         }
+
+
+@dataclass
+class EodQuotaReading:
+    """Leitura de `quota_remaining` mais próxima do reset da cota (00:00 UTC / 21:00
+    BRT), escolhida por `select_eod_reading`/`collect_quota_eod` — DE#80.
+
+    `limit_day` vem da leitura `/status` da MESMA execução do resumo (`QuotaInfo`), não
+    é medido aqui. Ausente (leitura de `/status` degradada) => `consumed`/`pct` ficam
+    None e a seção mostra só o valor bruto de `remaining`.
+    """
+
+    read_at: datetime
+    remaining: int
+    limit_day: Optional[int] = None
+
+    @property
+    def consumed(self) -> Optional[int]:
+        if self.limit_day is None:
+            return None
+        return self.limit_day - self.remaining
+
+    @property
+    def pct(self) -> Optional[float]:
+        consumed = self.consumed
+        if consumed is None or not self.limit_day:
+            return None
+        return 100.0 * consumed / self.limit_day
+
+
+def _reset_instant_utc(day: date) -> datetime:
+    """Instante do reset da cota (00:00 UTC) que cai DENTRO do dia `day` em BRT — ou
+    seja, 21:00 BRT do próprio `day`. Fonte: doc oficial da API-Football (reset diário
+    às 00:00 UTC — https://www.api-football.com/news/post/how-ratelimit-works).
+    """
+    local = datetime(day.year, day.month, day.day, 21, 0, tzinfo=SAO_PAULO)
+    return local.astimezone(timezone.utc)
+
+
+def select_eod_reading(
+    readings: List[Tuple[Optional[datetime], int]], day: date
+) -> Optional[Tuple[datetime, int]]:
+    """Escolhe, entre leituras `(timestamp UTC, quota_remaining)`, a mais recente que
+    NÃO passa do reset de `day` (21:00 BRT). Leitura depois do reset pertence ao
+    próximo "dia da API" e é ignorada — nunca inventa um valor: sem leitura elegível,
+    devolve None.
+    """
+    limite = _reset_instant_utc(day)
+    elegiveis = [
+        (ts, remaining) for ts, remaining in readings if ts is not None and ts <= limite
+    ]
+    if not elegiveis:
+        return None
+    return max(elegiveis, key=lambda par: par[0])
+
+
+def collect_quota_eod(
+    readings: List[Tuple[Optional[datetime], int]],
+    day: date,
+    limit_day: Optional[int] = None,
+) -> Optional[EodQuotaReading]:
+    """Empacota `select_eod_reading` num `EodQuotaReading`, já com o `limit_day` da
+    leitura `/status` do mesmo dia (para o percentual). None propagado se não houver
+    leitura elegível.
+    """
+    escolhida = select_eod_reading(readings, day)
+    if escolhida is None:
+        return None
+    ts, remaining = escolhida
+    return EodQuotaReading(read_at=ts, remaining=remaining, limit_day=limit_day)
 
 
 def _parse_end(value: Any) -> Optional[date]:
@@ -164,22 +242,53 @@ def _linha(rotulo: str, valor: str, destaque: str, alerta: bool) -> str:
     )
 
 
-def build_quota_section(quota: Optional[QuotaInfo], day: date) -> str:
+def _build_eod_line(quota_eod: Optional[EodQuotaReading]) -> str:
+    """DE#80: linha da leitura de fim de dia — distinta da linha "Consumo do dia (API)"
+    de propósito, para as duas não se confundirem (uma é piso de madrugada, a outra é o
+    total do dia da API que acabou de terminar)."""
+    if quota_eod is None:
+        return ""
+    pct = quota_eod.pct
+    pct_txt = f" ({pct:.1f}%)" if pct is not None else ""
+    consumo_txt = escape(
+        f"{quota_eod.consumed} / {quota_eod.limit_day}"
+        if quota_eod.limit_day is not None
+        else f"restante {quota_eod.remaining}"
+    )
+    return (
+        '<p style="margin:8px 0 0;font-size:13px">'
+        f"<b>Consumo total do dia</b> (leitura mais próxima do reset da cota, "
+        f"{fmt_brt(quota_eod.read_at)} BRT): {consumo_txt}{pct_txt}</p>"
+    )
+
+
+def build_quota_section(
+    quota: Optional[QuotaInfo], day: date, quota_eod: Optional[EodQuotaReading] = None
+) -> str:
     """Seção de cota do e-mail.
 
     Sempre renderiza quando houve tentativa de leitura — degradada, se ela falhou.
-    Retorna "" só quando não houve tentativa nenhuma (`quota=None`).
+    Retorna "" só quando não houve tentativa nenhuma (`quota=None` e `quota_eod=None`).
+
+    `quota_eod` (DE#80) é aditivo e independente do estado de `quota`: mesmo se a
+    leitura de madrugada (`/status`) falhar ou nem existir, a linha de fim de dia
+    ainda aparece se ela própria estiver disponível.
     """
-    if quota is None:
+    if quota is None and quota_eod is None:
         return ""
 
     titulo = '<h3 style="margin:18px 0 6px">Cota da API-Football</h3>'
+    eod_html = _build_eod_line(quota_eod)
+
+    if quota is None:
+        return titulo + eod_html
 
     if quota.error:
         return (
             titulo
             + f'<p style="margin:0;color:{AMBER};font-size:13px">'
             + f"Leitura indisponivel: {escape(quota.error)}</p>"
+            + eod_html
         )
 
     pct = quota.pct
@@ -238,4 +347,4 @@ def build_quota_section(quota: Optional[QuotaInfo], day: date) -> str:
         "so as horas ja decorridas do dia da API, nao o dia do relatorio.</p>"
     )
 
-    return titulo + tabela + bloco_alertas + nota
+    return titulo + tabela + bloco_alertas + nota + eod_html

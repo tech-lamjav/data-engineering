@@ -194,6 +194,71 @@ def test_last_fresh_count_reflete_atualizados_no_ciclo_nao_o_total_retido(ext):
     assert ext.last_fresh_count == 1  # só o fixture 1 foi buscado neste ciclo
 
 
+def test_last_quota_remaining_reflete_header_do_live_all(ext):
+    """DE#80: quota_remaining vem do header de get_fixtures_live() (via _parse_quota_remaining
+    no client, já testado ali) e precisa sobreviver até o atributo exposto pro Cloud Run."""
+    ext.storage.get_fixture_rows_from_storage.side_effect = lambda mode: {
+        "current": [_current_row(1)], "live": [],
+    }[mode]
+    ext.client.get_fixtures_live.return_value = {
+        "errors": None, "response": [], "quota_remaining": 5425,
+    }
+    ext.storage.upload_json.return_value = "gs://b/x.json"
+
+    ext.extract_and_save()
+
+    assert ext.last_quota_remaining == 5425
+
+
+def test_last_quota_remaining_usa_o_valor_mais_fresco_do_by_ids(ext):
+    """Achado do code-review: get_fixtures_by_ids também consome cota e decrementa o
+    header — um ciclo com candidato (comum perto de kickoff/apito) não pode reportar o
+    quota_remaining de get_fixtures_live(), que já está velho quando o ciclo termina."""
+    ext.storage.get_fixture_rows_from_storage.side_effect = lambda mode: {
+        "current": [_current_row(2, status="1H")], "live": [],
+    }[mode]
+    ext.client.get_fixtures_live.return_value = {
+        "errors": None, "response": [], "quota_remaining": 5425,
+    }
+    ext.client.get_fixtures_by_ids.return_value = {
+        "errors": None, "response": [_api_item(2, "FT")], "quota_remaining": 5424,
+    }
+    ext.storage.upload_json.return_value = "gs://b/x.json"
+
+    ext.extract_and_save()
+
+    assert ext.last_quota_remaining == 5424
+
+
+def test_last_quota_remaining_mantem_o_de_live_all_sem_candidato(ext):
+    # Sem get_fixtures_by_ids no ciclo, o valor de get_fixtures_live() é o único que existe.
+    ext.storage.get_fixture_rows_from_storage.side_effect = lambda mode: {
+        "current": [_current_row(1, status="FT")], "live": [],
+    }[mode]  # já terminal — não é candidato, get_fixtures_by_ids não é chamado
+    ext.client.get_fixtures_live.return_value = {
+        "errors": None, "response": [], "quota_remaining": 5425,
+    }
+    ext.storage.upload_json.return_value = "gs://b/x.json"
+
+    ext.extract_and_save()
+
+    ext.client.get_fixtures_by_ids.assert_not_called()
+    assert ext.last_quota_remaining == 5425
+
+
+def test_last_quota_remaining_none_quando_envelope_nao_traz(ext):
+    # Envelope sem a chave (formato antigo/degradado) não pode levantar.
+    ext.storage.get_fixture_rows_from_storage.side_effect = lambda mode: {
+        "current": [_current_row(1)], "live": [],
+    }[mode]
+    ext.client.get_fixtures_live.return_value = {"errors": None, "response": []}
+    ext.storage.upload_json.return_value = "gs://b/x.json"
+
+    ext.extract_and_save()
+
+    assert ext.last_quota_remaining is None
+
+
 def test_upload_usa_mode_live(ext):
     ext.storage.get_fixture_rows_from_storage.side_effect = lambda mode: {
         "current": [_current_row(1)], "live": [],
