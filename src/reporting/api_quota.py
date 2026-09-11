@@ -7,18 +7,24 @@ SDK de GCP (`tests/test_daily_summary_quota.py`). O `daily_summary` só faz a fi
 
 ⚠️ O que o número significa. `requests.current` do /status é o contador do dia CORRENTE
 da API no instante da chamada — não o consumo de um dia fechado. O resumo roda às 00:05
-BRT (03:05 UTC), então o valor lido cobre apenas as primeiras horas do dia da API. Por
-isso a seção carimba o horário da leitura, e por isso o alerta de consumo vale como
-PISO (se disparar às 00:05, o estouro é grave) e não como medida do dia do relatório. O
-alerta de vencimento não depende do horário e vale integralmente.
+BRT (03:05 UTC), então o valor lido cobre apenas as primeiras horas do dia da API — é um
+PISO, não o consumo do dia. O alerta de vencimento não depende do horário e vale
+integralmente.
 
-⚠️ DE#80 — a segunda leitura, de fim de dia. O reset real da cota é 00:00 UTC (doc
-oficial da API-Football), que em BRT (UTC-3, sem horário de verão) é 21:00. A leitura
-de madrugada acima cai só 3h05min depois desse reset — por isso ela é estruturalmente
-baixa. `EodQuotaReading`/`select_eod_reading`/`collect_quota_eod` escolhem, entre as
-leituras de `quota_remaining` que o poll de fixtures-live (a cada 15min) já loga de
-graça no `log_completion`, a mais próxima do reset SEM passar dele — nunca a de depois,
-que pertenceria ao próximo "dia da API". Sem chamada nova à API, sem infra nova.
+⚠️ DE#80 — a leitura de fim de dia é a que o e-mail mostra. O reset real da cota é 00:00
+UTC (doc oficial da API-Football), que em BRT (UTC-3, sem horário de verão) é 21:00. A
+leitura de madrugada acima cai só 3h05min depois desse reset e é estruturalmente baixa —
+por isso a seção NÃO a exibe quando há uma leitura de fim de dia disponível (pedido do
+Victor: um número só, o do dia inteiro, sem o piso de madrugada do lado confundindo). A
+leitura de madrugada só volta a aparecer — rotulada "parcial" — quando não houve leitura
+de fim de dia elegível naquele dia (o poll de fixtures-live não rodou perto do reset).
+`EodQuotaReading`/`select_eod_reading`/`collect_quota_eod` escolhem, entre as leituras de
+`quota_remaining` que o poll de fixtures-live (a cada 15min) já loga de graça no
+`log_completion`, a mais próxima do reset SEM passar dele — nunca a de depois, que
+pertenceria ao próximo "dia da API". Sem chamada nova à API, sem infra nova. O alerta de
+consumo (`QUOTA_ALERT_PCT`) agora é calculado sobre essa leitura de fim de dia quando ela
+existe — o piso de madrugada quase nunca passava do limiar, então o alerta raramente
+disparava; contra o total do dia ele passa a significar algo.
 """
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -242,24 +248,43 @@ def _linha(rotulo: str, valor: str, destaque: str, alerta: bool) -> str:
     )
 
 
-def _build_eod_line(quota_eod: Optional[EodQuotaReading]) -> str:
-    """DE#80: linha da leitura de fim de dia — distinta da linha "Consumo do dia (API)"
-    de propósito, para as duas não se confundirem (uma é piso de madrugada, a outra é o
-    total do dia da API que acabou de terminar)."""
-    if quota_eod is None:
-        return ""
-    pct = quota_eod.pct
-    pct_txt = f" ({pct:.1f}%)" if pct is not None else ""
-    consumo_txt = escape(
-        f"{quota_eod.consumed} / {quota_eod.limit_day}"
-        if quota_eod.limit_day is not None
-        else f"restante {quota_eod.remaining}"
-    )
-    return (
-        '<p style="margin:8px 0 0;font-size:13px">'
-        f"<b>Consumo total do dia</b> (leitura mais próxima do reset da cota, "
-        f"{fmt_brt(quota_eod.read_at)} BRT): {consumo_txt}{pct_txt}</p>"
-    )
+def _consumo_row(
+    quota: Optional[QuotaInfo], quota_eod: Optional[EodQuotaReading]
+) -> Tuple[str, str, str, bool, Optional[str]]:
+    """Escolhe o que a linha de consumo mostra: o total do dia (EOD, DE#80) quando
+    disponível — é o número que Victor pede pra decidir cadência de coleta, o dia
+    inteiro, não um piso de 3h de madrugada — ou, na ausência dele (o poll de
+    fixtures-live não rodou nesse dia), a leitura de madrugada como fallback
+    degradado, sinalizada como parcial para não se confundir com o total.
+
+    Devolve (rotulo, consumo_txt, pct_txt, alerta, nota_degradada).
+    """
+    if quota_eod is not None:
+        pct = quota_eod.pct
+        pct_txt = f"{pct:.1f}%" if pct is not None else "—"
+        consumo_txt = escape(
+            f"{quota_eod.consumed} / {quota_eod.limit_day}"
+            if quota_eod.limit_day is not None
+            else f"restante {quota_eod.remaining}"
+        )
+        alerta = pct is not None and pct > QUOTA_ALERT_PCT
+        rotulo = f"Consumo do dia ({fmt_brt(quota_eod.read_at)} BRT)"
+        return rotulo, consumo_txt, pct_txt, alerta, None
+
+    if quota is not None and not quota.error and quota.current is not None:
+        pct_txt = f"{quota.pct:.1f}%" if quota.pct is not None else "—"
+        consumo_txt = escape(
+            f"{quota.current} / {quota.limit_day}" if quota.limit_day else f"{quota.current}"
+        )
+        rotulo = f"Consumo parcial ({fmt_brt(quota.read_at)} BRT)"
+        nota = (
+            "Sem leitura de fim de dia hoje (poll de fixtures-live nao rodou perto do "
+            "reset) — mostrando so o snapshot de madrugada, que cobre so as primeiras "
+            "horas do dia da API."
+        )
+        return rotulo, consumo_txt, pct_txt, quota.quota_alert(), nota
+
+    return "", "", "", False, None
 
 
 def build_quota_section(
@@ -270,59 +295,65 @@ def build_quota_section(
     Sempre renderiza quando houve tentativa de leitura — degradada, se ela falhou.
     Retorna "" só quando não houve tentativa nenhuma (`quota=None` e `quota_eod=None`).
 
-    `quota_eod` (DE#80) é aditivo e independente do estado de `quota`: mesmo se a
-    leitura de madrugada (`/status`) falhar ou nem existir, a linha de fim de dia
-    ainda aparece se ela própria estiver disponível.
+    A linha de consumo prioriza `quota_eod` (DE#80, total do dia): uma leitura só, sem
+    o piso de madrugada ao lado pra não confundir quem lê. `quota_eod` é aditivo e
+    independente do estado de `quota` — mesmo se a leitura de madrugada (`/status`)
+    falhar ou nem existir, a linha de consumo ainda aparece se o EOD estiver disponível
+    (só a linha "Plano" some, porque essa vem só do `/status`).
     """
     if quota is None and quota_eod is None:
         return ""
 
     titulo = '<h3 style="margin:18px 0 6px">Cota da API-Football</h3>'
-    eod_html = _build_eod_line(quota_eod)
 
-    if quota is None:
-        return titulo + eod_html
-
-    if quota.error:
+    if quota is not None and quota.error and quota_eod is None:
         return (
             titulo
             + f'<p style="margin:0;color:{AMBER};font-size:13px">'
             + f"Leitura indisponivel: {escape(quota.error)}</p>"
-            + eod_html
         )
 
-    pct = quota.pct
-    pct_txt = f"{pct:.1f}%" if pct is not None else "—"
-    consumo_txt = escape(
-        f"{quota.current} / {quota.limit_day}" if quota.limit_day else f"{quota.current}"
-    )
+    rotulo, consumo_txt, pct_txt, consumo_alerta, nota_degradada = _consumo_row(quota, quota_eod)
 
-    dias = quota.days_to_end(day)
-    if quota.subscription_end is None:
-        venc_txt = "—"
-    else:
-        venc_txt = quota.subscription_end.isoformat()
-        if dias is not None:
-            venc_txt += f" ({_fmt_dias(dias)})"
-    plano_txt = escape(str(quota.plan or "—"))
-    if quota.active is False:
-        plano_txt += " (INATIVO)"
+    linhas = [_linha(rotulo, consumo_txt, pct_txt, consumo_alerta)] if rotulo else []
+
+    plano_alerta = False
+    dias = None
+    if quota is not None and not quota.error:
+        dias = quota.days_to_end(day)
+        if quota.subscription_end is None:
+            venc_txt = "—"
+        else:
+            venc_txt = quota.subscription_end.isoformat()
+            if dias is not None:
+                venc_txt += f" ({_fmt_dias(dias)})"
+        plano_txt = escape(str(quota.plan or "—"))
+        if quota.active is False:
+            plano_txt += " (INATIVO)"
+        plano_alerta = quota.subscription_alert(day)
+        linhas.append(_linha("Plano", plano_txt, venc_txt, plano_alerta))
+
+    if not linhas:
+        motivo = quota.error if quota is not None and quota.error else "sem leitura disponivel"
+        return (
+            titulo
+            + f'<p style="margin:0;color:{AMBER};font-size:13px">'
+            + f"Leitura indisponivel: {escape(motivo)}</p>"
+        )
 
     tabela = (
-        '<table style="border-collapse:collapse;font-size:13px">'
-        "<tbody>"
-        + _linha("Consumo do dia (API)", consumo_txt, pct_txt, quota.quota_alert())
-        + _linha("Plano", plano_txt, venc_txt, quota.subscription_alert(day))
+        '<table style="border-collapse:collapse;font-size:13px"><tbody>'
+        + "".join(linhas)
         + "</tbody></table>"
     )
 
     alertas = []
-    if quota.quota_alert():
+    if consumo_alerta:
         alertas.append(
             f"ALERTA — consumo em {pct_txt} do limite diario "
             f"(limiar {QUOTA_ALERT_PCT:.0f}%). Agir hoje."
         )
-    if quota.subscription_alert(day):
+    if plano_alerta:
         # `dias is None` só chega aqui junto de active=False, tratado acima.
         if quota.active is False:
             detalhe = "INATIVO"
@@ -340,11 +371,13 @@ def build_quota_section(
         for a in alertas
     )
 
-    # Sem este carimbo um contador parcial se parece com o consumo do dia inteiro.
-    nota = (
-        f'<p style="margin:4px 0 0;color:{MUTED};font-size:12px">'
-        f"Contador do dia corrente da API, lido as {fmt_brt(quota.read_at)} BRT — cobre "
-        "so as horas ja decorridas do dia da API, nao o dia do relatorio.</p>"
-    )
+    nota = ""
+    if nota_degradada:
+        nota = f'<p style="margin:4px 0 0;color:{MUTED};font-size:12px">{escape(nota_degradada)}</p>'
+    elif quota is not None and quota.error and quota_eod is not None:
+        nota = (
+            f'<p style="margin:4px 0 0;color:{AMBER};font-size:12px">'
+            f"Leitura de madrugada indisponivel ({escape(quota.error)}) — sem dado de plano/vencimento hoje.</p>"
+        )
 
-    return titulo + tabela + bloco_alertas + nota + eod_html
+    return titulo + tabela + bloco_alertas + nota

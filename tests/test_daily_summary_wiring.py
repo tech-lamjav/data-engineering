@@ -92,13 +92,15 @@ def _eod():
     )
 
 
-def test_build_html_inclui_a_linha_de_fim_de_dia(daily_summary):
+def test_build_html_com_eod_usa_o_consumo_do_dia_inteiro(daily_summary):
     _, html = daily_summary.build_html(DIA, {}, _quota(), quota_eod=_eod())
 
-    assert "Consumo total do dia" in html
+    assert "Consumo do dia" in html
+    assert "2075" in html  # 7500-5425, nao mais o piso de madrugada (7189)
 
 
-def test_build_html_sem_eod_mantem_o_email_de_antes(daily_summary):
+def test_build_html_sem_eod_cai_para_a_leitura_de_madrugada(daily_summary):
     _, html = daily_summary.build_html(DIA, {}, _quota())
 
-    assert "Consumo total do dia" not in html
+    assert "Consumo parcial" in html
+    assert "7189" in html
