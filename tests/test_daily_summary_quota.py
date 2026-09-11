@@ -386,26 +386,46 @@ def test_collect_quota_eod_sem_limit_day_mostra_bruto_sem_percentual():
     assert eod.pct is None
 
 
-def test_secao_de_cota_inclui_a_linha_de_fim_de_dia():
+def test_secao_com_eod_mostra_so_o_consumo_do_dia_inteiro():
+    # Pedido do Victor: um numero so, sem o piso de madrugada do lado confundindo.
     quota = parse_quota(_envelope(), read_at=LEITURA)
     eod = EodQuotaReading(read_at=_ANTES_DO_RESET, remaining=5425, limit_day=7500)
 
     html = build_quota_section(quota, DIA, quota_eod=eod)
 
-    assert "Consumo total do dia" in html
-    assert "5425" in html or "2075" in html
+    assert "Consumo do dia" in html
+    assert "2075" in html and "27.7%" in html  # 7500-5425 consumido, sobre o limite
     assert "20:50" in html  # horario da leitura escolhida, em BRT
+    # a leitura de madrugada (4623/7500, carimbada 00:05) nao aparece mais quando ha EOD
+    assert "4623" not in html
+    assert "Consumo parcial" not in html
 
 
-def test_secao_sem_eod_nao_muda_o_html_de_antes():
+def test_secao_com_eod_alerta_usa_o_percentual_do_dia_inteiro():
+    quota = parse_quota(_envelope(current=100, limit_day=7500), read_at=LEITURA)  # madrugada: 1.3%
+    eod = EodQuotaReading(read_at=_ANTES_DO_RESET, remaining=1000, limit_day=7500)  # dia: 86.7%
+
+    html = build_quota_section(quota, DIA, quota_eod=eod)
+
+    assert "ALERTA" in html
+    assert "86.7%" in html
+
+
+def test_secao_sem_eod_cai_para_a_leitura_de_madrugada_como_parcial():
+    # Sem leitura elegivel de fim de dia (poll de fixtures-live nao rodou perto do
+    # reset): a secao nao pode ficar muda, mostra o que tem, sinalizado como parcial.
     quota = parse_quota(_envelope(), read_at=LEITURA)
 
     html = build_quota_section(quota, DIA)
 
-    assert "Consumo total do dia" not in html
+    assert "Consumo parcial" in html
+    assert "4623" in html and "7500" in html
+    assert "00:05" in html
 
 
-def test_secao_mostra_eod_mesmo_com_leitura_de_madrugada_degradada():
+def test_secao_com_eod_mas_leitura_de_madrugada_degradada():
+    # EOD nao depende do /status: aparece mesmo com a leitura de madrugada falhando,
+    # so a linha de Plano (que vem so do /status) some.
     html = build_quota_section(
         QuotaInfo(error="timeout"),
         DIA,
@@ -413,18 +433,26 @@ def test_secao_mostra_eod_mesmo_com_leitura_de_madrugada_degradada():
     )
 
     assert "Cota da API-Football" in html
-    assert "Consumo total do dia" in html
+    assert "Consumo do dia" in html
+    assert "Plano" not in html
 
 
-def test_secao_mostra_so_eod_quando_no_status_falhou_totalmente():
+def test_secao_mostra_eod_quando_no_status_falhou_totalmente():
     html = build_quota_section(
         None,
         DIA,
         quota_eod=EodQuotaReading(read_at=_ANTES_DO_RESET, remaining=5425, limit_day=7500),
     )
 
-    assert "Consumo total do dia" in html
+    assert "Consumo do dia" in html
 
 
 def test_secao_vazia_quando_nem_quota_nem_eod():
     assert build_quota_section(None, DIA, quota_eod=None) == ""
+
+
+def test_secao_totalmente_degradada_sem_eod_mostra_o_motivo():
+    html = build_quota_section(QuotaInfo(error="ConnectionError: timeout"), DIA, quota_eod=None)
+
+    assert "Cota da API-Football" in html
+    assert "ConnectionError: timeout" in html
