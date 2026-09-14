@@ -69,20 +69,23 @@ Lida por 3 RPC(s):
 
 ## `fact_fixtures`
 
-Lida por 16 RPC(s):
+Lida por 19 RPC(s):
 
 - `_futebol_team_form(bigint,text,bigint,date)` — `away_team_id`, `away_team_name`, `competition`, `date_utc`, `fixture_id`, `goals_away`, `goals_home`, `home_team_id`, `home_team_name`, `season`, `status_short`
 - `get_futebol_competitions()` — `competition`, `kickoff_utc`, `season`
 - `get_futebol_fixture_days(date,date)` — `competition`, `kickoff_utc`
 - `get_futebol_fixture_detail(bigint)` — `away_team_id`, `away_team_name`, `competition`, `date_utc`, `fixture_id`, `goals_away`, `goals_home`, `home_team_id`, `home_team_name`, `kickoff_utc`, `round`, `score_halftime_away`, `score_halftime_home`, `season`, `status_elapsed`, `status_long`, `status_short`, `venue_city`, `venue_name`
+- `get_futebol_fixture_disponivel_desde(bigint)` — `fixture_id`, `kickoff_utc`
 - `get_futebol_fixture_extras(bigint)` — `away_team_id`, `competition`, `date_utc`, `fixture_id`, `home_team_id`, `kickoff_utc`, `season`
 - `get_futebol_fixture_historico(bigint,integer)` — `away_team_id`, `away_team_name`, `competition`, `fixture_id`, `goals_away`, `goals_home`, `home_team_id`, `home_team_name`, `kickoff_utc`, `season`, `status_short`
 - `get_futebol_fixture_numeros(bigint)` — `away_team_id`, `competition`, `fixture_id`, `goals_away`, `goals_home`, `home_team_id`, `season`
+- `get_futebol_fixture_quotes(bigint)` — `fixture_id`, `kickoff_utc`
 - `get_futebol_fixture_value(bigint)` — `fixture_id`, `kickoff_utc`
 - `get_futebol_fixtures_by_day(date,text[])` — `away_team_id`, `away_team_name`, `competition`, `date_utc`, `fixture_id`, `goals_away`, `goals_home`, `home_team_id`, `home_team_name`, `kickoff_utc`, `round`, `season`, `status_long`, `status_short`
 - `get_futebol_fixtures(text,bigint,text)` — `away_team_id`, `away_team_name`, `competition`, `date_utc`, `fixture_id`, `goals_away`, `goals_home`, `home_team_id`, `home_team_name`, `kickoff_utc`, `round`, `season`, `status_long`, `status_short`
 - `get_futebol_matchup_markets(bigint,bigint,text,bigint)` — `away_team_id`, `competition`, `goals_away`, `goals_home`, `home_team_id`, `season`, `status_short`
 - `get_futebol_odds_board()` — `away_team_id`, `away_team_name`, `competition`, `fixture_id`, `home_team_id`, `home_team_name`, `kickoff_utc`, `status_short`
+- `get_futebol_oportunidades_publicadas(date,date)` — `away_team_name`, `competition`, `fixture_id`, `goals_away`, `goals_home`, `home_team_name`, `kickoff_utc`, `status_short`
 - `get_futebol_standings(text,bigint)` — `away_team_id`, `away_team_name`, `competition`, `goals_away`, `goals_home`, `home_team_id`, `home_team_name`, `season`, `status_short`
 - `get_futebol_team_profile(bigint,text,bigint)` — `away_team_id`, `competition`, `fixture_id`, `goals_away`, `goals_home`, `home_team_id`, `season`, `status_short`
 - `get_futebol_value_board()` — `away_team_id`, `away_team_name`, `competition`, `fixture_id`, `home_team_id`, `home_team_name`, `kickoff_utc`, `status_short`
@@ -103,9 +106,10 @@ Lida por 1 RPC(s):
 
 ## `fact_odds_snapshot`
 
-Lida por 2 RPC(s):
+Lida por 3 RPC(s):
 
 - `get_futebol_fixture_odds(bigint)` — `bookmaker_name`, `collection_window`, `fixture_id`, `line_value`, `market_name`, `odd_decimal`, `outcome_label`
+- `get_futebol_fixture_quotes(bigint)` — `bookmaker_name`, `collection_window`, `fixture_id`, `kickoff_utc`, `line_value`, `market_name`, `odd_decimal`, `outcome_label`
 - `get_futebol_odds_board()` — `bookmaker_name`, `collection_window`, `competition`, `fixture_id`, `kickoff_utc`, `line_value`, `market_name`, `odd_decimal`, `outcome_label`
 
 ## `fact_predictions_api`
@@ -131,60 +135,62 @@ Lida por 2 RPC(s):
 
 Lida por 2 RPC(s):
 
-- `get_futebol_fixture_value(bigint)` — `avg_odd`, `best_book`, `best_odd`, `edge`, `faixa`, `fixture_id`, `janela_usada`, `line_value`, `linha_sharp_confirma`, `market`, `modelo_api_concorda`, `n_casas`, `outcome`, `pen_odd_juice`, `pen_odd_longshot`, `pen_odd_outlier`, `pen_poucas_casas`, `penalidades`, `penalidades_especificas_pts`, `penalidades_globais_pts`, `premissas_sem_dado`, `prob_justa_fechamento`, `pts_corroboracao`, `pts_premissas`, `pts_valor`, `score`
-- `get_futebol_value_board()` — `avg_odd`, `best_book`, `best_odd`, `competition`, `edge`, `faixa`, `fixture_id`, `janela_usada`, `line_value`, `linha_sharp_confirma`, `market`, `modelo_api_concorda`, `n_casas`, `outcome`, `penalidades`, `premissas_sem_dado`, `prob_justa_fechamento`, `pts_corroboracao`, `pts_premissas`, `pts_valor`, `score`
+- `get_futebol_fixture_value(bigint)` — `avg_odd`, `best_book`, `best_odd`, `edge`, `faixa`, `fixture_id`, `janela_usada`, `line_value`, `linha_sharp_confirma`, `market`, `modelo_api_concorda`, `n_casas`, `outcome`, `penalidades`, `penalidades_especificas_pts`, `premissas_sem_dado`, `prob_justa_fechamento`, `pts_premissas`, `score`, `score_versao`
+- `get_futebol_value_board()` — `avg_odd`, `best_book`, `best_odd`, `competition`, `edge`, `faixa`, `fixture_id`, `janela_usada`, `line_value`, `market`, `n_casas`, `outcome`, `penalidades`, `premissas_sem_dado`, `prob_justa_fechamento`, `pts_premissas`, `score`, `score_versao`
 
 ## `fact_value_opportunities_hist`
 
-Lida por 2 RPC(s):
+Lida por 4 RPC(s):
 
-- `get_futebol_fixture_value(bigint)` — `avg_odd`, `best_book`, `best_odd`, `dbt_valid_from`, `dbt_valid_to`, `edge`, `faixa`, `fixture_id`, `janela_usada`, `line_value`, `linha_sharp_confirma`, `market`, `modelo_api_concorda`, `n_casas`, `outcome`, `pen_odd_juice`, `pen_odd_longshot`, `pen_odd_outlier`, `pen_poucas_casas`, `penalidades`, `penalidades_especificas_pts`, `penalidades_globais_pts`, `premissas_sem_dado`, `prob_justa_fechamento`, `pts_corroboracao`, `pts_premissas`, `pts_valor`, `score`
-- `get_futebol_value_history(date,date)` — `avg_odd`, `best_book`, `best_odd`, `competition`, `dbt_valid_from`, `dbt_valid_to`, `edge`, `faixa`, `fixture_id`, `janela_usada`, `line_value`, `linha_sharp_confirma`, `market`, `modelo_api_concorda`, `n_casas`, `opportunity_key`, `outcome`, `penalidades`, `premissas_sem_dado`, `prob_justa_fechamento`, `pts_corroboracao`, `pts_premissas`, `pts_valor`, `score`
+- `get_futebol_fixture_disponivel_desde(bigint)` — `dbt_valid_from`, `dbt_valid_to`, `fixture_id`, `line_value`, `market`, `opportunity_key`, `outcome`
+- `get_futebol_fixture_value(bigint)` — `avg_odd`, `best_book`, `best_odd`, `dbt_valid_from`, `dbt_valid_to`, `edge`, `faixa`, `fixture_id`, `janela_usada`, `line_value`, `linha_sharp_confirma`, `market`, `modelo_api_concorda`, `n_casas`, `outcome`, `penalidades`, `penalidades_especificas_pts`, `premissas_sem_dado`, `prob_justa_fechamento`, `pts_premissas`, `score`, `score_versao`
+- `get_futebol_oportunidades_publicadas(date,date)` — `best_odd`, `competition`, `dbt_valid_from`, `edge`, `faixa`, `fixture_id`, `line_value`, `linha_sharp_confirma`, `market`, `modelo_api_concorda`, `opportunity_key`, `outcome`, `pen_odd_juice`, `pen_odd_longshot`, `pen_odd_outlier`, `pen_poucas_casas`, `penalidades`, `premissas_sem_dado`, `pts_premissas`, `score`, `score_versao`
+- `get_futebol_value_history(date,date)` — `avg_odd`, `best_book`, `best_odd`, `competition`, `dbt_valid_from`, `dbt_valid_to`, `edge`, `faixa`, `fixture_id`, `janela_usada`, `line_value`, `linha_sharp_confirma`, `market`, `modelo_api_concorda`, `n_casas`, `opportunity_key`, `outcome`, `penalidades`, `premissas_sem_dado`, `prob_justa_fechamento`, `pts_premissas`, `score`, `score_versao`
 
 ## `int_futebol_premissas_1x2`
 
 Lida por 4 RPC(s):
 
 - `get_futebol_fixture_premissas(bigint)` — `desfalque_adversario`, `desfalque_proprio`, `fixture_id`, `forca_mismatch`, `forma`, `h2h_favoravel`, `mando`, `outcome`, `penalidades_1x2_pts`, `pick_empate`, `pts_premissas`, `superioridade_tabela`, `superioridade_xg`
-- `get_futebol_fixture_value(bigint)` — `desfalque_adversario`, `desfalque_proprio`, `fixture_id`, `forca_mismatch`, `forma`, `h2h_favoravel`, `mando`, `outcome`, `pick_empate`, `premissas_sem_dado`, `pts_premissas`, `superioridade_tabela`, `superioridade_xg`
-- `get_futebol_value_board()` — `competition`, `desfalque_adversario`, `fixture_id`, `forca_mismatch`, `forma`, `h2h_favoravel`, `mando`, `outcome`, `premissas_sem_dado`, `pts_premissas`, `superioridade_tabela`, `superioridade_xg`
-- `get_futebol_value_history(date,date)` — `competition`, `desfalque_adversario`, `fixture_id`, `forca_mismatch`, `forma`, `h2h_favoravel`, `mando`, `outcome`, `premissas_sem_dado`, `pts_premissas`, `superioridade_tabela`, `superioridade_xg`
+- `get_futebol_fixture_value(bigint)` — `fixture_id`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_value_board()` — `competition`, `fixture_id`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_value_history(date,date)` — `competition`, `fixture_id`, `outcome`, `premissas_sem_dado`, `pts_premissas`
 
 ## `int_futebol_premissas_ah`
 
 Lida por 4 RPC(s):
 
 - `get_futebol_fixture_premissas(bigint)` — `adversario_fragil_fora`, `defesa_fora_solida`, `favorito_irregular`, `fixture_id`, `handicap_alto`, `line_value`, `mando_forte`, `outcome`, `penalidades_ah_pts`, `pts_premissas`, `raramente_perde_por_2`, `sem_rodizio`, `supremacia`, `tende_golear`
-- `get_futebol_fixture_value(bigint)` — `adversario_fragil_fora`, `defesa_fora_solida`, `favorito_irregular`, `fixture_id`, `handicap_alto`, `is_azarao`, `is_favorito`, `line_value`, `mando_forte`, `outcome`, `premissas_sem_dado`, `pts_premissas`, `raramente_perde_por_2`, `sem_rodizio`, `supremacia`, `tende_golear`
-- `get_futebol_value_board()` — `adversario_fragil_fora`, `competition`, `defesa_fora_solida`, `favorito_irregular`, `fixture_id`, `line_value`, `mando_forte`, `outcome`, `premissas_sem_dado`, `pts_premissas`, `raramente_perde_por_2`, `sem_rodizio`, `supremacia`, `tende_golear`
-- `get_futebol_value_history(date,date)` — `adversario_fragil_fora`, `competition`, `defesa_fora_solida`, `favorito_irregular`, `fixture_id`, `line_value`, `mando_forte`, `outcome`, `premissas_sem_dado`, `pts_premissas`, `raramente_perde_por_2`, `sem_rodizio`, `supremacia`, `tende_golear`
+- `get_futebol_fixture_value(bigint)` — `fixture_id`, `line_value`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_value_board()` — `competition`, `fixture_id`, `line_value`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_value_history(date,date)` — `competition`, `fixture_id`, `line_value`, `outcome`, `premissas_sem_dado`, `pts_premissas`
 
 ## `int_futebol_premissas_btts`
 
 Lida por 4 RPC(s):
 
 - `get_futebol_fixture_premissas(bigint)` — `ambos_marcam`, `ataque_dos_dois`, `ataque_trava`, `defesa_forte`, `defesas_vazaveis`, `fixture_id`, `historico_btts`, `historico_seco`, `outcome`, `penalidades_btts_pts`, `pts_premissas`
-- `get_futebol_fixture_value(bigint)` — `ambos_marcam`, `ataque_dos_dois`, `ataque_trava`, `defesa_forte`, `defesas_vazaveis`, `fixture_id`, `historico_btts`, `historico_seco`, `outcome`, `premissas_sem_dado`, `pts_premissas`
-- `get_futebol_value_board()` — `ambos_marcam`, `ataque_dos_dois`, `ataque_trava`, `competition`, `defesa_forte`, `defesas_vazaveis`, `fixture_id`, `historico_btts`, `historico_seco`, `outcome`, `premissas_sem_dado`, `pts_premissas`
-- `get_futebol_value_history(date,date)` — `ambos_marcam`, `ataque_dos_dois`, `ataque_trava`, `competition`, `defesa_forte`, `defesas_vazaveis`, `fixture_id`, `historico_btts`, `historico_seco`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_fixture_value(bigint)` — `fixture_id`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_value_board()` — `competition`, `fixture_id`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_value_history(date,date)` — `competition`, `fixture_id`, `outcome`, `premissas_sem_dado`, `pts_premissas`
 
 ## `int_futebol_premissas_dc`
 
 Lida por 4 RPC(s):
 
 - `get_futebol_fixture_premissas(bigint)` — `adversario_limitado`, `equilibrio_defensivo`, `fixture_id`, `invicto_recente`, `lado_coberto_forte`, `outcome`, `penalidades_dc_pts`, `pts_premissas`
-- `get_futebol_fixture_value(bigint)` — `adversario_limitado`, `equilibrio_defensivo`, `fixture_id`, `invicto_recente`, `lado_coberto_forte`, `outcome`, `premissas_sem_dado`, `pts_premissas`
-- `get_futebol_value_board()` — `adversario_limitado`, `competition`, `equilibrio_defensivo`, `fixture_id`, `invicto_recente`, `lado_coberto_forte`, `outcome`, `premissas_sem_dado`, `pts_premissas`
-- `get_futebol_value_history(date,date)` — `adversario_limitado`, `competition`, `equilibrio_defensivo`, `fixture_id`, `invicto_recente`, `lado_coberto_forte`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_fixture_value(bigint)` — `fixture_id`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_value_board()` — `competition`, `fixture_id`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_value_history(date,date)` — `competition`, `fixture_id`, `outcome`, `premissas_sem_dado`, `pts_premissas`
 
 ## `int_futebol_premissas_ou`
 
 Lida por 4 RPC(s):
 
 - `get_futebol_fixture_premissas(bigint)` — `ambos_vazam`, `ataque_combinado`, `ataques_fracos`, `clean_sheets_altos`, `defesas_firmes`, `defesas_vazaveis`, `fixture_id`, `historico_over`, `historico_under`, `line_value`, `linha_extrema`, `outcome`, `penalidades_ou_pts`, `pts_premissas`, `ritmo_alto`, `xg_baixo_combinado`, `xg_combinado_alto`
-- `get_futebol_fixture_value(bigint)` — `ambos_vazam`, `ataque_combinado`, `ataques_fracos`, `clean_sheets_altos`, `defesas_firmes`, `defesas_vazaveis`, `fixture_id`, `historico_over`, `historico_under`, `line_value`, `linha_extrema`, `outcome`, `premissas_sem_dado`, `pts_premissas`, `ritmo_alto`, `xg_baixo_combinado`, `xg_combinado_alto`
-- `get_futebol_value_board()` — `ambos_vazam`, `ataque_combinado`, `ataques_fracos`, `clean_sheets_altos`, `competition`, `defesas_firmes`, `defesas_vazaveis`, `fixture_id`, `historico_over`, `historico_under`, `line_value`, `outcome`, `premissas_sem_dado`, `pts_premissas`, `ritmo_alto`, `xg_baixo_combinado`, `xg_combinado_alto`
-- `get_futebol_value_history(date,date)` — `ambos_vazam`, `ataque_combinado`, `ataques_fracos`, `clean_sheets_altos`, `competition`, `defesas_firmes`, `defesas_vazaveis`, `fixture_id`, `historico_over`, `historico_under`, `line_value`, `outcome`, `premissas_sem_dado`, `pts_premissas`, `ritmo_alto`, `xg_baixo_combinado`, `xg_combinado_alto`
+- `get_futebol_fixture_value(bigint)` — `fixture_id`, `line_value`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_value_board()` — `competition`, `fixture_id`, `line_value`, `outcome`, `premissas_sem_dado`, `pts_premissas`
+- `get_futebol_value_history(date,date)` — `competition`, `fixture_id`, `line_value`, `outcome`, `premissas_sem_dado`, `pts_premissas`
 
 ## Sem leitor nenhum
 
