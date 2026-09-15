@@ -766,13 +766,25 @@ MART_TABLES_ORDERED = [
     "dim_daily_opportunities",
 ]
 
-# Futebol — as 21 tabelas que o app (RPCs get_futebol_*) consome, na ordem
+# Futebol — as 22 tabelas que o app (RPCs get_futebol_*) consome (23 quando
+# fact_insumos_medidos for descomentada, ver aviso abaixo — o comentário "21" desta linha
+# já estava desatualizado antes desta edição, corrigido de passagem), na ordem
 # dim -> fact -> intermediário -> mart-produto (mesma lógica de janela mínima de
 # inconsistência do NBA). NÃO é só "marts": as RPCs de valor reconstroem
 # evidências/avisos a partir dos booleans das int_futebol_premissas_*, então elas
 # entram no sync. Espelha o array de futebol.sync_all() que o FDW+pg_cron rodava.
 # Colunas BQ complexas (coverage RECORD, evidencias/avisos ARRAY) são puladas pelo
 # engine (Postgres nativo é escalar) — ver _is_complex_field em sync/bq_to_postgres.py.
+#
+# ⚠️ fact_insumos_medidos (AE#175, ADR 0016) ENTROU NA LISTA, MAS NÃO ESTÁ ATIVA AINDA.
+# Comentada de propósito até: (1) a migration que cria futebol.fact_insumos_medidos no
+# Postgres existir (prop-play-predictor — sem ela, check_schema_parity acusa a tabela
+# INTEIRA como ausente — um único drift `missing_in_pg` com "tabela não existe em
+# {schema}", não um por coluna; ver check_schema_parity em sync/bq_to_postgres.py); e
+# (2) fact_insumos_medidos entrar no --select de workflow_futebol_odds.yml — NÃO está lá
+# ainda (só um aviso em prosa apontando pra cá), precisa ser digitado nas duas listas na
+# hora. Ativar as DUAS juntas, no mesmo deploy que a migration do Postgres for aplicada —
+# nunca antes.
 FUTEBOL_SYNC_TABLES_ORDERED = [
     # dimensões
     "dim_leagues",
@@ -793,6 +805,7 @@ FUTEBOL_SYNC_TABLES_ORDERED = [
     # camada de valor (intermediários -> mart-produto por último)
     "int_futebol_odds_devig",
     "int_futebol_premissas_1x2",
+    # "fact_insumos_medidos",  # AE#175/ADR 0016 — ver aviso acima antes de descomentar
     "int_futebol_premissas_ou",
     "int_futebol_premissas_ah",
     "int_futebol_premissas_btts",

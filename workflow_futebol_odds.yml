@@ -129,6 +129,17 @@ main:
     # ⚠️ Os DOIS são `full_refresh=false` no dbt, e isso é de propósito: a fase de RECOVERY abaixo
     # roda este mesmo `--select` com `--full-refresh`. Sem a trava, a primeira recuperação de deriva
     # determinística apagaria o histórico append-only inteiro — em silêncio, e com o job verde.
+    #
+    # ⚠️ PENDENTE (AE#175/ADR 0016): fact_insumos_medidos NÃO está nas duas listas de --select
+    # abaixo, de propósito — a migration que cria a tabela de destino no Postgres
+    # (prop-play-predictor) ainda não existe, e adicionar aqui sem ela faria o sync acusar a
+    # tabela INTEIRA como ausente (check_schema_parity, kind=missing_in_pg, "tabela não existe
+    # em {schema}" — um drift só, não um por coluna). Quando a migration existir: adicionar
+    # "fact_insumos_medidos"
+    # logo depois de "int_futebol_premissas_1x2" NAS DUAS listas (a de baixo e a da fase de
+    # RECOVERY, --full-refresh) — esquecer uma cópia é o defeito mais comum já documentado
+    # neste repo (project_futebol_modelo_novo_precisa_selector.md) — e descomentar a entrada
+    # em FUTEBOL_SYNC_TABLES_ORDERED (src/config.py), no mesmo deploy.
     # ========================================================================
     - phase2_dbt:
         try:
