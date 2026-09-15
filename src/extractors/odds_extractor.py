@@ -8,7 +8,7 @@ from src.config import (
     FUTEBOL_ODDS_WINDOWS,
     FUTEBOL_ODDS_WINDOWS_DIARIAS,
     FUTEBOL_ODDS_LEAGUE_IDS,
-    FUTEBOL_ODDS_DAILY_BUCKET_HOURS,
+    FUTEBOL_ODDS_DAILY_BUCKET_BOUNDARIES,
     get_gcs_path,
 )
 from src.utils.logger import setup_logger
@@ -16,17 +16,23 @@ from src.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-def _daily_bucket_stamp(now: datetime, bucket_hours: int) -> str:
-    """Date-stamp da janela DIÁRIA, com o dia partido em blocos de `bucket_hours` (PPP#366).
+def _daily_bucket_stamp(now: datetime, boundaries) -> str:
+    """Date-stamp da janela DIÁRIA, com o dia partido em blocos não-uniformes (PPP#366).
 
     Função pura (sem `self`) pra ser testável sem mockar o relógio: quem chama passa o
-    `now` que quiser. O bloco é o piso da hora arredondado pra baixo em múltiplos de
-    `bucket_hours` — ex. bucket_hours=6: 00:00-05:59 → "00h", 06:00-11:59 → "06h", etc.
-    Duas chamadas no MESMO bloco devolvem o MESMO stamp (skip-if-exists trava); bloco
-    diferente, stamp diferente (destrava a recaptura). Ver FUTEBOL_ODDS_DAILY_BUCKET_HOURS
-    pro porquê do número não poder ser pequeno demais.
+    `now` que quiser. `boundaries` é uma sequência ordenada de horas (0-23) em que um bloco
+    novo começa — ex. (0, 6, 9, 12, 15, 18, 21): 00:00-05:59 → "00h", 06:00-08:59 → "06h",
+    09:00-11:59 → "09h", etc. O bloco é o maior limite <= a hora atual. Duas chamadas no
+    MESMO bloco devolvem o MESMO stamp (skip-if-exists trava); bloco diferente, stamp
+    diferente (destrava a recaptura). Ver FUTEBOL_ODDS_DAILY_BUCKET_BOUNDARIES pro porquê da
+    distribuição não ser uniforme.
+
+    ⚠️ Cai pro menor limite se nenhum for <= a hora atual (ex. boundaries editada sem 0
+    dentro). Essa função roda fora do try/except por-fixture de extract_and_save — sem o
+    fallback, um `max()` de gerador vazio levanta ValueError e derruba o poll inteiro,
+    inclusive as bandas de fechamento forward-only (t15m) de todo fixture daquela passada.
     """
-    bloco = (now.hour // bucket_hours) * bucket_hours
+    bloco = max((b for b in boundaries if b <= now.hour), default=min(boundaries))
     return f"{now:%Y-%m-%d}_{bloco:02d}h"
 
 
@@ -36,17 +42,19 @@ class OddsExtractor(BaseExtractor):
     Coleta FORWARD-ONLY (não dá pra reconstruir as janelas de jogos passados). Um poll
     (~15min) faz UMA passada nos jogos NS dentro do horizonte, calcula o lead (minutos até o
     kickoff) e, p/ cada janela cuja banda (FUTEBOL_ODDS_WINDOWS) contém o lead, bate /odds
-    1x e grava 1 arquivo. NÃO grava vazio (jogo sem odds publicadas ainda → re-tenta no
-    próximo poll; gravar vazio travaria o skip-if-exists — mesma lição das escalações
-    pré-jogo, e diferente do vazio registrado de injuries, cuja banda é diária e não de
-    fechamento).
+    1x e grava 1 arquivo. Nas bandas de FECHAMENTO (t24h/t1h/t15m), jogo sem odds publicadas
+    ainda NÃO grava — re-tenta no próximo poll; gravar vazio travaria o skip-if-exists (mesma
+    lição das escalações pré-jogo). Na banda DIÁRIA o vazio É gravado de propósito (vazio
+    registrado, ver comentário mais abaixo) — diferente das de fechamento, e no mesmo
+    espírito do vazio registrado de injuries.
 
     DUAS naturezas de janela:
       - "daily" (>24h até o horizonte de 7 dias): o path é DATE-STAMPADO
         (raw_futebol_odds_{fixture}_daily_{YYYY-MM-DD}_{HHh}.json — PPP#366), logo
-        skip-if-exists é por (fixture, janela, BLOCO de FUTEBOL_ODDS_DAILY_BUCKET_HOURS
-        horas) → N capturas/dia enquanto o jogo fica na banda, não mais 1. É o que tira o
-        board do recorte de 24h. Mesmo arquétipo do PredictionsExtractor.
+        skip-if-exists é por (fixture, janela, BLOCO — ver
+        FUTEBOL_ODDS_DAILY_BUCKET_BOUNDARIES) → N capturas/dia enquanto o jogo fica na
+        banda, não mais 1. É o que tira o board do recorte de 24h. Mesmo arquétipo do
+        PredictionsExtractor.
       - t24h / t1h / t15m (fechamento): sem date-stamp, 1 captura única por (fixture, janela).
         t15m é a linha de fechamento p/ CLV. Nomes de arquivo INTACTOS.
 
@@ -78,7 +86,7 @@ class OddsExtractor(BaseExtractor):
         self.windows = dict(FUTEBOL_ODDS_WINDOWS)
         self.daily_windows = set(FUTEBOL_ODDS_WINDOWS_DIARIAS)
         self.league_ids = list(FUTEBOL_ODDS_LEAGUE_IDS)
-        self.daily_bucket_hours = FUTEBOL_ODDS_DAILY_BUCKET_HOURS
+        self.daily_bucket_boundaries = tuple(FUTEBOL_ODDS_DAILY_BUCKET_BOUNDARIES)
 
     def extract(
         self,
@@ -140,8 +148,8 @@ class OddsExtractor(BaseExtractor):
             return []
 
         now = datetime.now(timezone.utc)
-        # date-stamp das janelas diárias, em blocos de FUTEBOL_ODDS_DAILY_BUCKET_HOURS (PPP#366)
-        daily_stamp = _daily_bucket_stamp(now, self.daily_bucket_hours)
+        # date-stamp das janelas diárias, nos blocos de FUTEBOL_ODDS_DAILY_BUCKET_BOUNDARIES (PPP#366)
+        daily_stamp = _daily_bucket_stamp(now, self.daily_bucket_boundaries)
         saved_paths = []
         skipped = 0
         empty = 0
@@ -168,7 +176,7 @@ class OddsExtractor(BaseExtractor):
                 considered += 1
 
                 # Só as janelas diárias date-stampam → skip-if-exists por (fixture, janela,
-                # BLOCO de daily_bucket_hours horas), N capturas/dia enquanto o fixture fica
+                # BLOCO de daily_bucket_boundaries), N capturas/dia enquanto o fixture fica
                 # na banda. As de fechamento seguem sem data no nome: 1 captura única, e é
                 # assim que o fato já lê.
                 date_stamp = daily_stamp if window in self.daily_windows else None
@@ -227,8 +235,9 @@ class OddsExtractor(BaseExtractor):
                         # de 15min reperguntaria o mesmo vazio ~96x/dia por até uma semana.
                         # Liga dormente (coverage.odds=FALSE até a abertura) devolve vazio
                         # de propósito — são 5 delas armadas hoje. Com o arquivo, no máximo
-                        # 24/daily_bucket_hours capturas/dia (PPP#366) em vez de 96 — é o
-                        # bucket, não o vazio registrado, quem trava o pior caso agora.
+                        # len(FUTEBOL_ODDS_DAILY_BUCKET_BOUNDARIES) capturas/dia (PPP#366) em
+                        # vez de 96 — é o bucket, não o vazio registrado, quem trava o pior
+                        # caso agora.
                         # Fora de saved_paths: arquivo sem casa nenhuma não gera linha no
                         # fato (o UNNEST de `bets` vazio elimina a linha no staging), então
                         # não há rebuild de dbt a fazer.

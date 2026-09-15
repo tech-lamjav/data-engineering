@@ -493,26 +493,32 @@ FUTEBOL_ODDS_WINDOWS = {
 }
 
 # Janelas de odds que DATE-STAMPAM o arquivo (raw_futebol_odds_{fixture}_{janela}_{stamp}.json)
-# → skip-if-exists por (fixture, janela, BLOCO — ver FUTEBOL_ODDS_DAILY_BUCKET_HOURS). Só a
-# "daily": as bandas de fechamento são 1 captura única por fixture e o nome sem data é o que
+# → skip-if-exists por (fixture, janela, BLOCO — ver FUTEBOL_ODDS_DAILY_BUCKET_BOUNDARIES). Só
+# a "daily": as bandas de fechamento são 1 captura única por fixture e o nome sem data é o que
 # a external table e o fato já leem — date-stampá-las seria regressão.
 FUTEBOL_ODDS_WINDOWS_DIARIAS = {"daily"}
 
 # PPP#366: a janela "daily" tem DIAS de largura (até FUTEBOL_ODDS_HORIZON_MIN), e sem
 # sub-particionar o dia o skip-if-exists trava em 1 captura por fixture por dia — o preço que
-# o assinante vê pode chegar a ~1 dia de idade. Este número quebra o dia em blocos de N
-# horas; skip-if-exists passa a valer por (fixture, janela, BLOCO), então o mesmo fixture
-# pode ser recapturado a cada N horas, sem mudar a cadência do poll (~15min) nem a banda.
+# o assinante vê pode chegar a ~1 dia de idade. Esta lista quebra o dia em blocos: cada valor é
+# a hora (UTC) em que um bloco novo começa. skip-if-exists passa a valer por (fixture, janela,
+# BLOCO), então o mesmo fixture pode ser recapturado a cada novo bloco, sem mudar a cadência do
+# poll (~15min) nem a banda.
 #
 # ⚠️ NÃO É SÓ FRESCOR, É COTA. O "vazio registrado" (odds_extractor.py) existe porque um
 # fixture sem odds publicadas nunca grava arquivo por si só — sem ele, cada bloco novo
-# reperguntaria o mesmo vazio a cada poll de 15min DENTRO do bloco. O bucket multiplica o
-# PIOR CASO (fixture sem odds, banda inteira) por 24/FUTEBOL_ODDS_DAILY_BUCKET_HOURS
-# capturas/dia — descer para 1h volta a ser ~96x/dia/fixture, o mesmo "bomba de cota" que o
-# vazio registrado foi criado pra evitar. Medido em 2026-09-04: 6h dá no máximo 4
-# capturas/dia/fixture; com ~100-150 fixtures na banda hoje isso é até ~600 chamadas
-# extras/dia, contra headroom de milhares na cota diária de 7.500 (x-ratelimit-requests-limit).
-FUTEBOL_ODDS_DAILY_BUCKET_HOURS = 6
+# reperguntaria o mesmo vazio a cada poll de 15min DENTRO do bloco. Os limites multiplicam o
+# PIOR CASO (fixture sem odds, banda inteira) por len(FUTEBOL_ODDS_DAILY_BUCKET_BOUNDARIES)
+# capturas/dia — descer pra 1 bloco/hora volta a ser ~96x/dia/fixture, o mesmo "bomba de cota"
+# que o vazio registrado foi criado pra evitar.
+#
+# DISTRIBUIÇÃO NÃO-UNIFORME (aprovado por Victor em 15/09, ClickUp wdx6zf0fq2): de 00h a 06h
+# UTC odd não anda de madrugada, então não vale captura extra além da que a virada do dia já
+# faz — um bloco só cobre essa faixa inteira. Das 06h em diante, bloco de 3h. 7 capturas/dia em
+# vez das 4 medidas em 2026-09-04 (bloco uniforme de 6h), com a folga de cota concentrada onde
+# o preço de fato se mexe: 5.425 de 7.500 sobrando às 10h35 do dia medido (27,7% consumido),
+# headroom de milhares acima do custo extra desta mudança.
+FUTEBOL_ODDS_DAILY_BUCKET_BOUNDARIES = (0, 6, 9, 12, 15, 18, 21)
 
 # Ligas com coverage.odds=TRUE (validado em dim_leagues). O poll filtra os jogos NS
 # por esses league_ids. Diferente de /injuries (Copa excluída), odds de Copa do Mundo
