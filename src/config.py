@@ -766,13 +766,18 @@ MART_TABLES_ORDERED = [
     "dim_daily_opportunities",
 ]
 
-# Futebol — as 21 tabelas que o app (RPCs get_futebol_*) consome, na ordem
+# Futebol — as 23 tabelas que o app (RPCs get_futebol_*) consome, na ordem
 # dim -> fact -> intermediário -> mart-produto (mesma lógica de janela mínima de
 # inconsistência do NBA). NÃO é só "marts": as RPCs de valor reconstroem
 # evidências/avisos a partir dos booleans das int_futebol_premissas_*, então elas
 # entram no sync. Espelha o array de futebol.sync_all() que o FDW+pg_cron rodava.
 # Colunas BQ complexas (coverage RECORD, evidencias/avisos ARRAY) são puladas pelo
 # engine (Postgres nativo é escalar) — ver _is_complex_field em sync/bq_to_postgres.py.
+#
+# fact_insumos_medidos (AE#175, ADR 0016) ativada em 2026-09-16: a migration que cria
+# futebol.fact_insumos_medidos no Postgres (prop-play-predictor#423) já existe em
+# STAGING e PRD, e a tabela entrou no --select de workflow_futebol_odds.yml (as duas
+# listas, normal e RECOVERY --full-refresh) no mesmo deploy.
 FUTEBOL_SYNC_TABLES_ORDERED = [
     # dimensões
     "dim_leagues",
@@ -793,6 +798,7 @@ FUTEBOL_SYNC_TABLES_ORDERED = [
     # camada de valor (intermediários -> mart-produto por último)
     "int_futebol_odds_devig",
     "int_futebol_premissas_1x2",
+    "fact_insumos_medidos",  # AE#175/ADR 0016
     "int_futebol_premissas_ou",
     "int_futebol_premissas_ah",
     "int_futebol_premissas_btts",
