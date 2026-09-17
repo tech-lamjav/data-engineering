@@ -1,0 +1,80 @@
+# Avisa na PR, antes do merge, quando o diff toca o núcleo compartilhado dos 29
+# serviços Cloud Run (`NUCLEO_COMUM` em `scripts/procedencia_servicos.sh`).
+#
+# POR QUE ESTE WORKFLOW EXISTE: o `deriva-servicos.yml` já detecta esse tipo de
+# mudança, mas só depois do merge (roda de hora em hora) e só como CI vermelho num
+# workflow agendado que ninguém necessariamente está olhando. A PR #85 (16/09) mexeu em
+# `src/config.py` e sua própria descrição só lembrou de redeployar o GCP Workflow YAML
+# — o gotcha do redeploy do núcleo Cloud Run (ADR 0001 deste repo) ficou de fora, e a
+# frota rodou código velho até o próximo alarme. Este workflow move o lembrete para
+# ANTES do merge, no lugar (a própria PR) onde a decisão de deployar é tomada.
+#
+# Isto é só um AVISO (comentário na PR) — não bloqueia merge nem deploya sozinho. Ver
+# a discussão de trade-off na sessão que criou este arquivo: deploy automático no merge
+# tiraria o gate humano antes de produção, e o script já leva ~60min.
+#
+# Paths abaixo espelham `NUCLEO_COMUM` em `scripts/procedencia_servicos.sh` — se aquele
+# array mudar, atualize aqui também (não há flag no script que só liste núcleo, sem
+# hashear, então a lista é duplicada de propósito).
+
+name: Aviso de deploy do núcleo
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  avisar:
+    name: verificar núcleo compartilhado
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar diff contra o núcleo
+        id: check
+        run: |
+          ARQUIVOS=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
+          echo "$ARQUIVOS"
+
+          # `src/extractors/base_extractor.py` também é núcleo (ver comentário do
+          # manifesto), mas é o arquivo mais estável do grupo — mudar a base de todo
+          # extrator é raro e normalmente já vem acompanhado de mudança em src/config.py
+          # ou src/clients na mesma PR. Incluído mesmo assim: over-avisar não é o
+          # problema que este workflow existe para evitar, esquecer é.
+          NUCLEO_REGEX='^src/config\.py$|^src/clients/|^src/storage/|^src/utils/|^src/bigquery/|^src/extractors/base_extractor\.py$'
+          if echo "$ARQUIVOS" | grep -qE "$NUCLEO_REGEX"; then
+            echo "toca_nucleo=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "toca_nucleo=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Avisar na PR
+        if: steps.check.outputs.toca_nucleo == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          MARCADOR="<!-- aviso-deploy-nucleo -->"
+          PR="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+
+          CORPO="$MARCADOR
+          ⚠️ **Esta PR mexe no núcleo compartilhado** dos 29 serviços Cloud Run deste repo (\`src/config.py\`, \`src/clients/\`, \`src/storage/\`, \`src/utils/\`, \`src/bigquery/\` ou \`src/extractors/base_extractor.py\`).
+
+          Depois do merge, rode \`./scripts/deploy_cloud_run.sh\` (~60 min) — sem isso produção continua rodando código antigo até a próxima checagem horária do workflow \`Deriva de serviços Cloud Run\`, sem que nada mais acuse. Ver \`docs/adr/0001-carimbo-de-procedencia-dos-servicos-cloud-run.md\`."
+
+          # Atualiza o comentário existente em vez de empilhar um novo a cada push na
+          # PR (o marcador HTML identifica o comentário deste workflow).
+          EXISTENTE=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq ".[] | select(.body | startswith(\"$MARCADOR\")) | .id" | head -1)
+
+          if [ -n "$EXISTENTE" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$EXISTENTE" -f body="$CORPO" >/dev/null
+          else
+            gh pr comment "$PR" --body "$CORPO"
+          fi
