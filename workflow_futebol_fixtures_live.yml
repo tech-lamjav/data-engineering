@@ -13,7 +13,7 @@
 # quando há odds NOVAS (saved_count>0 de odds), e na madrugada/pós-apito raramente há —
 # o dbt seria pulado justo quando a atualização de status importa. Clonado da estrutura
 # de workflow_futebol_lineups.yml (o análogo mais próximo: poll + gate em saved_count +
-# dbt enxuto + recovery --full-refresh).
+# dbt enxuto). SEM recovery --full-refresh (removido em DE#88 — ver comentário na FASE 2).
 #
 # O dbt usa --select SEM '+' (enxuto): fixtures não depende de mais nada upstream, e o
 # resto do funil (fact_odds_snapshot, fact_value_funnel, ...) pega o fact_fixtures fresco
@@ -151,6 +151,18 @@ main:
                         message: "dbt fixtures rebuild completed"
                         saved_count: ${saved_count}
                         execution_name: ${job_execution_result.name}
+        # DE#88: SEM recovery --full-refresh aqui de propósito (removido — havia antes,
+        # reexecutando o MESMO select com --full-refresh). Medido em 2026-09-17: as 12
+        # falhas do dia foram todas "Quota exceeded: Number of partition modifications to
+        # a column partitioned table" em fact_fixtures (966 partições, materialized=table,
+        # CREATE OR REPLACE inteiro a cada run) — e a recovery reexecutava a MESMA operação
+        # fadada a falhar de novo, só queimando mais quota (que outras tabelas também
+        # disputam no mesmo dia). --full-refresh não muda nada pra esses models: nenhum é
+        # incremental, o rebuild já é completo em toda tentativa; o único ganho real da
+        # recovery era o caso raro de drift determinístico table<->view, que passa a exigir
+        # correção manual se voltar a acontecer (rastreável pelo WARNING abaixo). A correção
+        # estrutural do custo de quota é outro ticket (converter fact_fixtures pra
+        # incremental) — deliberadamente fora de escopo aqui.
         except:
             as: e
             steps:
@@ -159,49 +171,11 @@ main:
                 args:
                     severity: WARNING
                     data:
-                        message: "dbt fixtures rebuild falhou — recovery com --full-refresh"
+                        message: "dbt fixtures rebuild falhou"
                         error: ${e.message}
-            # RECOVERY: reexecuta o MESMO select com --full-refresh. Resolve o caso DETERMINÍSTICO de
-            # drift table<->view (relação existe no BQ como table mas o modelo virou view, ou vice-versa)
-            # — que o retry acima não conserta por reexecutar o comando idêntico. Custo ~0: dbt_futebol
-            # não tem modelo incremental, então fact_fixtures já faz rebuild completo a cada run.
-            - recover_full_refresh:
-                try:
-                    call: googleapis.run.v2.projects.locations.jobs.run
-                    args:
-                        name: ${job_full_name}
-                        body:
-                            overrides:
-                                containerOverrides:
-                                    - args: ["dbt", "run", "--select", "stg_futebol_fixtures", "fact_fixtures", "--full-refresh", "--project-dir", "/app/dbt_futebol", "--profiles-dir", "/app/.dbt", "--target", "prod"]
-                    result: recover_result
-                retry:
-                    predicate: ${http.default_retry_predicate}
-                    max_retries: 3
-                    backoff:
-                        initial_delay: 5
-                        max_delay: 60
-                        multiplier: 2
-                except:
-                    as: e2
-                    steps:
-                    - log_recover_failed:
-                        call: sys.log
-                        args:
-                            severity: ERROR
-                            data:
-                                message: "dbt recovery (--full-refresh) também falhou"
-                                error: ${e2.message}
-                    - handle_job_errors:
-                        assign:
-                        - workflow_status: "PARTIAL_FAILURE"
-            - log_recover_done:
-                call: sys.log
-                args:
-                    severity: ${if(workflow_status == "SUCCESS", "INFO", "WARNING")}
-                    data:
-                        message: ${if(workflow_status == "SUCCESS", "dbt fixtures rebuild recuperado via --full-refresh", "dbt fixtures rebuild falhou mesmo após --full-refresh")}
-                        status: ${workflow_status}
+            - handle_job_errors:
+                assign:
+                - workflow_status: "PARTIAL_FAILURE"
 
     - finalize:
         assign:
