@@ -121,7 +121,14 @@ def _logging_filter(start_utc: datetime, end_utc: datetime) -> str:
         'resource.type="workflows.googleapis.com/Workflow" '
         f'AND timestamp>="{start_utc.isoformat()}" '
         f'AND timestamp<"{end_utc.isoformat()}" '
-        'AND jsonPayload.status:*'
+        'AND jsonPayload.status:* '
+        # Restringe ao log_completion terminal de cada execução (o único que carrega
+        # duration_seconds). Sem isso, logs intermediários de erro/recovery emitidos dentro
+        # de um `except` — que também levam `status` mas nunca `workflow_name` — duplicam o
+        # incidente: uma vez sob o workflow certo (log terminal) e outra sob "unknown" (log
+        # intermediário sem workflow_name). Medido em 2026-09-17: as 12 PARTIAL_FAILURE de
+        # workflow-futebol-fixtures-live e as 12 de "unknown" eram os mesmos 12 incidentes.
+        'AND jsonPayload.duration_seconds:*'
     )
 
 
@@ -142,6 +149,12 @@ def collect_from_logging(client, start_utc, end_utc, agg) -> int:
             continue
         status = payload.get("status")
         if not status:
+            continue
+        # Defesa em profundidade além do filtro de query: logs intermediários de erro/recovery
+        # (emitidos dentro de um `except`) também levam `status`, mas nunca `duration_seconds`
+        # nem `workflow_name` — só o log_completion terminal leva os dois. Sem este corte, cada
+        # incidente é contado 2x: 1x certo (log terminal) e 1x sob "unknown" (log intermediário).
+        if payload.get("duration_seconds") is None:
             continue
         count += 1
         a = agg[_normalize(payload.get("workflow_name", "unknown"))]
