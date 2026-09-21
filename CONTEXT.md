@@ -90,6 +90,16 @@ Previsão pré-jogo do algoritmo da própria API-Football, coletada como baselin
 **xG (expected goals)**:
 Métrica de gols esperados presente nas estatísticas de fixture; insumo do Motor de Score. Cobertura quase total no Brasileirão e nas top-5 europeias, rala nas copas e na Série B — Copa do Brasil é o extremo. Onde é rala, a premissa fica **sem insumo**, que é diferente de sinal fraco.
 
+**Competição de produto**:
+Competição ingerida para gerar oportunidade de valor: coleta o pacote inteiro (odds, predictions, per-fixture, tabela) e aparece no board. É o caso das doze primeiras competições do futebol, e o que "competição" significava antes de existir a distinção.
+
+**Competição de insumo**:
+Competição ingerida **apenas para alimentar o histórico de outras competições** — tipicamente a forma dos times. Coleta só `fixtures` (placar e data), que é o que `int_futebol_team_form_pit` consome; não coleta odds, predictions nem per-fixture, e nunca gera oportunidade. Os amistosos de seleção são a primeira; eliminatórias de Copa têm o mesmo perfil.
+_Avoid_: tratar como competição normal "mais fraca" — a diferença é de finalidade, não de qualidade de cobertura.
+
+**Universo de uma competição de insumo**:
+Recorte dos jogos que de fato entram. Não é a liga inteira: um `league_id` de insumo pode misturar categorias (a liga 10 traz seleção principal, base, feminino e clube no mesmo id). O recorte é derivado do próprio pipeline — times já conhecidos por outras competições — e é **append-only**: time que entrou nunca sai, para que o histórico não encolha quando uma competição é removida da config.
+
 ### Coleta
 
 **Extractor**:
