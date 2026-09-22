@@ -1,6 +1,6 @@
 """Extractor para /fixtures da API-Football v3 (tabela mãe de jogos)."""
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from src.utils.helpers import utcnow_iso
 from src.extractors.base_extractor import BaseExtractor
@@ -105,6 +105,87 @@ def merge_fixture_rows(
         if kickoff is not None and kickoff >= cutoff:
             kept.append(row)
     return kept
+
+
+# --------------------------------------------------------------------------------------- #
+# Funções puras (DE#93 — universo dos amistosos). Origem: ADR 0004 (consequência de desenho
+# 2) e `docs/SELECOES_NATIONS_LEAGUE_AMISTOSOS.md` §4.0, linhas 5 (universo), 10 (append-
+# only) e 13 (guarda de crescimento) — a numeração 5/10/13 é da TABELA do §4.0, não da lista
+# 1-5 da própria ADR. Sem GCS, sem API: dado um conjunto de team_ids já conhecidos por outras
+# competições, decidem que jogos de amistoso entram no histórico e como esse conjunto evolui
+# entre execuções. A regra não interpreta nome de time nem confia no campo `national` da API
+# — ele não funciona (São Tomé vem `false`, Albania U21 vem `true`). De onde vem
+# `known_team_ids` (o arquivo de teams no GCS, linha 13) e a fiação no extrator ficam para o
+# DE#94/#95; aqui só a regra, sem efeito colateral, chamada por ninguém ainda.
+# --------------------------------------------------------------------------------------- #
+
+def _fixture_team_ids(row: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
+    teams = row.get("teams") or {}
+    home_id = (teams.get("home") or {}).get("id")
+    away_id = (teams.get("away") or {}).get("id")
+    return home_id, away_id
+
+
+def filter_amistosos_universo(
+    rows: List[Dict[str, Any]], known_team_ids: Set[int]
+) -> List[Dict[str, Any]]:
+    """Recorte do universo de amistosos (ADR 0004, consequência 2; SELECOES §4.0 linha 5):
+    só entra o jogo em que os DOIS times já são conhecidos por outra competição do pipeline.
+    Jogo com um só time conhecido — ou nenhum — fica de fora; não há meio-termo.
+
+    `known_team_ids` já deve vir unido (ver `merge_known_team_ids`) — esta função só lê.
+    """
+    universo = []
+    for row in rows:
+        home_id, away_id = _fixture_team_ids(row)
+        if home_id is None or away_id is None:
+            continue
+        if home_id in known_team_ids and away_id in known_team_ids:
+            universo.append(row)
+    return universo
+
+
+def merge_known_team_ids(
+    previous_ids: Optional[Set[int]], new_ids: Set[int]
+) -> Set[int]:
+    """União append-only (ADR 0004, consequência 2; SELECOES §4.0 linha 10): time que entrou
+    no conjunto nunca sai, mesmo que deixe de aparecer em `new_ids` — senão remover uma
+    competição da config encolheria o histórico de amistosos para trás. `previous_ids` pode
+    ser `None`/vazio na primeira execução (bootstrap); o resultado nesse caso é só `new_ids`.
+    Aceita qualquer iterável (ex.: `list` vindo de JSON) em ambos os parâmetros."""
+    return set(previous_ids or set()) | set(new_ids)
+
+
+def evaluate_known_teams_growth(
+    previous_ids: Optional[Set[int]],
+    merged_ids: Set[int],
+    max_growth: int = 20,
+) -> Dict[str, Any]:
+    """Guarda de crescimento (SELECOES §4.0 linha 13) entre duas execuções do universo:
+    quantos team_ids novos entraram, se o salto passa de `max_growth`, e se algum time do
+    conjunto anterior sumiu de `merged_ids` — o que violaria o append-only que
+    `merge_known_team_ids` promete (ADR 0004, consequência 2) e só pode acontecer se quem
+    chamar passar aqui algo diferente do resultado daquela função.
+
+    `previous_ids`/`merged_ids` aceitam qualquer iterável (ex.: `list` vindo de JSON), não
+    só `set`. Sem `previous_ids` (bootstrap, primeira execução) não há baseline para
+    comparar contra — `anomalous` fica sempre `False` e `is_bootstrap` marca o caso, para
+    quem chama decidir se quer logar diferente. O que esta guarda vigia é o salto (ou o
+    encolhimento) entre execuções normais, não o tamanho absoluto do primeiro conjunto."""
+    previous = set(previous_ids or set())
+    merged = set(merged_ids)
+    added = merged - previous
+    removed = previous - merged
+    is_bootstrap = not previous
+    return {
+        "previous_count": len(previous),
+        "merged_count": len(merged),
+        "added_count": len(added),
+        "added_ids": sorted(added),
+        "removed_ids": sorted(removed),
+        "is_bootstrap": is_bootstrap,
+        "anomalous": (not is_bootstrap) and (len(added) > max_growth or bool(removed)),
+    }
 
 
 class FixturesExtractor(BaseExtractor):
