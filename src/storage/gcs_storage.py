@@ -1,9 +1,9 @@
 """Gerenciamento de uploads no Google Cloud Storage."""
 import json
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Set
 from google.cloud import storage
 from google.cloud.storage.retry import DEFAULT_RETRY
-from src.config import GCS_BUCKET_NAME, GCP_PROJECT_ID, GCS_USE_ADC, get_gcs_path
+from src.config import GCS_BUCKET_NAME, GCP_PROJECT_ID, GCS_USE_ADC, LEAGUES_INSUMO_IDS, get_gcs_path
 from src.utils.logger import setup_logger
 from src.utils.helpers import normalize_dict_keys
 
@@ -507,7 +507,13 @@ class GCSStorage:
 
         Returns:
             Lista de dicts {"fixture_id": int, "date_utc": "YYYY-MM-DD"} dos jogos com
-            status FT/AET/PEN (finalizados; inclui mata-mata por prorrogação/pênaltis).
+            status FT/AET/PEN (finalizados; inclui mata-mata por prorrogação/pênaltis),
+            EXCETO os de ligas em config.LEAGUES_INSUMO_IDS (ADR 0004, DE#94): é este
+            método que os quatro fatos per-fixture pós-jogo (statistics/events/
+            player_stats via PerFixtureExtractor, lineups "real" via
+            FixtureLineupsExtractor) usam para saber quais fixtures buscar — competição
+            de insumo não usa nenhum dos quatro, e um gate aqui protege os dois leitores
+            de uma vez, sem precisar repetir o filtro em cada extractor.
         """
         from datetime import datetime, timezone
 
@@ -517,7 +523,12 @@ class GCSStorage:
         rows = self._read_ndjson_blob(blob_path, missing_label="Arquivo de fixtures")
 
         fixtures = []
+        skipped_insumo = 0
         for row in rows:
+            if row.get("requested_league_id") in LEAGUES_INSUMO_IDS:
+                skipped_insumo += 1
+                continue
+
             fixture = row.get("fixture") or {}
             status_short = (fixture.get("status") or {}).get("short")
             if status_short not in finished_statuses:
@@ -532,7 +543,8 @@ class GCSStorage:
             fixtures.append({"fixture_id": fixture_id, "date_utc": date_utc})
 
         logger.info(
-            f"{len(fixtures)} fixtures finalizados (FT/AET/PEN) em {blob_path} (mode={mode})"
+            f"{len(fixtures)} fixtures finalizados (FT/AET/PEN) em {blob_path} (mode={mode}), "
+            f"{skipped_insumo} de competição de insumo descartados"
         )
         return fixtures
 
@@ -598,6 +610,53 @@ class GCSStorage:
         )
         return teams
 
+    def get_known_team_ids_from_storage(self) -> Set[int]:
+        """
+        Lê o estado append-only do universo de amistosos (ADR 0004, decisão 13):
+        raw_futebol_amistosos_universo.json, um único objeto {"team_ids": [...]}
+        (latest-only, sem mode/fase — a mesma escrita sobrescreve o arquivo a cada run,
+        como upload_known_team_ids faz).
+
+        Diferente dos demais leitores desta classe, o arquivo não é NDJSON (1 linha, 1
+        objeto) — não usa _read_ndjson_blob.
+
+        Returns:
+            Set de team_ids. Vazio se o arquivo não existir (bootstrap: primeira
+            execução, sem estado anterior — merge_known_team_ids(vazio, novo) devolve
+            só o novo, então o bootstrap não precisa de ramo especial aqui) ou se o
+            conteúdo não for um JSON válido (loga e trata como vazio, não levanta —
+            um estado corrompido não deveria travar a coleta de fixtures inteira).
+        """
+        blob_path = get_gcs_path("amistosos_universo", 0, sport="futebol")
+        blob = self.bucket.blob(blob_path)
+        if not blob.exists():
+            logger.info(f"Estado do universo de amistosos ainda não existe: {blob_path} (bootstrap)")
+            return set()
+
+        try:
+            data = json.loads(blob.download_as_text())
+        except json.JSONDecodeError as e:
+            logger.warning(f"Estado do universo de amistosos inválido em {blob_path}: {e}. Tratando como vazio.")
+            return set()
+
+        team_ids = {tid for tid in (data.get("team_ids") or []) if tid is not None}
+        logger.info(f"{len(team_ids)} team_ids conhecidos em {blob_path}")
+        return team_ids
+
+    def upload_known_team_ids(self, team_ids: Set[int]) -> str:
+        """
+        Grava o estado append-only do universo de amistosos (ADR 0004, decisão 13):
+        sobrescreve raw_futebol_amistosos_universo.json com o conjunto UNIDO (quem
+        chama já aplicou merge_known_team_ids antes) — não é incremento, é o estado
+        cheio a cada run, como todo outro upload_json desta classe.
+        """
+        return self.upload_json(
+            data={"team_ids": sorted(team_ids)},
+            endpoint="amistosos_universo",
+            season=0,  # ignorado pelo branch sport='futebol' de get_gcs_path
+            sport="futebol",
+        )
+
     def get_upcoming_fixture_ids(self, window_min: int) -> List[Dict[str, Any]]:
         """
         Lê o arquivo de fixtures do GCS (raw_futebol_fixtures_current.json) e retorna
@@ -612,7 +671,12 @@ class GCSStorage:
 
         Returns:
             Lista de dicts {"fixture_id": int, "date_utc": "YYYY-MM-DD"} dos jogos NS
-            com kickoff iminente.
+            com kickoff iminente, EXCETO os de ligas em config.LEAGUES_INSUMO_IDS (ADR
+            0004, DE#94). Único chamador: FixtureLineupsExtractor mode=pregame — a
+            escalação pré-jogo é a ressalva que a ADR deixou como "decisão da spec"
+            (não é coberta pelo gate de get_fixture_ids_from_storage, que só olha
+            fixtures já finalizados); DE#94 decidiu estender o mesmo gate para cá em
+            vez de aceitar o custo recorrente (ver comentário de LEAGUES_INSUMO_IDS).
         """
         from datetime import datetime, timezone, timedelta
 
@@ -625,6 +689,9 @@ class GCSStorage:
 
         fixtures = []
         for row in rows:
+            if row.get("requested_league_id") in LEAGUES_INSUMO_IDS:
+                continue
+
             fixture = row.get("fixture") or {}
             status_short = (fixture.get("status") or {}).get("short")
             if status_short != "NS":  # Not Started — jogo ainda por começar

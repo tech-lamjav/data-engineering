@@ -242,6 +242,10 @@ crescimento, e a exceção nominal no invariante de `test_config_ligas_futebol.p
    olhar liga. Os 22 jogos futuros puxariam uma chamada cada a T-45min. Estender o gate a esse leitor
    é uma linha; a spec decide se estende ou aceita.
 
+   ✅ **RESOLVIDO (DE#94, 2026-09-22): estendido, não aceito.** O teto de custo da decisão 3 é
+   zero recorrente — aceitar as ~22 chamadas/T-45min contradiria a própria decisão. Ver
+   `docs/adr/0004-amistosos-como-competicao-de-insumo.md`, seção "Implementação (DE#94)".
+
 O **coletor ao vivo do `data-engineering`** recolhe a liga sozinho ao entrar em `FIXTURES_CURRENT`,
 e isso é desejável: é o que assenta o placar final no mesmo dia. Não confundir com o coletor do
 Supabase (`public.leagues_config`), que fica de fora por não haver aposta a liquidar.

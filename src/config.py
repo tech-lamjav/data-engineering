@@ -180,6 +180,18 @@ NATIONS_LEAGUE_ID = 5  # UEFA Nations League, season 2026. Sondagem 2026-09-21: 
 # Mundo) — 5 chamadas/dia contra teto de 7.500 é irrelevante, e tirar da lista criaria um
 # deploy futuro que alguém precisa lembrar de fazer.
 
+# Amistosos de seleção (DE#93/#94, ADR 0004) — competição de INSUMO, não de produto: entra
+# só em FIXTURES_CURRENT, alimenta a forma das seleções e nunca gera oportunidade. league_id
+# 10 mistura seleção principal, base, feminino e clube (726 fixtures/553 finalizados na season
+# 2026 sem filtro) — por isso a extração aplica o recorte de universo (funções puras em
+# fixtures_extractor.py, DE#93) antes de salvar: só entram jogos em que os DOIS times já são
+# conhecidos por outra competição do pipeline (726 -> 139 fixtures, 115 finalizados).
+# Sem backfill (Decisão 3, DE#91: mesmo motivo da Nations League) e sem TEAMS_*/PLAYERS_* —
+# ver LEAGUES_SEM_CATALOGO_IDS abaixo. Alvo de execução: novembro (janela FIFA 12-17), mas a
+# coleta liga desde já para acumular histórico sob medição (target futebol_taskF, nunca
+# produção — DE#95 é o portão que decide se entra no mart).
+AMISTOSOS_ID = 10
+
 # Split entre backfill (one-shot, anos anteriores) e current (diário, ano corrente)
 LEAGUES_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
@@ -211,6 +223,7 @@ LEAGUES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (NATIONS_LEAGUE_ID, 2026),  # rodada 1 em 24/09/2026; sem backfill (Decisão 3, DE#91)
+    (AMISTOSOS_ID, 2026),  # competição de insumo (ADR 0004); universo cortado na extração
     (SERIE_B_ID, 2026),
     (COPA_DO_BRASIL_ID, 2026),
     (LIBERTADORES_ID, 2026),
@@ -229,10 +242,27 @@ LEAGUES_CURRENT = [
 # reprovar o invariante de `tests/test_config_ligas_futebol.py`. FIXTURES_* continua
 # obrigatória para toda liga em LEAGUES_*, exceção nenhuma: o que essa lista relaxa é só o
 # catálogo, não o jogo em si.
-# Vazio até uma liga precisar — este ticket é um prefactor, nenhuma liga usa ainda.
-# Motivo de existir: o catálogo de jogadores de amistosos (liga 10) pagina ~134 páginas/dia
-# para um dado que a finalidade de insumo não consome (ver ADR 0004, decisão 5).
-LEAGUES_SEM_CATALOGO_IDS = []
+# Amistosos (DE#94): a primeira liga a usar a exceção. Motivo de existir: o catálogo de
+# jogadores da liga 10 pagina ~134 páginas/dia para um dado que a finalidade de insumo não
+# consome (ADR 0004, decisão 5/9).
+LEAGUES_SEM_CATALOGO_IDS = [AMISTOSOS_ID]
+
+# Competições de INSUMO (CONTEXT.md) — gate de liga para os fatos per-fixture pós-jogo
+# (statistics/events/player_stats via PerFixtureExtractor + lineups pós-jogo via
+# FixtureLineupsExtractor, os "quatro endpoints" da ADR 0004 consequência 1): centralizado em
+# GCSStorage.get_fixture_ids_from_storage, único ponto de onde os dois leitores puxam a lista
+# de fixtures finalizados. Amistosos tem 0% de cobertura per-fixture por desenho (a forma lê
+# só fact_fixtures) — sem o gate, os 115 jogos finalizados disparariam ~460 chamadas no
+# primeiro ciclo e voltariam vazias todo dia depois (ADR 0004 §4.1).
+#
+# DE#94 estende o MESMO gate à escalação pré-jogo (GCSStorage.get_upcoming_fixture_ids, usada
+# só por FixtureLineupsExtractor mode=pregame) — a ressalva que a ADR deixou em aberto como
+# "decisão da spec" (§4.0, implicação 2: esse leitor filtra por status/janela, não por liga).
+# Decisão tomada aqui: estender, não aceitar o custo. É uma linha (mesmo mecanismo já escrito
+# para os quatro endpoints) e o teto de custo da ADR (decisão 3) é ZERO recorrente, não "baixo
+# recorrente" — deixar de fora criaria ~22 chamadas/T-45min sem motivo, só para reintroduzir
+# depois o mesmo gate que os outros cinco caminhos já têm.
+LEAGUES_INSUMO_IDS = [AMISTOSOS_ID]
 
 # Idem leagues — 4 chamadas distribuídas entre backfill (one-shot) e current (diário).
 TEAMS_BACKFILL = [
@@ -354,6 +384,7 @@ FIXTURES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
     (NATIONS_LEAGUE_ID, 2026),  # 156 jogos, 14 grupos x 4 times, 6 rodadas de 26, todos NS hoje
+    (AMISTOSOS_ID, 2026),  # DE#94: universo já cortado na extração (726 -> 139 fixtures)
     (SERIE_B_ID, 2026),
     (COPA_DO_BRASIL_ID, 2026),
     (LIBERTADORES_ID, 2026),
