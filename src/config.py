@@ -224,6 +224,16 @@ LEAGUES_CURRENT = [
     (PRIMEIRA_LIGA_ID, 2026),  # 2026/27 (opener 07/08 — HOJE, a mais cedo do portfólio)
 ]
 
+# Exceção NOMINAL e EXPLÍCITA à espinha (ADR 0004, DE#92): liga aqui declara que dispensa
+# catálogo de times e de jogadores — TEAMS_*/PLAYERS_* podem ficar sem a tupla dela sem
+# reprovar o invariante de `tests/test_config_ligas_futebol.py`. FIXTURES_* continua
+# obrigatória para toda liga em LEAGUES_*, exceção nenhuma: o que essa lista relaxa é só o
+# catálogo, não o jogo em si.
+# Vazio até uma liga precisar — este ticket é um prefactor, nenhuma liga usa ainda.
+# Motivo de existir: o catálogo de jogadores de amistosos (liga 10) pagina ~134 páginas/dia
+# para um dado que a finalidade de insumo não consome (ver ADR 0004, decisão 5).
+LEAGUES_SEM_CATALOGO_IDS = []
+
 # Idem leagues — 4 chamadas distribuídas entre backfill (one-shot) e current (diário).
 TEAMS_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
