@@ -13,6 +13,19 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
+## Closing an issue from a PR
+
+If a PR resolves an issue in the **same repo**, the PR body must include a bare `Closes #N`
+line (no `DE#`/`AE#` prefix, not a markdown link) — that's the only syntax GitHub's
+auto-close recognizes. `Closes DE#92` and `[DE#92](url)` do **not** close the issue on
+merge (happened on analytics-engineering PR #154 and here on PR #99). Cross-repo:
+`Closes owner/repo#N` (full path). A readable `[DE#92](url)` link elsewhere in the body is
+fine and doesn't replace the `Closes #N` line. `.github/pull_request_template.md` has this
+built in — use it when creating a PR with `gh pr create`.
+
+After merging, verify with `gh issue view N --json state`; if it's still `OPEN`, close by
+hand with `gh issue close N` and note the PR link in a comment.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
