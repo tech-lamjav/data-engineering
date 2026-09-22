@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from src.utils.helpers import utcnow_iso
 from src.extractors.base_extractor import BaseExtractor
 from src.clients.api_football_client import ApiFootballClient, FIXTURES_BY_IDS_MAX_BATCH
-from src.config import FIXTURES_BACKFILL, FIXTURES_CURRENT, FUTEBOL_STATUS_TERMINAL
+from src.config import AMISTOSOS_ID, FIXTURES_BACKFILL, FIXTURES_CURRENT, FUTEBOL_STATUS_TERMINAL
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -114,9 +114,10 @@ def merge_fixture_rows(
 # 1-5 da própria ADR. Sem GCS, sem API: dado um conjunto de team_ids já conhecidos por outras
 # competições, decidem que jogos de amistoso entram no histórico e como esse conjunto evolui
 # entre execuções. A regra não interpreta nome de time nem confia no campo `national` da API
-# — ele não funciona (São Tomé vem `false`, Albania U21 vem `true`). De onde vem
-# `known_team_ids` (o arquivo de teams no GCS, linha 13) e a fiação no extrator ficam para o
-# DE#94/#95; aqui só a regra, sem efeito colateral, chamada por ninguém ainda.
+# — ele não funciona (São Tomé vem `false`, Albania U21 vem `true`). A fiação — estado em
+# GCS, bootstrap a partir do catálogo de teams, chamada em FixturesExtractor.extract() — é
+# do DE#94 (ver FixturesExtractor._apply_amistosos_universo abaixo); aqui segue só a regra,
+# sem efeito colateral, testável sem rede.
 # --------------------------------------------------------------------------------------- #
 
 def _fixture_team_ids(row: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
@@ -259,6 +260,8 @@ class FixturesExtractor(BaseExtractor):
                     **item,  # fixture: {...}, league: {...}, teams: {...}, goals, score
                 })
 
+        fixtures = self._apply_amistosos_universo(fixtures)
+
         logger.info(
             f"Coletadas {len(fixtures)} linhas (mode={self.mode}, targets={len(self.targets)})"
         )
@@ -268,6 +271,59 @@ class FixturesExtractor(BaseExtractor):
             "failed_targets": failed_targets,
             "fixtures": fixtures,
         }
+
+    def _apply_amistosos_universo(self, fixtures: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Recorta o universo dos amistosos (ADR 0004, decisões 5/6/13; DE#94) sobre as
+        linhas cruas já coletadas por extract() nesta chamada, ANTES de salvar no GCS.
+
+        No-op se não há linha de AMISTOSOS_ID nesta coleta — o único modo com esse
+        target é "current" (AMISTOSOS_ID só está em FIXTURES_CURRENT), então backfill/
+        live nunca chegam a montar `known_team_ids` à toa.
+
+        `known_team_ids` é estado append-only em GCS (raw_futebol_amistosos_universo.json,
+        decisão 13): lê o conjunto anterior, une com o catálogo de teams (current +
+        backfill — os dois já dispensam amistosos via LEAGUES_SEM_CATALOGO_IDS/DE#92, então
+        não há risco de o próprio amistoso alimentar seu recorte) e grava o resultado de
+        volta. Bootstrap (primeira execução, sem estado anterior) não precisa de ramo
+        especial: merge_known_team_ids(vazio, novo) já devolve só `novo`.
+        """
+        amistosos_rows = [r for r in fixtures if r.get("requested_league_id") == AMISTOSOS_ID]
+        if not amistosos_rows:
+            return fixtures
+
+        previous_ids = self.storage.get_known_team_ids_from_storage()
+        new_ids = {
+            team["team_id"]
+            for team in (
+                self.storage.get_team_ids_from_storage("current")
+                + self.storage.get_team_ids_from_storage("backfill")
+            )
+        }
+        merged_ids = merge_known_team_ids(previous_ids, new_ids)
+
+        growth = evaluate_known_teams_growth(previous_ids, merged_ids)
+        if growth["anomalous"]:
+            # Sinaliza e SEGUE — não aborta a coleta de fixtures inteira por uma guarda
+            # de qualidade sobre uma sub-liga (mesmo espírito de RESUMO DE FALHA nos
+            # per-fixture extractors: loga alto, quem lê o resumo diário decide agir).
+            logger.error(
+                f"Guarda de crescimento do universo de amistosos ANÔMALA: {growth}. "
+                "O conjunto é append-only — encolhimento é bug; salto grande pode ser "
+                "rollout legítimo de liga nova. Investigar antes do próximo run."
+            )
+        else:
+            logger.info(f"Universo de amistosos: {growth}")
+
+        self.storage.upload_known_team_ids(merged_ids)
+
+        filtered_amistosos = filter_amistosos_universo(amistosos_rows, merged_ids)
+        logger.info(
+            f"Universo de amistosos: {len(amistosos_rows)} jogos brutos -> "
+            f"{len(filtered_amistosos)} no universo (times já conhecidos de outras competições)."
+        )
+
+        others = [r for r in fixtures if r.get("requested_league_id") != AMISTOSOS_ID]
+        return others + filtered_amistosos
 
     def extract_live(
         self,

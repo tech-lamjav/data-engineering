@@ -107,3 +107,29 @@ de time, e erra nos dois sentidos, conforme os casos de São Tomé e de Albania 
   ligas dentro desta entrega.
 - **Alvo de execução: novembro** (janela FIFA de 12 a 17). Esperar permite medir, com quatro rodadas
   de Nations League já jogadas, se a forma zero de fato degradou os scores.
+
+## Implementação (DE#94, 2026-09-22)
+
+Duas decisões que a consequência 1 tinha deixado em aberto ("a spec decide"), fechadas na
+implementação da coleta:
+
+**Escalação pré-jogo: o gate FOI estendido para lá.** `fixture_lineups_extractor.py`
+(`mode="pregame"`) lê `GCSStorage.get_upcoming_fixture_ids`, que filtra por status/janela de
+kickoff sem olhar liga — o "quinto caminho" que os quatro endpoints pós-jogo
+(`get_fixture_ids_from_storage`, usado por statistics/events/player_stats/lineups "real") não
+cobrem. Decisão: estender o mesmo gate (`config.LEAGUES_INSUMO_IDS`) para
+`get_upcoming_fixture_ids` também, em vez de aceitar o custo. Dois motivos: o teto de custo da
+decisão 3 é **zero** recorrente, não "baixo" — aceitar ~22 chamadas/T-45min por rodada de
+amistosos contradiria a própria decisão; e o gate já existia pronto para os outros quatro
+caminhos, então estendê-lo é a mesma linha reaproveitada, não mecanismo novo.
+
+**Onde mora o gate dos quatro endpoints pós-jogo:** centralizado em
+`GCSStorage.get_fixture_ids_from_storage` (não em `PerFixtureExtractor` nem em cada
+extractor), porque é o único ponto por onde os dois consumidores (`PerFixtureExtractor` — 3
+endpoints — e `FixtureLineupsExtractor` em modo current/backfill) leem a lista de fixtures
+finalizados. Um gate ali protege os dois de uma vez, sem precisar repetir o filtro.
+
+`LEAGUES_INSUMO_IDS` (`src/config.py`) é a lista nominal que alimenta os dois gates — hoje só
+`AMISTOSOS_ID`, mas o nome é genérico (não `AMISTOSOS_*`) porque a próxima competição de
+insumo que a decisão 1 já antecipa ("eliminatórias de Copa têm o mesmo perfil") reusa o mesmo
+mecanismo sem precisar de código novo.
