@@ -153,6 +153,33 @@ PRIMEIRA_LIGA_ID = 94  # 7ª europeia e ÚLTIMA liga da Onda 2 (fecha a expansã
 # Premier League (2,84 / 55,8%), longe da Bundesliga (3,18 / 61,9%) e da Ligue 1 (2,90 / 54,1%).
 # Entra SEM gate e SEM recalibração, como as outras seis.
 
+# Seleções (DE#91/AE#193, ADR 0004) — primeira competição de seleções fora da Copa do Mundo.
+# Playbook padrão de expansão INVERTIDO: dbt/imagem sobem ANTES desta config, porque a liga já
+# está precificada (odds ao vivo a 3 dias do apito) e imagem velha grava `competition='unknown'`
+# em `fact_value_funnel` (append-only, congela no apito). Ver AE#193 (fechada, imagem já em
+# produção com o slug `nations_league`) antes de ligar esta config.
+NATIONS_LEAGUE_ID = 5  # UEFA Nations League, season 2026. Sondagem 2026-09-21: rodada 1 em
+# 24/09/2026 18:45 UTC, 156 jogos (14 grupos x 4 times, 6 rodadas de 26), já precificada
+# (/odds 5 páginas, Netherlands x Germany com 9 casas incl. Pinnacle). standings=TRUE (14
+# grupos, StandingsExtractor já achata N grupos como em Libertadores/Sudamericana/Copa do
+# Mundo). injuries=FALSE → fica FORA de INJURIES_*/FUTEBOL_INJURIES_LEAGUE_IDS.
+# ⚠️ /players?league=5&season=2026 devolve results:0 hoje — entra em PLAYERS_* só pela
+# igualdade obrigatória com LEAGUES_* que o teste trava, não porque haja catálogo; dim_players
+# não recebe jogador de seleção e o FK de fact_injuries_snapshot segue severity:warn.
+# ⚠️ 38 das 54 seleções estreiam com forma ZERO (só 16 têm linha em fact_fixtures, todas da
+# Copa do Mundo 2026, último jogo 2026-07-19 — dois meses antes da estreia). Não é bug.
+# ⚠️ NÃO é liga de pontos corridos — fica fora de futebol_ligas_pontos_corridos() (decisão AE#193,
+# mesmo motivo de Libertadores/Sudamericana/Champions: rank por grupo, congela no mata-mata).
+# Backfill da season 2024 FICA FORA desta entrega (Decisão 3, DE#91): a NL 2024 vai até
+# 2026-03-31 e resolveria a forma zero das 38 seleções, mas trocaria "sem evidência" (que o
+# Motor trata graciosamente) por "evidência de até 18 meses atrás carimbada de forma corrente"
+# (que ele pontua) — e teria o mesmo efeito retroativo sobre o histórico PIT da Copa do Mundo
+# já no mart. Por isso NÃO entra em nenhuma lista *_BACKFILL abaixo, só nas *_CURRENT (2026) —
+# mesmo padrão da Copa do Mundo (COPA_MUNDO_ID), que também não tem backfill.
+# Dormência a partir de 17/11 (fim da rodada 6): segue nas listas CURRENT (padrão Copa do
+# Mundo) — 5 chamadas/dia contra teto de 7.500 é irrelevante, e tirar da lista criaria um
+# deploy futuro que alguém precisa lembrar de fazer.
+
 # Split entre backfill (one-shot, anos anteriores) e current (diário, ano corrente)
 LEAGUES_BACKFILL = [
     (BRASILEIRAO_ID, 2024),
@@ -183,6 +210,7 @@ LEAGUES_BACKFILL = [
 LEAGUES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
+    (NATIONS_LEAGUE_ID, 2026),  # rodada 1 em 24/09/2026; sem backfill (Decisão 3, DE#91)
     (SERIE_B_ID, 2026),
     (COPA_DO_BRASIL_ID, 2026),
     (LIBERTADORES_ID, 2026),
@@ -226,6 +254,7 @@ TEAMS_BACKFILL = [
 TEAMS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
+    (NATIONS_LEAGUE_ID, 2026),
     (SERIE_B_ID, 2026),
     (COPA_DO_BRASIL_ID, 2026),
     (LIBERTADORES_ID, 2026),
@@ -269,6 +298,7 @@ PLAYERS_BACKFILL = [
 PLAYERS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
+    (NATIONS_LEAGUE_ID, 2026),  # results:0 hoje — entra pela igualdade obrigatória com LEAGUES_*
     (SERIE_B_ID, 2026),
     (COPA_DO_BRASIL_ID, 2026),
     (LIBERTADORES_ID, 2026),
@@ -313,6 +343,7 @@ FIXTURES_BACKFILL = [
 FIXTURES_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
+    (NATIONS_LEAGUE_ID, 2026),  # 156 jogos, 14 grupos x 4 times, 6 rodadas de 26, todos NS hoje
     (SERIE_B_ID, 2026),
     (COPA_DO_BRASIL_ID, 2026),
     (LIBERTADORES_ID, 2026),
@@ -384,6 +415,7 @@ STANDINGS_BACKFILL = [
 STANDINGS_CURRENT = [
     (BRASILEIRAO_ID, 2026),
     (COPA_MUNDO_ID, 2026),
+    (NATIONS_LEAGUE_ID, 2026),  # coverage.standings=TRUE, 14 grupos (StandingsExtractor já achata N grupos)
     (SERIE_B_ID, 2026),
     (LIBERTADORES_ID, 2026),
     (SUDAMERICANA_ID, 2026),
@@ -456,6 +488,8 @@ INJURIES_CURRENT = [
     (PRIMEIRA_LIGA_ID, 2026),  # FALSE pré-temporada mas 2025 foi TRUE (probe) → flipa na abertura de hoje; 0 linhas até lá
     # UCL (2026) NÃO incluída ainda — coverage.injuries=FALSE na fase classificatória (probe
     # 2026-07-28); recheck quando a fase de liga começar (~set/2026), igual ao caveat da 13.
+    # Nations League (5) NÃO incluída — coverage.injuries=FALSE (sondagem 2026-09-21), e ≠ UCL/13
+    # não tem caveat de recheck: é competição de seleção, sem o padrão sazonal das ligas de clube.
 ]
 
 # Odds (/odds) — coração do value betting. Snapshot pré-jogo de TODAS as casas em 2
@@ -550,7 +584,11 @@ FUTEBOL_ODDS_DAILY_BUCKET_BOUNDARIES = (0, 6, 9, 12, 15, 18, 21)
 # Ligue 1 (61) ARMADA 2026-08-06: dormente igual, coverage.odds=FALSE agora e o t24h abre ~20/08
 # (opener 21/08 18:45 UTC — a task do ClickUp diz 23/08 e está errada; 23/08 é o fim da rodada 1,
 # e planejar por ela perderia a captura dos 3 primeiros jogos). ~2 semanas de custo 0.
-FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, UCL_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID, PRIMEIRA_LIGA_ID]
+# Nations League (5) ARMADA 2026-09-21 — DIFERENTE de todas as anteriores, NÃO é dormente: já está
+# ATIVA agora (coverage.odds=TRUE a 3 dias do apito, /odds?league=5&season=2026 devolve 5 páginas;
+# Netherlands x Germany com 9 casas incl. Pinnacle). É a mesma leitura da UCL em 28/07 (liga que
+# entrou já precificada), não a de La Liga/PL/Serie A/Bundesliga/Ligue 1 (armadas dormentes).
+FUTEBOL_ODDS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, UCL_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID, PRIMEIRA_LIGA_ID, NATIONS_LEAGUE_ID]
 
 # Predictions (/predictions) — BASELINE de comparação (a previsão do algoritmo da própria
 # API) E fonte da corroboração `modelo_api_concorda` (+7) do Motor de Score. Não é produto:
@@ -605,7 +643,10 @@ FUTEBOL_PREDICTIONS_WINDOWS = {
 # pré-temporada. A janela daily de 14d alcança o opener (21/08) já em ~07/08, ou seja QUASE
 # IMEDIATAMENTE depois do deploy — ≠ Bundesliga, que espera até 14/08. Liga de pontos corridos
 # com histórico cheio → esperado REAL, não placeholder 45/45/10.
-FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, UCL_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID, PRIMEIRA_LIGA_ID]
+# Nations League (5): sondagem 2026-09-21 confirma /predictions respondendo (rodada 1 a 3 dias
+# do apito, já dentro da janela daily de 14d) — conferir REAL vs placeholder 45/45/10 na 1ª
+# captura pós-deploy, mesmo padrão de checagem de mata-mata (Libertadores/Sudamericana/CdB/UCL).
+FUTEBOL_PREDICTIONS_LEAGUE_IDS = [BRASILEIRAO_ID, COPA_MUNDO_ID, SERIE_B_ID, COPA_DO_BRASIL_ID, LIBERTADORES_ID, SUDAMERICANA_ID, LA_LIGA_ID, PREMIER_LEAGUE_ID, UCL_ID, SERIE_A_ITA_ID, BUNDESLIGA_ID, LIGUE_1_ID, PRIMEIRA_LIGA_ID, NATIONS_LEAGUE_ID]
 
 # Injuries PRÉ-JOGO (/injuries?fixture) — coleta FORWARD-ONLY por fixture (modo "pregame"),
 # complementando o snapshot season-log diário (INJURIES_CURRENT, /injuries?league&season).
