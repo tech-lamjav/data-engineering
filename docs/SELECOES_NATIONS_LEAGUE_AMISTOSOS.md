@@ -212,7 +212,7 @@ Pico estimado **600–700/dia** contra 7.500. Folgado. Consumo de hoje: 892.
 | 4 | Janela alvo | **Novembro** (12 a 17). |
 | 5 | Universo | **Times que o pipeline já conhece por outras competições**, avaliado depois do rollout da Nations League. Corta de 726 para **139** fixtures (115 finalizados). |
 | 6 | Onde o filtro mora | **Um filtro só, na extração.** A raw deixa de ser cópia fiel; o precedente da meia-linha em quatro cópias pesou mais. |
-| 7 | Quanto passado entra | **Temporada 2026 inteira**, 115 jogos. Nada anterior: `ultimos_10` não tem corte de recência. |
+| 7 | Quanto passado entra | ~~Temporada 2026 inteira, 115 jogos.~~ **Revista pela medição (DE#95): o passado não entra.** Só jogos com kickoff a partir de 2026-09-23, corte por data no dbt (DE#96). |
 | 8 | Aparece no app | **Sim, normalmente.** Sem oportunidade, e sem botão de aposta (o CTA exige linha de mercado). |
 | 9 | Invariante de config | **Exceção nominal.** A liga fica fora de `TEAMS_*` e `PLAYERS_*` (134 páginas/dia de catálogo inútil). |
 | 10 | Estabilidade do universo | **União append-only.** Time que entrou nunca sai. |
@@ -312,7 +312,11 @@ Isso tem duas faces:
   Guarda diretamente exposta: `tests/assert_pit_first_game_has_no_history.sql`, cuja partição em
   produção é `team_id` sozinho (`:11-14`).
 
-✅ **RESOLVIDO (§4.0, decisão 7): a season 2026 inteira, 115 jogos sob o universo (B).**
+✅ **RESOLVIDO (§4.0, decisão 7), e revisto:** a decisão original era a season 2026 inteira
+(115 jogos sob o universo (B)); a medição da DE#95 deu ~23 pp de deslocamento contra 0,25 pp e
+**o passado não entra**. A DE#96 implementou "só daqui para frente" como corte por kickoff no
+`stg_futebol_fixtures` do `analytics-engineering` (data de entrada 2026-09-23), não na extração —
+ver ADR 0004, seção "Implementação (DE#96)".
 
 ❓ **Decidir:** se os amistosos entram só daqui para frente ou com a season inteira. O
 `FixturesExtractor` em modo `current` puxa a season inteira — "só daqui para frente" **é código

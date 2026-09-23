@@ -100,6 +100,10 @@ _Avoid_: tratar como competição normal "mais fraca" — a diferença é de fin
 **Universo de uma competição de insumo**:
 Recorte dos jogos que de fato entram. Não é a liga inteira: um `league_id` de insumo pode misturar categorias (a liga 10 traz seleção principal, base, feminino e clube no mesmo id). O recorte é derivado do próprio pipeline — times já conhecidos por outras competições — e é **append-only**: time que entrou nunca sai, para que o histórico não encolha quando uma competição é removida da config.
 
+**Data de entrada de uma competição de insumo**:
+Kickoff a partir do qual os jogos de uma competição de insumo chegam ao mart. O universo diz **quais times**; a data de entrada diz **desde quando**. Existe porque ligar o passado de uma competição de insumo move retroativamente a forma de jogos já medidos (a forma atravessa competição): nos amistosos, a DE#95 mediu ~23 pp e a data ficou em 2026-09-23. Mora no dbt, não na extração — o raw segue com a season inteira.
+_Avoid_: tratá-la como corte temporário — ela é permanente; tirá-la publica exatamente o deslocamento que a medição recusou.
+
 ### Coleta
 
 **Extractor**:

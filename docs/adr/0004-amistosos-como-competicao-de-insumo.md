@@ -1,6 +1,6 @@
 # Amistosos de seleção entram como competição de insumo, não de produto
 
-**Status:** accepted (2026-09-21) — decisão 7 revista em 2026-09-23, ver "Medição (DE#95)"
+**Status:** accepted (2026-09-21) — decisão 7 revista em 2026-09-23, ver "Medição (DE#95)" e "Implementação (DE#96)"
 **Issue:** #92 · #93 · #94 · #95 · #96
 **Contexto completo:** `docs/SELECOES_NATIONS_LEAGUE_AMISTOSOS.md`
 
@@ -163,3 +163,42 @@ deste veredito, precisa ser reaberto com escopo revisto — não pode mais assum
 inteira entra. O corte temporário em `stg_futebol_fixtures.sql` e a guarda
 `assert_amistosos_fora_do_mart` continuam em produção; removê-los segue sendo decisão do #96,
 não desta medição.
+
+## Implementação (DE#96, 2026-09-23) — só daqui para frente
+
+Pelo ramo "se estourou" da issue, entra só o que vier daqui para frente. Implementado no
+`analytics-engineering` (PR
+[#198](https://github.com/tech-lamjav/analytics-engineering/pull/198), mesma entrega que este registro):
+
+- **O corte temporário da #94 não foi removido: foi convertido.** Em `stg_futebol_fixtures.sql`
+  o bloqueio da liga 10 inteira virou um corte **permanente por kickoff** — a liga 10 só entra
+  com kickoff a partir de **2026-09-23** (data do veredito). Remover o corte literalmente
+  publicaria os 115 FT, porque a tabela externa é wildcard sobre o GCS e não há portão entre o
+  bucket e o mart. No raw, o último amistoso encerrado é de 10/06 e o primeiro futuro de 24/09;
+  qualquer data entre as duas daria o mesmo mart hoje, e fixar a do veredito tira a dependência
+  do dia do deploy. No dia da implementação: **22 jogos entram** (todos NS), **117 ficam fora**
+  (115 FT + 2 CANC).
+- **Onde o corte mora: no dbt, não na extração** — e isso não contradiz a decisão 6. A decisão 6
+  é sobre o *universo* (quais times), que segue um filtro só, no `FixturesExtractor`. A data de
+  entrada é sobre *o que chega ao mart*, e o passado já está no bucket: um filtro na extração não
+  o tiraria de lá sem reescrever arquivos da landing.
+- **Fonte única** em `macros/futebol_competicoes_insumo.sql` (slug + data de entrada), lida pelo
+  corte, pela guarda nova e pelas duas guardas de cobertura. É lá que entra a próxima competição
+  de insumo.
+- **Slug `amistosos` só em `fact_fixtures`** (decisão 4/15), com `accepted_values` só na tabela
+  mãe.
+- **`assert_per_fixture_coverage_anomala`**: amistosos fora da conta, e as duas razões da lista
+  de exclusão agora moram em variáveis separadas — `competicoes_sem_cobertura_inicial` (lacuna da
+  API, critério medido) e as competições de insumo (decisão nossa de não coletar, decisão 17). O
+  gêmeo `assert_per_fixture_coverage` (warn) também tira competição de insumo: o buraco dela não
+  é lacuna a fechar.
+- **`assert_amistosos_fora_do_mart` virou `assert_competicao_insumo_sem_passado`** (tag guarda):
+  com o slug ligado, jogo futuro é legítimo e só o passado é violação.
+
+O `FixturesExtractor` não mudou: segue trazendo a season inteira sob o universo cortado.
+
+**Verificação que só existe depois do deploy.** Dois critérios da #96 não cabem no diff: a suíte
+agendada verde por um ciclo diário completo, e a forma de uma seleção refletindo um amistoso. O
+segundo só é verificável depois do **primeiro amistoso pós-corte encerrar** (Japan x Uruguay,
+24/09 10:05 UTC), ou seja, a partir de 25/09 — antes disso nenhum amistoso no mart é FT e a
+forma não tem o que ler. Até lá a #96 fica aberta.
