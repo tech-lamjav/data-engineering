@@ -187,9 +187,10 @@ NATIONS_LEAGUE_ID = 5  # UEFA Nations League, season 2026. Sondagem 2026-09-21: 
 # fixtures_extractor.py, DE#93) antes de salvar: só entram jogos em que os DOIS times já são
 # conhecidos por outra competição do pipeline (726 -> 139 fixtures, 115 finalizados).
 # Sem backfill (Decisão 3, DE#91: mesmo motivo da Nations League) e sem TEAMS_*/PLAYERS_* —
-# ver LEAGUES_SEM_CATALOGO_IDS abaixo. Alvo de execução: novembro (janela FIFA 12-17), mas a
-# coleta liga desde já para acumular histórico sob medição (target futebol_taskF, nunca
-# produção — DE#95 é o portão que decide se entra no mart).
+# ver LEAGUES_SEM_CATALOGO_IDS abaixo. A extração continua trazendo a season inteira; o que
+# chega ao mart é decidido no dbt (DE#96): a medição da DE#95 recusou o passado (~23 pp de
+# deslocamento na forma contra régua de 0,25 pp), então o `analytics-engineering` só deixa
+# entrar amistoso com kickoff a partir de 2026-09-23 (macros/futebol_competicoes_insumo.sql).
 AMISTOSOS_ID = 10
 
 # Split entre backfill (one-shot, anos anteriores) e current (diário, ano corrente)
