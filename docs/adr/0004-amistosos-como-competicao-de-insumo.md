@@ -167,7 +167,7 @@ não desta medição.
 ## Implementação (DE#96, 2026-09-23) — só daqui para frente
 
 Pelo ramo "se estourou" da issue, entra só o que vier daqui para frente. Implementado no
-`analytics-engineering` (PR a seguir, mesma entrega):
+`analytics-engineering`, branch `de96-amistosos-mart` (mesma entrega que este registro):
 
 - **O corte temporário da #94 não foi removido: foi convertido.** Em `stg_futebol_fixtures.sql`
   o bloqueio da liga 10 inteira virou um corte **permanente por kickoff** — a liga 10 só entra
@@ -195,3 +195,9 @@ Pelo ramo "se estourou" da issue, entra só o que vier daqui para frente. Implem
   com o slug ligado, jogo futuro é legítimo e só o passado é violação.
 
 O `FixturesExtractor` não mudou: segue trazendo a season inteira sob o universo cortado.
+
+**Verificação que só existe depois do deploy.** Dois critérios da #96 não cabem no diff: a suíte
+agendada verde por um ciclo diário completo, e a forma de uma seleção refletindo um amistoso. O
+segundo só é verificável depois do **primeiro amistoso pós-corte encerrar** (Japan x Uruguay,
+24/09 10:05 UTC), ou seja, a partir de 25/09 — antes disso nenhum amistoso no mart é FT e a
+forma não tem o que ler. Até lá a #96 fica aberta.
