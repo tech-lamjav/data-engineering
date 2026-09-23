@@ -167,7 +167,8 @@ não desta medição.
 ## Implementação (DE#96, 2026-09-23) — só daqui para frente
 
 Pelo ramo "se estourou" da issue, entra só o que vier daqui para frente. Implementado no
-`analytics-engineering`, branch `de96-amistosos-mart` (mesma entrega que este registro):
+`analytics-engineering` (PR
+[#198](https://github.com/tech-lamjav/analytics-engineering/pull/198), mesma entrega que este registro):
 
 - **O corte temporário da #94 não foi removido: foi convertido.** Em `stg_futebol_fixtures.sql`
   o bloqueio da liga 10 inteira virou um corte **permanente por kickoff** — a liga 10 só entra
