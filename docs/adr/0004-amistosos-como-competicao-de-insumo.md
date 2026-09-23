@@ -1,7 +1,7 @@
 # Amistosos de seleção entram como competição de insumo, não de produto
 
-**Status:** accepted (2026-09-21)
-**Issue:** pendente — a spec ainda não foi escrita
+**Status:** accepted (2026-09-21) — decisão 7 revista em 2026-09-23, ver "Medição (DE#95)"
+**Issue:** #92 · #93 · #94 · #95 · #96
 **Contexto completo:** `docs/SELECOES_NATIONS_LEAGUE_AMISTOSOS.md`
 
 ## Contexto
@@ -133,3 +133,33 @@ finalizados. Um gate ali protege os dois de uma vez, sem precisar repetir o filt
 `AMISTOSOS_ID`, mas o nome é genérico (não `AMISTOSOS_*`) porque a próxima competição de
 insumo que a decisão 1 já antecipa ("eliminatórias de Copa têm o mesmo perfil") reusa o mesmo
 mecanismo sem precisar de código novo.
+
+## Medição (DE#95, 2026-09-23) — o portão fechou contra o passado
+
+**Veredito: o passado não entra.** A decisão 7 desta ADR ("temporada 2026 inteira, 115 jogos")
+**não sobrevive à medição** e fica substituída por este registro.
+
+Medido no `analytics-engineering` (PR
+[#197](https://github.com/tech-lamjav/analytics-engineering/pull/197), método completo e
+reprodução em `docs/TASKF_RESULTADOS.md`, seção "Ticket DE#95"): materializar o cenário "com
+amistosos" contra o target de medição `taskF` (nunca `dev`/`prod`) e comparar
+`int_futebol_team_form_pit` linha a linha com produção, restrito às âncoras de Copa do Mundo e
+Nations League que já têm jogo medido no mart.
+
+| competição | âncoras | sem histórico ANTES | ganhou histórico do zero | Δ médio pp (taxa de vitória) |
+|---|---|---|---|---|
+| Copa do Mundo | 208 | 48 | 47 | **22,91** |
+| Nations League | 312 | 216 | 200 | **24,15** |
+
+O deslocamento médio é **~23 pontos percentuais**, cerca de **90 vezes** a régua de 0,25 pp da
+decisão 11 (herdada da task [F] / #92). Não é ruído de recomputação — a #92 mediu esse ruído em
+0,00 pp sobre a mesma família de modelo. É o mecanismo que a decisão 2 já previa por escrito,
+com números: quase metade das âncoras de Copa do Mundo (47/48) e a maioria das de Nations
+League (200/216) tinham `played_total = 0` — estreavam sem forma — e passariam a carregar até
+sete rodadas de amistoso como se fossem jogo oficial.
+
+**Consequência para a cadeia:** o **DE#96** ("liga o slug `amistosos` no mart"), que dependia
+deste veredito, precisa ser reaberto com escopo revisto — não pode mais assumir que a temporada
+inteira entra. O corte temporário em `stg_futebol_fixtures.sql` e a guarda
+`assert_amistosos_fora_do_mart` continuam em produção; removê-los segue sendo decisão do #96,
+não desta medição.
