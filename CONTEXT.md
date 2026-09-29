@@ -160,7 +160,29 @@ Tabela BigQuery `raw_*` que lê os arquivos da landing in place, sem carga: novo
 Tabela final do dbt (repo `analytics-engineering`) pronta para consumo; é o que o sync materializa no Postgres.
 
 **Sync**:
-Materialização das marts do BigQuery no Postgres de serving (Supabase), por esporte e ambiente (PRD/DEV). PRD sempre recebe histórico completo; DEV pode receber escopo reduzido por tabela (retenção por dias ou por temporada corrente, hoje em 5 tabelas de futebol) — ver `docs/adr/0003`.
+Materialização das marts do BigQuery no Postgres de serving (Supabase), por esporte e ambiente (PRD/DEV); em PRD, por **carga por troca**. O escopo pode ser reduzido por tabela e ambiente (**retenção**) — ver `docs/adr/0003`, `0005` e `0006`.
+
+**Cache de serving**:
+O Postgres de PRD enquanto camada que serve o app: guarda o que o app renderiza, não o histórico completo. A fonte de verdade é o BigQuery; perder uma linha do Postgres é um recorte, não uma perda de dado. Hoje só vale para as odds.
+_Avoid_: espelho (promete o histórico inteiro, que é o que deixa de valer nas odds)
+
+**Retenção**:
+Recorte temporal de linhas que o sync aplica ao materializar uma tabela no Postgres. Tem duas famílias: **retenção de coleta** (contada pelo momento da captura) e **retenção de produto** (contada pelo kickoff da fixture, ou pela temporada corrente onde a tabela é por temporada).
+_Avoid_: purge, limpeza (a retenção é aplicada na carga, não depois dela); janela (janela é banda de kickoff da coleta)
+
+**Mercado servido**:
+Mercado de odds que o Postgres guarda porque o app o lê (por RPC ou por decisão do dono do app). Só mercados servidos entram na tabela de odds do Postgres, em PRD e em DEV; os demais ficam no BigQuery. A lista vigente mora na spec da #109.
+_Avoid_: mercado suportado (o BigQuery coleta mais mercados do que o app serve)
+
+**Carga no lugar**:
+Materializar uma tabela esvaziando a vigente e recarregando-a na mesma transação (TRUNCATE + COPY): o leitor espera o tempo inteiro da leitura do BigQuery.
+
+**Carga por troca**:
+Forma de materializar uma tabela em PRD sem bloquear o app: carrega numa **tabela-sombra** e a troca pela vigente num instante, em vez de esvaziar e recarregar a vigente no lugar.
+_Avoid_: reload, recarga
+
+**Tabela-sombra**:
+Cópia da tabela vigente com o mesmo formato, carregada fora do caminho dos leitores e trocada por ela ao fim. O formato é do app: o sync o deriva da tabela vigente e nunca o define.
 
 **Gate**:
 Condição que corta etapas downstream quando não há novidade ou o passo anterior falhou (ex.: dbt só roda se algo foi salvo; sync PRD só roda se o dbt passou).
@@ -169,7 +191,7 @@ Condição que corta etapas downstream quando não há novidade ou o passo anter
 Desfecho de workflow em que serviços falharam mas a execução termina "SUCCEEDED" no GCP — nunca confiar no status do workflow. A detecção é pelo resumo diário (1 e-mail/dia) e pelos logs de WARNING; para o sync especificamente, também pelo detector de atraso, que fala por transição de estado e não por dia.
 
 **Parity check**:
-Conferência pré-flight do sync que compara coluna a coluna o BigQuery e o Postgres antes de qualquer TRUNCATE. Protege a integridade da cópia, não os leitores: mudança de grão passa por ele inteira. Deriva de coluna faz o sync abortar por completo (as 22 tabelas, nos dois ambientes) até o DDL correspondente ser aplicado no Postgres.
+Conferência pré-flight do sync que compara coluna a coluna o BigQuery e o Postgres antes de qualquer carga. Protege a integridade da cópia, não os leitores: mudança de grão passa por ele inteira. Deriva de coluna faz o sync abortar por completo até o DDL correspondente ser aplicado no Postgres.
 
 **Detector**:
 Vigia que roda **fora** do sistema que observa, para enxergar a classe de falha que apaga o próprio alarme (imagem velha que não roda a guarda nova; infra parada que também para o vigia). Mora no GitHub Actions, nunca no GCP. Ver `docs/adr/0002`.

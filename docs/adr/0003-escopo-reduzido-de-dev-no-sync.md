@@ -1,6 +1,6 @@
 # DEV deixa de ser espelho de escopo completo em 5 tabelas de alto crescimento
 
-**Status:** accepted (2026-09-09)
+**Status:** accepted (2026-09-09) — a cláusula "PRD nunca usa este filtro" será revogada para `fact_odds_snapshot` pela [ADR 0006](0006-prd-cache-de-serving-para-odds.md) (2026-09-29); para DEV, segue valendo; a regra de `int_futebol_odds_devig` deixa de valer quando a tabela sai do sync
 **Issue:** [DE #75](https://github.com/tech-lamjav/data-engineering/issues/75) (fatias [DE #76](https://github.com/tech-lamjav/data-engineering/issues/76), [DE #77](https://github.com/tech-lamjav/data-engineering/issues/77))
 
 ## Contexto
