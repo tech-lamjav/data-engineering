@@ -26,6 +26,7 @@ schema `futebol`. Colunas BQ complexas (REPEATED/RECORD) são puladas: o Postgre
 nativo é escalar (no futebol, dim_leagues.coverage é RECORD e os arrays de
 evidências/avisos são reconstruídos nas RPCs a partir de colunas boolean).
 """
+import select
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
@@ -227,6 +228,36 @@ def check_schema_parity(
                 )
 
     return drifts
+
+
+# ============================================================
+# Backpressure do COPY (DE#110)
+# ============================================================
+# No Linux o psycopg NÃO faz flush no COPY (`PREFER_FLUSH` é só macOS): `write_row` apenas
+# enfileira no buffer de saída da libpq, que em modo não bloqueante cresce sem limite.
+# Com o servidor ingerindo mais devagar que o BQ entrega, o RSS sobe até o tamanho do
+# backlog (~220 B/linha medido; fact_odds_snapshot inteira seria ≤ ~900 MiB, extrapolação
+# linear) e, como a libpq não encolhe o buffer, o pico fica preso ao processo. Flush
+# periódico com espera no socket prende o produtor ao ritmo do servidor e limita o buffer
+# a ~COPY_FLUSH_EVERY_ROWS linhas (medido: 251 -> 74 MiB, 1 mi linhas a 5 MB/s, sem custo
+# mensurável de tempo). Limites conhecidos: o teto é por LINHAS, não por bytes (tabelas
+# largas pedem N menor); `select.select` só aceita fd < 1024 (o fd do PG é alocado uma
+# vez no connect, baixo); e isto NÃO toca a memória por página do `list_rows` do BQ.
+COPY_FLUSH_EVERY_ROWS = 5_000
+
+
+def _flush_copy_buffer(pg_conn) -> None:
+    """Esvazia o buffer de saída da libpq, bloqueando enquanto o servidor não acompanhar.
+
+    Segue o contrato do PQflush em modo não bloqueante: 1 = pendente; esperar o socket
+    ficar gravável OU legível (se legível, consumir o input antes de tentar de novo).
+    Sem timeout, como as esperas do próprio psycopg: o teto é o timeout do Cloud Run.
+    """
+    pgconn = pg_conn.pgconn
+    while pgconn.flush() != 0:
+        readable, _, _ = select.select([pgconn.socket], [pgconn.socket], [], None)
+        if readable:
+            pgconn.consume_input()
 
 
 # ============================================================
@@ -440,6 +471,8 @@ def _sync_one_table(
                     continue
                 copy.write_row([_format_value(row[c]) for c in columns])
                 row_count += 1
+                if row_count % COPY_FLUSH_EVERY_ROWS == 0:
+                    _flush_copy_buffer(pg_conn)
         cur.execute(
             f"""
             INSERT INTO {_sync_state_table(schema)}

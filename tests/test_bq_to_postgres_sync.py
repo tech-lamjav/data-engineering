@@ -236,3 +236,107 @@ def test_pula_colunas_complexas_repeated_record(table_name):
     assert "coverage" not in fake_copy.sql
     # write_row recebe só os valores escalares, na ordem
     assert fake_copy.rows[0] == [7, "x"]
+
+
+# --- DE#110: backpressure do COPY (flush periódico do buffer de saída da libpq) ---
+#
+# Sintoma: com o servidor ingerindo mais devagar que o BQ entrega, o RSS do sync sobe
+# até o tamanho do backlog (~220 B/linha; 4,2 mi linhas de fact_odds_snapshot ≈ 900 MiB),
+# porque no Linux o psycopg (PREFER_FLUSH só no macOS) apenas enfileira no buffer da
+# libpq, que cresce sem limite em modo não bloqueante. Estes testes travam o MECANISMO
+# do fix (flush a cada N linhas, esperando o socket); o sintoma em si (RSS) só é visível
+# com Postgres real + servidor lento — harness em scripts/repro_sync_copy_memoria/.
+
+
+class _FakePgConn:
+    """pgconn mínimo: flush() devolve 1 (pendente) `pending` vezes antes de 0."""
+
+    def __init__(self, events, pending=0):
+        self._events = events
+        self._pending = pending
+        self.socket = 42
+        self.consumed = 0
+
+    def flush(self):
+        self._events.append("flush")
+        if self._pending > 0:
+            self._pending -= 1
+            return 1
+        return 0
+
+    def consume_input(self):
+        self.consumed += 1
+
+
+class _EventCopy(_FakeCopy):
+    def __init__(self, events):
+        super().__init__()
+        self._events = events
+
+    def write_row(self, row):
+        self._events.append("row")
+        super().write_row(row)
+
+
+def _conn_com_pgconn(copy_obj, pgconn):
+    conn = _FakeConn(copy_obj, last_synced=None)
+    conn.pgconn = pgconn
+    return conn
+
+
+def test_copy_faz_flush_periodico_dentro_do_copy(table_name, monkeypatch):
+    """A cada COPY_FLUSH_EVERY_ROWS linhas escritas há um flush, intercalado com o write_row."""
+    monkeypatch.setattr(mod, "COPY_FLUSH_EVERY_ROWS", 3)
+    events = []
+    bq = _make_bq(
+        [{"a": i} for i in range(7)], ["a"], datetime(2025, 1, 1, tzinfo=timezone.utc)
+    )
+    conn = _conn_com_pgconn(_EventCopy(events), _FakePgConn(events))
+
+    result = _sync(bq, conn, table_name)
+
+    assert result["rows"] == 7
+    assert events == [
+        "row", "row", "row", "flush",
+        "row", "row", "row", "flush",
+        "row",
+    ]
+
+
+def test_flush_espera_o_socket_enquanto_houver_pendencia(monkeypatch):
+    """flush()==1 (servidor lento) bloqueia no select até a libpq esvaziar — é o backpressure."""
+    events = []
+    pgconn = _FakePgConn(events, pending=2)
+    waits = []
+
+    def fake_select(r, w, x, timeout=None):
+        waits.append((r, w, timeout))
+        return ([], [pgconn.socket], [])  # só gravável: nada a consumir
+
+    monkeypatch.setattr(mod.select, "select", fake_select)
+    conn = MagicMock()
+    conn.pgconn = pgconn
+
+    mod._flush_copy_buffer(conn)
+
+    assert events == ["flush", "flush", "flush"]  # 2 pendentes + o que zerou
+    assert len(waits) == 2
+    # espera bloqueante (timeout None, senão vira busy-spin) e observa leitura+escrita
+    assert all(r == [pgconn.socket] and w == [pgconn.socket] and t is None for r, w, t in waits)
+    assert pgconn.consumed == 0
+
+
+def test_flush_consome_input_quando_socket_legivel(monkeypatch):
+    """Doc do PQflush (modo não bloqueante): read-ready => consume_input antes de novo flush."""
+    events = []
+    pgconn = _FakePgConn(events, pending=1)
+    monkeypatch.setattr(
+        mod.select, "select", lambda r, w, x, timeout=None: ([pgconn.socket], [], [])
+    )
+    conn = MagicMock()
+    conn.pgconn = pgconn
+
+    mod._flush_copy_buffer(conn)
+
+    assert pgconn.consumed == 1
+    assert events == ["flush", "flush"]
