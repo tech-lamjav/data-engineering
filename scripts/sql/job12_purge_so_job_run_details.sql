@@ -3,6 +3,23 @@
 -- (psycopg com SUPABASE_PG_URL_DEV do .env; a MCP do Supabase é somente leitura e não serve).
 -- NÃO rodar em PRD: o PRD nunca teve esse job (decisão de 08/09/2026 de não tocar produção).
 --
+-- COMO APLICAR (do checkout com o `.env`, `autocommit=True`; o arquivo já traz begin/commit, e com
+-- `autocommit=False` o psycopg só avisaria "there is already a transaction in progress"):
+--
+--   .venv/bin/python3 - <<'PY'
+--   import psycopg
+--   from dotenv import dotenv_values
+--   url = dotenv_values(".env")["SUPABASE_PG_URL_DEV"]
+--   sql = open("scripts/sql/job12_purge_so_job_run_details.sql", encoding="utf-8").read()
+--   with psycopg.connect(url, autocommit=True) as c:
+--       c.execute(sql)
+--       print(c.execute("select jobid, jobname, schedule, active, command "
+--                       "from cron.job where jobid = 12").fetchone())
+--   PY
+--
+-- Sai com "job 12 nao e o purge-old-snapshots" (e nada alterado) se o job 12 for outro. O
+-- `.env` é lido sem imprimir o valor.
+--
 -- POR QUE O JOB DEIXA DE APAGAR AS TABELAS DE FUTEBOL: os três DELETE de futebol repetiam cortes
 -- que o próprio sync já aplica (TRUNCATE + COPY com a retenção de DEV, ADR 0003), então a limpeza
 -- não liberava nada. E ela nunca foi rede de segurança: se a retenção do sync sumisse, o sync
