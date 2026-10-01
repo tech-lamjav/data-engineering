@@ -2,3 +2,4 @@
 # Instale com: pip install -r requirements-dev.txt
 -r requirements.txt
 pytest>=8.0,<9.0
+pyyaml>=6.0,<7.0  # tests/test_workflow_futebol_sync.py lê o YAML do workflow
