@@ -69,3 +69,15 @@ def test_drift_continua_500_e_sucesso_continua_200(handler, monkeypatch):
     )
     _, codigo = handler.sync_bq_to_postgres(_Req(sport="nba", env="dev"))
     assert codigo == 200
+
+
+def test_script_local_sai_com_3_quando_ocupado(monkeypatch):
+    """Drift sai com 2; ocupado (outro sync com a trava) sai com 3, distinto de erro (1)."""
+    script = importlib.import_module("scripts.sync_bq_to_postgres")
+    monkeypatch.setattr(
+        script,
+        "run_sync",
+        lambda **kw: {"status": "busy", "sport": "futebol", "env": "dev", "synced": []},
+    )
+
+    assert script.main() == 3
