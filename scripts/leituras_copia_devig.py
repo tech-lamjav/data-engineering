@@ -7,6 +7,9 @@ QUANDO RODAR
   1. No dia do congelamento — o dia em que o `sync-bq-to-postgres` sem o devig for
      redeployado (a cópia para de ser escrita naquela execução):
          .venv/bin/python3 scripts/leituras_copia_devig.py > leitura_devig_dia0.jsonl
+     Confira `echo $?` logo depois: 0 = os dois ambientes lidos; 2 = algum falhou (o
+     diagnóstico vai para o stderr e o arquivo pode ter só o ambiente que leu; repita o
+     que faltou com LEITURA_ENVS, ex.: `LEITURA_ENVS=dev ... >> leitura_devig_dia0.jsonl`).
      Cole as linhas no ticket do `DROP`.
   2. 7 dias depois, comparando com a anterior:
          LEITURA_ANTERIOR=leitura_devig_dia0.jsonl .venv/bin/python3 scripts/leituras_copia_devig.py
@@ -36,6 +39,10 @@ from src.monitoring.leituras_copia import (
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+# O logger do repo escreve em stdout, e o stdout deste script é o arquivo de registros
+# (`> leitura_devig_dia0.jsonl`): log e traceback ali quebrariam o parse da repetição de 7 dias.
+for _h in logger.handlers:
+    _h.setStream(sys.stderr)
 
 TABELA = "int_futebol_odds_devig"
 

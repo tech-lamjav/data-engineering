@@ -177,3 +177,32 @@ def test_dois_registros_do_mesmo_ambiente_sao_ambiguos():
 
     with pytest.raises(ValueError, match="prd"):
         indexa_por_env(texto)
+
+
+# ------------------------------------------------------------------
+# Script: o stdout é só o arquivo de registros (o runbook redireciona `> dia0.jsonl`)
+# ------------------------------------------------------------------
+def test_script_com_falha_nao_escreve_log_nem_traceback_no_stdout():
+    """Falha de ambiente (URL ausente) vai para o stderr e sai com 2.
+
+    O logger do repo escreve em stdout; sem desviar, o arquivo redirecionado ficaria com
+    `ERROR - ...` e o traceback no meio do JSONL, e a repetição de 7 dias quebraria no parse.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    raiz = Path(__file__).resolve().parent.parent
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SUPABASE_PG_URL")}
+    env["LEITURA_ENVS"] = "dev"
+    env.pop("LEITURA_ANTERIOR", None)
+
+    r = subprocess.run(
+        [sys.executable, str(raiz / "scripts" / "leituras_copia_devig.py")],
+        capture_output=True, text=True, cwd=raiz, env=env,
+    )
+
+    assert r.returncode == 2
+    assert r.stdout == ""
+    assert "SUPABASE_PG_URL_DEV" in r.stderr
