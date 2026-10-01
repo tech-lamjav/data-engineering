@@ -9,8 +9,10 @@ Estes testes rodam no CI com mock total: um "servidor" falso em memória decide 
 cenário contra um Postgres de verdade está em `tests/test_sync_trava_integracao.py`
 (pulado por padrão).
 """
+import json
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -20,7 +22,7 @@ except Exception as e:  # pragma: no cover
     pytest.skip(f"src.sync.bq_to_postgres não importável: {e}", allow_module_level=True)
 
 from src.config import FUTEBOL_SYNC_TABLES_ORDERED
-from src.sync.trava import STATUS_OCUPADO, chave_trava
+from src.sync.trava import STATUS_OCUPADO, SYNC_STATEMENT_TIMEOUT_S, chave_trava
 
 TABELA = FUTEBOL_SYNC_TABLES_ORDERED[0]
 AGORA = datetime(2026, 10, 1, 13, 0, tzinfo=timezone.utc)
@@ -276,12 +278,27 @@ def test_statement_timeout_da_sessao_acompanha_o_timeout_do_cloud_run(ambiente):
 
     conn = ambiente.servidor.conexoes[0]
     sets = [s for s in conn.sqls() if "statement_timeout" in s]
-    assert sets == ["SET statement_timeout = '3600s'"]
+    assert sets == [f"SET statement_timeout = '{SYNC_STATEMENT_TIMEOUT_S}s'"]
     # E só depois de a trava estar em mãos.
     sqls = conn.sqls()
     assert sqls.index(sets[0]) > next(
         i for i, s in enumerate(sqls) if "pg_try_advisory_lock" in s
     )
+
+
+def test_statement_timeout_nao_passa_do_timeout_do_cloud_run_do_sync():
+    # A relação entre os dois números é a invariante (DE#112): se alguém baixar o --timeout
+    # do serviço, o statement_timeout da sessão passaria a valer mais que a requisição.
+    golden = json.loads(
+        (Path(__file__).parent / "fixtures" / "deploy_cloud_run_argv.json").read_text()
+    )
+    timeouts = []
+    for cenario in golden.values():
+        argv = cenario["sync-bq-to-postgres"]
+        timeouts.append(int(argv[argv.index("--timeout") + 1]))
+
+    assert timeouts, "o golden não traz o sync-bq-to-postgres"
+    assert all(SYNC_STATEMENT_TIMEOUT_S <= t for t in timeouts)
 
 
 # ------------------------------------------------------------------
