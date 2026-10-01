@@ -25,6 +25,17 @@
 # de 450 MB. O campo é ADITIVO: nasce nulo, só é preenchido no caminho de sucesso do DEV, e é
 # lido com map.get (imagem velha, sem o campo, deixa nulo em vez de quebrar o workflow). Um
 # 409 ou uma falha no DEV deixa nulo: "não medido" no resumo, que não é "está bem".
+#
+# CARGA POR TROCA (DE#108, ADR 0005). `troca_*` e `staged_*` abaixo são os parâmetros versionados
+# que ligam a carga por tabela-sombra, TABELA A TABELA e POR AMBIENTE (CSV de nomes; "" = nada).
+# Eles SAEM VAZIOS neste commit: a imagem entra com a troca DESLIGADA e o app segue com a carga
+# no lugar até alguém editar uma linha aqui. Ligar = pôr o nome da tabela na lista e rodar
+# `scripts/deploy_workflows.sh`; DESLIGAR (rollback) = tirar o nome (ou reverter este arquivo) e
+# rodar o deploy de workflows, sem build de imagem. Ordem de habilitação e o runbook completo
+# estão no PR da DE#108. `staged_*` serve às tabelas com view dependente (as cinco
+# `int_futebol_premissas_*`). `fact_odds_snapshot` NÃO pode entrar até a DE#109 (o serviço
+# recusa). Uma tabela que não conseguir trocar faz o serviço responder 500 com os nomes no corpo
+# (as outras sincronizam): aqui isso vira PARTIAL_FAILURE como qualquer 5xx não repetido.
 # ============================================================
 
 main:
@@ -36,6 +47,10 @@ main:
         - workflow_status: "SUCCESS"
         - failed_services: []
         - dev_size_mb: null
+        - troca_prd: ""
+        - staged_prd: ""
+        - troca_dev: ""
+        - staged_dev: ""
 
     - log_start:
         call: sys.log
@@ -60,6 +75,8 @@ main:
                         query:
                             sport: futebol
                             env: prd
+                            troca: ${troca_prd}
+                            staged: ${staged_prd}
                         timeout: 1800
                 # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
                 retry:
@@ -120,6 +137,8 @@ main:
                         query:
                             sport: futebol
                             env: dev
+                            troca: ${troca_dev}
+                            staged: ${staged_dev}
                         timeout: 1800
                     result: sync_dev_result
                 retry:

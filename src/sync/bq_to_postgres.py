@@ -9,9 +9,17 @@ Decisões de design (ver PLANO_OTIMIZACAO_BQ_SUPABASE.md fase 2):
   de query em INFORMATION_SCHEMA.
 - Sync serial table-by-table, dim -> fact -> derived (ver *_TABLES_ORDERED em
   config.py) para minimizar janela de inconsistência cross-table.
-- TRUNCATE + COPY dentro de uma única transação por tabela: nenhum leitor vê dado
-  parcial (mas o TRUNCATE segura ACCESS EXCLUSIVE até o fim da carga, então o leitor
-  ESPERA; ver DE#108).
+- Duas formas de carga, escolhidas POR TABELA no início da carga dela (DE#108, ADR 0005):
+  * CARGA POR TROCA (`src/sync/troca.py`, habilitada por tabela pelo parâmetro `troca` do
+    serviço; desligada por padrão): o COPY vai para uma tabela-sombra, fora do caminho dos
+    leitores, que seguem vendo o dado ANTIGO até a troca por RENAME, de milissegundos. O único
+    ponto de espera é o RENAME (teto de 2 s, com retentativas); se não trocar, a tabela falha
+    alto e a vigente fica intacta. Tabela com dependente (view etc.) não usa a troca: vai para
+    o caminho STAGED (parâmetro `staged`) ou para a carga no lugar, com WARNING.
+  * CARGA NO LUGAR (o default; NBA e DEV fora do canário): TRUNCATE + COPY na mesma transação.
+    Nenhum leitor vê dado parcial, MAS o TRUNCATE segura ACCESS EXCLUSIVE até o fim do COPY:
+    o leitor NÃO vê o dado antigo, ele ESPERA e o PostgREST o cancela por timeout (o docstring
+    antigo afirmava o contrário; isso era falso). É por isso que a troca existe.
 - Trava por (sport, env): `pg_try_advisory_lock` de sessão logo depois do connect (DE#107,
   src/sync/trava.py). Lock ocupado = o sync volta com STATUS_OCUPADO sem tocar em nada.
 - COPY TIPADO do psycopg3 (`cur.copy(...).write_row(row)`): serializa tipos e NULL
@@ -35,6 +43,7 @@ nativo é escalar (no futebol, dim_leagues.coverage é RECORD e os arrays de
 evidências/avisos são reconstruídos nas RPCs a partir de colunas boolean).
 """
 import select
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
@@ -47,6 +56,7 @@ from src.config import (
 )
 from src.sync.alvo import resolve_alvo_sync
 from src.sync.filtro_bq import FiltroBQ, le_tabela_filtrada
+from src.sync import troca as troca_mod
 from src.sync.retencao import resolve_regra_retencao
 from src.sync.tamanho_dev import medir_tamanho_dev_mb
 from src.sync.trava import (
@@ -462,6 +472,35 @@ def _read_last_synced(pg_conn, table_name: str, schema: str):
     return row[0] if row else None
 
 
+def _copia_linhas(pg_conn, cur, alvo: str, column_list: str, columns: list, dados) -> int:
+    """COPY tipado de `dados` para `alvo` (já qualificado e citado), com o flush periódico da
+    DE#110. Usado pela carga no lugar, pela sombra da troca e pela temporária do staged."""
+    row_count = 0
+    with cur.copy(f"COPY {alvo} ({column_list}) FROM STDIN") as copy:
+        for row in dados:
+            copy.write_row([_format_value(row[c]) for c in columns])
+            row_count += 1
+            if row_count % COPY_FLUSH_EVERY_ROWS == 0:
+                _flush_copy_buffer(pg_conn)
+    return row_count
+
+
+def _grava_estado(cur, schema: str, table_name: str, bq_modified) -> None:
+    """Avança o estado de sincronização. Na troca e no staged roda DENTRO da transação da
+    troca: se a troca não acontece, o estado não avança e o detector de atraso enxerga."""
+    cur.execute(
+        f"""
+        INSERT INTO {_sync_state_table(schema)}
+            (table_name, last_synced_bq_modified_time, last_synced_at)
+        VALUES (%s, %s, now())
+        ON CONFLICT (table_name) DO UPDATE
+            SET last_synced_bq_modified_time = EXCLUDED.last_synced_bq_modified_time,
+                last_synced_at = EXCLUDED.last_synced_at
+        """,
+        (table_name, bq_modified),
+    )
+
+
 # ============================================================
 # Sync de uma tabela
 # ============================================================
@@ -475,8 +514,14 @@ def _sync_one_table(
     force: bool = False,
     env: str = "prd",
     sport: str = "nba",
+    ctx_troca: "troca_mod.ContextoTroca | None" = None,
 ) -> dict:
-    """Sincroniza uma mart: TRUNCATE + COPY dentro de uma única transação.
+    """Sincroniza uma mart: por padrão TRUNCATE + COPY dentro de uma única transação.
+
+    `ctx_troca` (DE#108): None = tudo como antes (carga no lugar). Com contexto, a tabela pode
+    usar a carga por troca, o caminho staged ou cair na carga no lugar com aviso, conforme
+    `troca.escolhe_modo`. A troca que não conclui levanta `TrocaFalhou` (vigente intacta, estado
+    sem avançar); o `run_sync` a captura por tabela.
 
     Skip-if-unchanged: se bq.get_table().modified <= last_synced_bq_modified_time
     em _sync_state, pula essa tabela (sem TRUNCATE, sem locking).
@@ -522,6 +567,10 @@ def _sync_one_table(
         f"{', force=True' if force else ''})"
     )
 
+    # Modo de carga desta tabela, decidido AGORA (depois do skip-if-unchanged): sem contexto,
+    # nenhuma consulta ao catálogo e o caminho é o de sempre.
+    modo, fallback_motivo = troca_mod.escolhe_modo(pg_conn, schema, table_name, ctx_troca)
+
     # Pula colunas complexas (REPEATED/RECORD); só escalares vão pro COPY.
     all_fields = list(rows_iter.schema)
     columns = [f.name for f in all_fields if not _is_complex_field(f)]
@@ -555,37 +604,54 @@ def _sync_one_table(
             ),
         )
 
-    with pg_conn.cursor() as cur:
-        # BEGIN é implícito quando autocommit=False; TRUNCATE + COPY + state-update
-        # ficam numa única transação. Se qualquer passo falhar, rollback total
-        # mantém o state consistente com o dado.
-        cur.execute(f'TRUNCATE TABLE "{schema}"."{table_name}"')
-        # COPY TIPADO: write_row recebe a tupla nativa (None vira NULL, '' fica '').
-        # Streaming linha-a-linha — não materializa a tabela inteira em memória.
-        row_count = 0
-        with cur.copy(
-            f'COPY "{schema}"."{table_name}" ({column_list}) FROM STDIN'
-        ) as copy:
-            for row in dados:
-                copy.write_row([_format_value(row[c]) for c in columns])
-                row_count += 1
-                if row_count % COPY_FLUSH_EVERY_ROWS == 0:
-                    _flush_copy_buffer(pg_conn)
-        cur.execute(
-            f"""
-            INSERT INTO {_sync_state_table(schema)}
-                (table_name, last_synced_bq_modified_time, last_synced_at)
-            VALUES (%s, %s, now())
-            ON CONFLICT (table_name) DO UPDATE
-                SET last_synced_bq_modified_time = EXCLUDED.last_synced_bq_modified_time,
-                    last_synced_at = EXCLUDED.last_synced_at
-            """,
-            (table_name, bq_modified),
-        )
-    pg_conn.commit()
+    def copiar(cur, alvo):
+        return _copia_linhas(pg_conn, cur, alvo, column_list, columns, dados)
 
-    logger.info(f"OK {table_name}: {row_count} linhas")
-    return {"table": table_name, "rows": row_count, "skipped": False}
+    def atualiza_estado(cur):
+        _grava_estado(cur, schema, table_name, bq_modified)
+
+    inicio = time.monotonic()
+    extra: dict = {}
+    if modo == troca_mod.MODO_TROCA:
+        extra = troca_mod.carrega_por_troca(
+            pg_conn, schema, table_name, ctx_troca, copiar=copiar, atualiza_estado=atualiza_estado
+        )
+        row_count = extra.pop("rows")
+    elif modo == troca_mod.MODO_STAGED:
+        extra = troca_mod.carrega_staged(
+            pg_conn, schema, table_name, ctx_troca, copiar=copiar, atualiza_estado=atualiza_estado
+        )
+        row_count = extra.pop("rows")
+    else:
+        with pg_conn.cursor() as cur:
+            # BEGIN é implícito quando autocommit=False; TRUNCATE + COPY + state-update
+            # ficam numa única transação. Se qualquer passo falhar, rollback total
+            # mantém o state consistente com o dado.
+            cur.execute(f'TRUNCATE TABLE "{schema}"."{table_name}"')
+            # COPY TIPADO: write_row recebe a tupla nativa (None vira NULL, '' fica '').
+            # Streaming linha-a-linha — não materializa a tabela inteira em memória.
+            row_count = copiar(cur, f'"{schema}"."{table_name}"')
+            atualiza_estado(cur)
+        pg_conn.commit()
+
+    duracao_s = round(time.monotonic() - inicio, 2)
+    resultado = {
+        "table": table_name,
+        "rows": row_count,
+        "skipped": False,
+        "modo": modo,
+        "duracao_s": extra.get("duracao_s", duracao_s),
+    }
+    if "tentativas" in extra:
+        resultado["tentativas"] = extra["tentativas"]
+        resultado["troca_ms"] = extra["troca_ms"]
+    if fallback_motivo:
+        resultado["fallback_motivo"] = fallback_motivo
+    logger.info(
+        f"OK {table_name}: {row_count} linhas (modo={modo}, duracao_s={resultado['duracao_s']}"
+        f"{', tentativas=%s, troca_ms=%s' % (extra['tentativas'], extra['troca_ms']) if 'tentativas' in extra else ''})"
+    )
+    return resultado
 
 
 def _assert_dev_retention_order(sport: str, env: str, resolved: list[str]) -> None:
@@ -621,6 +687,8 @@ def run_sync(
     env: str = "prd",
     force: bool = False,
     sport: str = "nba",
+    troca: str | Iterable[str] | None = None,
+    staged: str | Iterable[str] | None = None,
 ) -> dict:
     """Executa o sync. Roda pre-flight de schema parity antes de qualquer TRUNCATE.
 
@@ -632,9 +700,19 @@ def run_sync(
                tabelas resolvidas (recupera de drift no Postgres feito fora do sync).
         sport: 'nba' (default) ou 'futebol'. Resolve dataset BQ + schema Postgres +
                allowlist (menos as exclusões) via alvo.resolve_alvo_sync().
+        troca: tabelas (CSV ou lista) habilitadas na CARGA POR TROCA (DE#108). Vazio/None
+               (default) = nenhuma: carga no lugar, como antes. Só futebol; nunca
+               `fact_odds_snapshot` (até a DE#109). Quem escolhe é o workflow, por ambiente.
+        staged: tabelas habilitadas no caminho STAGED (as com dependente, ex. premissas).
 
     Returns:
         {status, sport, env, synced: [...], drift: [...], summary, dev_size_mb}
+        Cada item de `synced` ecoa `modo` (troca | staged | no_lugar | no_lugar_fallback),
+        `duracao_s` e, quando há troca, `tentativas` e `troca_ms`.
+        Se uma tabela habilitada não conseguir trocar (teto de espera esgotado, formato
+        divergente, dependente novo, orçamento de retentativas), as demais seguem e o retorno
+        é status='swap_failed' com `falhas: [{table, motivo}]` (a vigente fica intacta e o
+        estado da tabela não avança). Parity check e IAM continuam abortando o sync INTEIRO.
         (`dev_size_mb`: soma dos bancos do cluster em MiB, medida ao fim do passe DEV
         bem-sucedido; None em PRD e quando a medição falha — DE#106.)
         Em caso de drift detectada no pre-flight, NÃO faz TRUNCATE em nenhuma
@@ -647,6 +725,15 @@ def run_sync(
     verifica_pooler_de_sessao(pg_url)
     resolved = resolve_tables(tables, tables_ordered)
     _assert_dev_retention_order(sport, env, resolved)
+    selecao_troca = troca_mod.parse_lista(troca)
+    selecao_staged = troca_mod.parse_lista(staged)
+    troca_mod.valida_selecao(sport, selecao_troca, selecao_staged, resolved)
+    # None = nenhuma tabela habilitada: o caminho de carga é byte-idêntico ao anterior.
+    ctx_troca = (
+        troca_mod.novo_contexto(selecao_troca, selecao_staged)
+        if (selecao_troca or selecao_staged)
+        else None
+    )
     logger.info(
         f"Sync solicitado sport={sport} env={env} para {len(resolved)} "
         f"tabela(s) [{dataset} -> {schema}]: {resolved}"
@@ -685,6 +772,14 @@ def run_sync(
             cur.execute(f"SET statement_timeout = '{SYNC_STATEMENT_TIMEOUT_S}s'")
         pg_conn.commit()
 
+        # Sombras `__new`/`__old` de uma execução anterior que morreu: removidas AGORA, já com a
+        # trava em mãos (nunca sem ela) e antes do parity check, para um aborto não as deixar
+        # ocupando disco. Roda mesmo com a troca desligada (rollback por workflow não pode
+        # abandonar uma sombra de centenas de MB). Aviso, não aborto.
+        avisos = troca_mod.limpa_sombras(
+            pg_conn, schema, ctx_troca or troca_mod.ContextoTroca()
+        )
+
         drifts = check_schema_parity(bq, pg_conn, resolved, dataset, schema)
         if drifts:
             logger.error(
@@ -707,18 +802,36 @@ def run_sync(
         _ensure_sync_state_table(pg_conn, schema)
 
         synced: list[dict] = []
+        falhas: list[dict] = []
         for table in resolved:
-            result = _sync_one_table(
-                bq, pg_conn, table, dataset, schema, tables_ordered,
-                force=force, env=env, sport=sport,
-            )
+            try:
+                result = _sync_one_table(
+                    bq, pg_conn, table, dataset, schema, tables_ordered,
+                    force=force, env=env, sport=sport, ctx_troca=ctx_troca,
+                )
+            except troca_mod.TrocaFalhou as e:
+                # Uma tabela que não trocou NÃO derruba as seguintes: a vigente está intacta e o
+                # estado dela não avançou (o detector de atraso a enxerga). Só TrocaFalhou é
+                # capturada aqui: erro de leitura do BigQuery ou de COPY segue abortando.
+                pg_conn.rollback()
+                logger.error(f"Troca falhou em {e.table}: {e.motivo} {e.detalhe}")
+                falhas.append({"table": e.table, "motivo": e.motivo})
+                continue
             synced.append(result)
 
         n_synced = sum(1 for r in synced if not r.get("skipped"))
         n_skipped = sum(1 for r in synced if r.get("skipped"))
+        por_modo = {
+            m: sum(1 for r in synced if r.get("modo") == m)
+            for m in (
+                troca_mod.MODO_TROCA, troca_mod.MODO_STAGED,
+                troca_mod.MODO_NO_LUGAR, troca_mod.MODO_FALLBACK,
+            )
+        }
         logger.info(
             f"Sync sport={sport} env={env} concluído: {n_synced} tabela(s) "
-            f"sincronizada(s), {n_skipped} pulada(s) por BQ inalterado"
+            f"sincronizada(s), {n_skipped} pulada(s) por BQ inalterado, "
+            f"modos={por_modo}, falhas de troca={[f['table'] for f in falhas]}"
         )
 
         # Tamanho do DEV (DE#106): medido AQUI, depois de todas as tabelas carregadas e com a
@@ -729,12 +842,19 @@ def run_sync(
         )
 
         return {
-            "status": "success",
+            "status": troca_mod.STATUS_TROCA_FALHOU if falhas else "success",
             "sport": sport,
             "env": env,
             "synced": synced,
             "drift": [],
-            "summary": {"synced": n_synced, "skipped": n_skipped},
+            "falhas": falhas,
+            "avisos": avisos,
+            "summary": {
+                "synced": n_synced,
+                "skipped": n_skipped,
+                "fallback": por_modo[troca_mod.MODO_FALLBACK],
+                "falhas_de_troca": len(falhas),
+            },
             "dev_size_mb": dev_size_mb,
         }
 

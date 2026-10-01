@@ -166,3 +166,50 @@ def test_o_log_de_conclusao_emite_o_tamanho_do_dev():
     assert dados["workflow_name"] == "workflow_futebol_sync"
     for campo in ("status", "duration_seconds", "failed_services", "failed_count"):
         assert campo in dados
+
+
+# ------------------------------------------------------------------
+# DE#108: carga por troca ligada por tabela, no workflow (lançamento escuro)
+# ------------------------------------------------------------------
+def _init():
+    init = _passos(_carrega())["init"]["assign"]
+    return {k: v for a in init for k, v in a.items()}
+
+
+def test_a_selecao_da_troca_nasce_como_variavel_do_init_para_cada_ambiente():
+    atrib = _init()
+    for nome in ("troca_prd", "staged_prd", "troca_dev", "staged_dev"):
+        assert nome in atrib, nome
+
+
+def test_cada_ambiente_passa_a_propria_selecao_ao_servico():
+    blocos = dict(_blocos())
+    for env in ("prd", "dev"):
+        query = _chamada(blocos[env])["try"]["args"]["query"]
+        assert query["troca"] == f"${{troca_{env}}}", env
+        assert query["staged"] == f"${{staged_{env}}}", env
+
+
+def test_neste_commit_a_troca_esta_desligada_em_prd_e_em_dev():
+    """A imagem entra com a troca DESLIGADA (ADR 0005): ligar é uma edição deliberada, tabela a
+    tabela, com confirmação do dono. Este teste muda junto com o PR que ligar a primeira."""
+    atrib = _init()
+    for nome in ("troca_prd", "staged_prd", "troca_dev", "staged_dev"):
+        assert atrib[nome] == "", nome
+
+
+def test_a_selecao_commitada_respeita_o_desenho_mesmo_depois_de_ligada():
+    """Guarda que sobrevive ao liga: odds fora; tabela com view dependente só no staged; troca
+    só em tabela do alvo do sync."""
+    from src.sync.alvo import resolve_alvo_sync
+    from src.sync.retencao import TABELAS_RETENCAO_PRODUTO_FUTEBOL
+    from src.sync.troca import TABELAS_FORA_DA_TROCA, parse_lista
+
+    _, _, alvo = resolve_alvo_sync("futebol")
+    premissas = {t for t in TABELAS_RETENCAO_PRODUTO_FUTEBOL if t.startswith("int_futebol_premissas_")}
+    atrib = _init()
+    for amb in ("prd", "dev"):
+        troca_sel, staged_sel = parse_lista(atrib[f"troca_{amb}"]), parse_lista(atrib[f"staged_{amb}"])
+        assert not ((troca_sel | staged_sel) & TABELAS_FORA_DA_TROCA), amb
+        assert (troca_sel | staged_sel) <= set(alvo), amb
+        assert not (troca_sel & premissas), f"{amb}: premissas têm view dependente, vão no staged"
