@@ -439,8 +439,12 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
 | `nba` | `nba` | `nba_mart` | `MART_TABLES_ORDERED` (15) | `workflow-data-engineering` (fase 3) |
 | `futebol` | `futebol` | `futebol` | `FUTEBOL_SYNC_TABLES_ORDERED` (23, **22 copiadas**: `int_futebol_odds_devig` é excluída em `alvo.SYNC_EXCLUSOES`) | `workflow-futebol-sync` + scheduler horário |
 
-- **Leitura sem custo de scan:** `bq.list_rows()` (grátis), não `query()`. ⚠️ `list_rows` **não lê
-  view** — todo modelo sincronizado precisa ser `table` no BQ (no futebol, 5 ex-views viraram table).
+- **Leitura sem custo de scan (PRD e tabela sem retenção):** `bq.list_rows()` (grátis), não `query()`.
+  ⚠️ `list_rows` **não lê view** — todo modelo sincronizado precisa ser `table` no BQ (no futebol, 5
+  ex-views viraram table). **Exceção, só DEV (DE#106):** tabela com regra de retenção é lida por
+  **query job parametrizado** (`src/sync/filtro_bq.py`), para o corte rodar no BigQuery e o DEV não
+  ler o que vai descartar. Isso custa bytes faturados (teto por job = 2× o tamanho da tabela) e exige
+  `bigquery.jobs.create` na SA runtime; sem a permissão o passe DEV aborta com 403, antes do TRUNCATE.
 - **Escrita:** por tabela, **TRUNCATE + COPY tipado** (psycopg3) numa única transação. COPY tipado
   preserva `None`→NULL vs `''`→string vazia.
 - **Colunas complexas:** `_is_complex_field` pula campos BQ REPEATED/RECORD (o Postgres nativo é
@@ -449,6 +453,15 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
   exclusões de `src/sync/alvo.py`. O sync, o detector de atraso e o gerador do contrato de
   serving consomem o **mesmo** resolvedor (`resolve_alvo_sync`); ler `get_sync_target` direto
   reabre a divergência e é barrado por `tests/test_sync_alvo.py`.
+- **Retenção de DEV (ADR 0003 + emenda da DE#106):** só em DEV, resolvida por `src/sync/retencao.py`
+  (não por `config.py`, que deriva os 29 serviços). **Coleta** (odds e desfalques) = 7 dias pelo
+  momento da captura; **produto** (`fact_insumos_medidos`, as cinco `int_futebol_premissas_*` e
+  `fact_value_opportunities_hist`) = fixtures com kickoff de −30 a +14 dias, lidas de `fact_fixtures`
+  na mesma execução; por temporada, `fact_fixture_player_stats` e `fact_fixture_lineups_players`.
+  PRD recebe tudo (até a #109, que muda PRD nas odds, ADR 0006).
+- **Tamanho do DEV:** ao fim do passe DEV o sync mede a soma de `pg_database_size` de todos os
+  bancos do cluster (a métrica do teto de 500 MB do plano free) e devolve `dev_size_mb`; o workflow
+  o emite no `log_completion` e o resumo diário alerta acima de 450 MB (token `[DEV]` no assunto).
 - **skip-if-unchanged:** `<schema>._sync_state` guarda o `bq_modified` da última sync; pula a tabela
   se nada mudou (`force=true` ignora).
 - **Parity check pré-flight:** compara colunas/tipos BQ↔PG **antes** de qualquer TRUNCATE; se houver
@@ -467,7 +480,9 @@ Ambos enviam por **Gmail SMTP_SSL** (`smtp.gmail.com:465`) com os secrets `GMAIL
 - **`daily-summary`** (`src/reporting/daily_summary.py`) — modelo atual, **1 email/dia**. Lê as
   execuções do dia anterior no **Cloud Logging** (passo `log_completion` de cada workflow) e cruza
   com a **Workflow Executions API** p/ capturar `FAILED`/`CANCELLED` que nunca logam; monta uma
-  tabela HTML (runs/OK/parcial/falha/duração). Requer `logging.viewer` + `workflows.viewer`.
+  tabela HTML (runs/OK/parcial/falha/duração), mais as seções de guardas, suíte, procedência, **tamanho
+  do DEV** (última leitura do dia do `workflow-futebol-sync`; DE#106) e cota da API. Requer
+  `logging.viewer` + `workflows.viewer`.
 - **`notify-execution`** — modelo antigo, 1 email **por execução** (texto plano). Workflow-agnóstico;
   ainda chamado por alguns workflows.
 

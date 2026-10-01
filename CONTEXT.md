@@ -160,7 +160,7 @@ Tabela BigQuery `raw_*` que lê os arquivos da landing in place, sem carga: novo
 Tabela final do dbt (repo `analytics-engineering`) pronta para consumo; é o que o sync materializa no Postgres.
 
 **Sync**:
-Materialização das marts do BigQuery no Postgres de serving (Supabase), por esporte e ambiente (PRD/DEV); em PRD, por **carga por troca**. O escopo pode ser reduzido por tabela e ambiente (**retenção**) — ver `docs/adr/0003`, `0005` e `0006`.
+Materialização das marts do BigQuery no Postgres de serving (Supabase), por esporte e ambiente (PRD/DEV); em PRD, por **carga por troca**. O escopo pode ser reduzido por tabela e ambiente (**retenção**), e o tamanho do DEV é acompanhado contra o **teto do DEV** — ver `docs/adr/0003` (com a emenda da DE#106), `0005` e `0006`.
 
 **Trava de sync**:
 Advisory lock de **sessão** do Postgres, um por (sport, env), que o sync toma na conexão de destino logo depois do connect (`src/sync/trava.py`, DE#107). Lock ocupado = o sync volta sem tocar em nada, o handler responde 409 e o workflow trata como "em andamento" (WARNING, fora de `failed_services`). É a serialização de verdade: o `max-instances=1` do Cloud Run não serializa (`containerConcurrency=80`). Vale só no Shared Pooler em modo sessão (5432); a porta 6543 é recusada. O **detector de sync concorrente** (`scripts/detecta_sync_concorrente.py`, somente leitura) confere a sobreposição de syncs do mesmo alvo nos logs (sai 0 verde, 1 vermelho, 2 sem dado: janela sem nenhum sync real não é verde).
@@ -175,8 +175,12 @@ O Postgres de PRD enquanto camada que serve o app: guarda o que o app renderiza,
 _Avoid_: espelho (promete o histórico inteiro, que é o que deixa de valer nas odds)
 
 **Retenção**:
-Recorte temporal de linhas que o sync aplica ao materializar uma tabela no Postgres. Tem duas famílias: **retenção de coleta** (contada pelo momento da captura) e **retenção de produto** (contada pelo kickoff da fixture, ou pela temporada corrente onde a tabela é por temporada).
-_Avoid_: purge, limpeza (a retenção é aplicada na carga, não depois dela); janela (janela é banda de kickoff da coleta)
+Recorte temporal de linhas que o sync aplica ao materializar uma tabela no Postgres. Tem duas famílias: **retenção de coleta** (contada pelo momento da captura) e **retenção de produto** (contada pelo kickoff da fixture, ou pela temporada corrente onde a tabela é por temporada). Cada família tem a sua constante, em `src/sync/retencao.py`, e mudar uma não mexe na outra. Hoje só vale em DEV (a #109 a estende a PRD nas odds, ADR 0006); em DEV o corte roda no BigQuery, por query job, e não depois de ler a tabela inteira.
+_Avoid_: purge, limpeza (a retenção é aplicada na carga, não depois dela); janela (janela é banda de kickoff da coleta); "retenção de DEV" como verbete à parte (é só esta, em DEV)
+
+**Teto do DEV**:
+Os 500 MB do plano free do projeto Supabase de DEV, medidos como a soma de `pg_database_size` de todos os bancos do cluster. Acima dele o projeto entra em somente leitura e o passe DEV do sync para de gravar. O sync mede o tamanho ao fim do passe DEV e o resumo diário alerta acima de 450 MB (`[DEV]` no assunto); dia sem leitura é seção degradada, não alerta nem silêncio. É o que protege o DEV de verdade: a limpeza do `cron.job_run_details` (job 12) nunca foi rede de segurança da retenção.
+_Avoid_: guarda (guarda é teste dbt, ver **Guarda**; este é um alerta do resumo diário)
 
 **Mercado servido**:
 Mercado de odds que o Postgres guarda porque o app o lê (por RPC ou por decisão do dono do app). Só mercados servidos entram na tabela de odds do Postgres, em PRD e em DEV; os demais ficam no BigQuery. A lista vigente mora na spec da #109.

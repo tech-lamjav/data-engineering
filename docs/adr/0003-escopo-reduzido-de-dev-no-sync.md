@@ -1,7 +1,7 @@
 # DEV deixa de ser espelho de escopo completo em 5 tabelas de alto crescimento
 
-**Status:** accepted (2026-09-09) — a cláusula "PRD nunca usa este filtro" será revogada para `fact_odds_snapshot` pela [ADR 0006](0006-prd-cache-de-serving-para-odds.md) (2026-09-29); para DEV, segue valendo; a regra de `int_futebol_odds_devig` deixa de valer quando a tabela sai do sync
-**Issue:** [DE #75](https://github.com/tech-lamjav/data-engineering/issues/75) (fatias [DE #76](https://github.com/tech-lamjav/data-engineering/issues/76), [DE #77](https://github.com/tech-lamjav/data-engineering/issues/77))
+**Status:** accepted (2026-09-09) — números e papel da limpeza revistos em 2026-10-01, ver "Emenda (DE#106, 2026-10-01)"; a cláusula "PRD nunca usa este filtro" será revogada para `fact_odds_snapshot` pela [ADR 0006](0006-prd-cache-de-serving-para-odds.md) (2026-09-29); para DEV, segue valendo; a regra de `int_futebol_odds_devig` deixou de valer quando a tabela saiu do sync (DE#112, fatia 0)
+**Issue:** [DE #75](https://github.com/tech-lamjav/data-engineering/issues/75) (fatias [DE #76](https://github.com/tech-lamjav/data-engineering/issues/76), [DE #77](https://github.com/tech-lamjav/data-engineering/issues/77)) · emenda: [DE #106](https://github.com/tech-lamjav/data-engineering/issues/106)
 
 ## Contexto
 
@@ -48,3 +48,66 @@ filtro do sync seja desabilitado, mal configurado, ou surja um padrão de cresci
 - Fora de escopo, por decisão explícita: mexer no escopo de PRD (mesma curva de crescimento sem
   teto, decisão de 08/09/2026 de não tocar produção), revisar os números de retenção em si, e
   estender o mecanismo com números reais de NBA.
+
+## Emenda (DE#106, 2026-10-01) — os números e a "rede de segurança" foram reabertos
+
+Medido em 28/09/2026, o DEV voltou a 654–669 MB em repouso (picos de 810 MB), acima do teto de
+500 MB do free tier. A decisão acima **continua valendo** (retenção só em DEV, aplicada na carga),
+mas dois pontos dela não: os números e o papel da limpeza do cron. O corpo original acima não foi
+reescrito; o que mudou está aqui.
+
+**1. A limpeza do job 12 nunca foi rede de segurança.** O texto acima diz que o `purge-old-snapshots`
+"continua rodando como rede de segurança caso o filtro do sync seja desabilitado". Não era: o sync faz
+TRUNCATE + COPY, então o espaço volta a cada recarga e os `DELETE` de futebol do job repetiam cortes
+que o sync já aplica (não liberavam nada). E, se a retenção do sync sumisse, o sync recopiaria tudo a
+cada mudança no BigQuery e o job apagaria de novo, num ciclo. O job 12 mantém o número, o nome e o
+horário (04:00 UTC) mas passa a limpar **só** o `cron.job_run_details` (SQL versionado em
+`scripts/sql/job12_purge_so_job_run_details.sql`, aplicado à mão no DEV). A proteção real passa a
+ser a **guarda de tamanho do resumo diário**: o sync mede o DEV ao fim do passe DEV (soma de
+`pg_database_size` de todos os bancos, a métrica do teto) e o resumo alerta acima de 450 MB, com `[DEV]`
+no assunto. Dia sem leitura é seção degradada, nunca silêncio.
+
+**2. Os números, e a entrada de sete tabelas de produto.** A causa do excesso eram tabelas de produto sem
+regra nenhuma, que chegavam 100% ao DEV. Duas famílias de retenção (verbete **Retenção** do
+`CONTEXT.md`), cada uma com a sua constante em `src/sync/retencao.py`:
+
+| tabela | família | corte |
+|---|---|---|
+| `fact_odds_snapshot` | coleta | `collection_timestamp` ≥ agora − **7** dias (era 14) |
+| `fact_injuries_snapshot` | coleta | `snapshot_date` ≥ hoje − **7** dias (era 14) |
+| `fact_insumos_medidos` | produto | `fixture_id` ∈ fixtures com kickoff de **−30 a +14** dias |
+| `int_futebol_premissas_{1x2,ou,ah,btts,dc}` | produto | idem |
+| `fact_value_opportunities_hist` | produto | idem (todas as versões de uma fixture elegível ficam juntas) |
+| `fact_fixture_player_stats`, `fact_fixture_lineups_players` | temporada | inalterado: temporada corrente |
+
+O corte para frente existe de fato: medido em 28/09, 75% do que sobraria de valor medido com um corte
+só para trás eram fixtures a mais de 14 dias. Os 14 dias de coleta caíram para 7 porque a maior tabela
+do DEV, `fact_odds_snapshot` (159 MB), dita o pico do sync. As duas tabelas por temporada **não** mudaram
+de regra: não são parte do problema.
+
+**3. A regra do de-vig deixou de valer.** `int_futebol_odds_devig` saiu do sync nos dois ambientes
+(DE#112, fatia 0): não entra mais na retenção, e a cópia que ficou no Postgres fica congelada até o
+`DROP` (DDL do app, ticket à parte). A entrada dela em `SYNC_DEV_RETENTION_RULES` (`src/config.py`)
+ficou **morta e intocada**; ver abaixo.
+
+**4. O filtro roda no BigQuery.** Antes, a retenção filtrava em Python depois de `list_rows` ler a
+tabela inteira (4,16 mi de linhas lidas para gravar 698 mil, em odds). Agora a tabela com regra, em
+DEV, é lida por query job parametrizado (`src/sync/filtro_bq.py`, reutilizável: a #109 o compõe para
+PRD). Isso custa bytes faturados (teto por job = 2× o tamanho lógico da tabela; `fact_odds_snapshot` é
+particionada por `collection_date` e o corte de 7 dias poda partições: ~62 MB lidos de ~720 MB) e **exige
+`bigquery.jobs.create` na conta de runtime do sync**, que não tem. Sem a permissão o passe DEV aborta com
+403, antes do TRUNCATE, como a falha de IAM já abortava: a retenção nunca degrada em silêncio para
+"sem filtro". PRD e tabela sem regra seguem por `list_rows`, byte-idênticos.
+
+**Onde moram as regras (e por quê).** As cinco regras de 09/09, a constante de 14 dias e
+`get_dev_retention_rule` **ficam em `src/config.py`, intocados**. O `config.py` entra no carimbo de
+procedência dos 29 serviços (ADR 0001): editá-lo, nem que seja um comentário, deixaria a frota inteira
+em deriva até um redeploy completo. O resolvedor novo (`resolve_regra_retencao`) vive em `src/sync/`,
+que só o serviço de sync declara; ele devolve as regras de produto, sobrepõe os 14 dias de coleta pelo
+número novo (7) e delega o resto ao `config.py`. Limpar o `config.py` (a regra morta do de-vig, o 14)
+fica para uma mudança que já exija o redeploy da frota.
+
+**O que NÃO mudou.** PRD segue recebendo 100% das linhas **nesta fatia** (a ADR 0006 revoga isso para as
+odds, na #109, reaproveitando o filtro acima). Tabelas pequenas (fixtures, events, standings, h2h, board)
+continuam sem corte. A faixa −30/+14 e os 7 dias são os números decididos em 28/09 e **não** foram
+validados contra uso real do staging: o Victor foi avisado e pode pedir mais.
