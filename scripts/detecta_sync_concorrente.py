@@ -16,9 +16,10 @@ QUANDO RODAR
 VARIÁVEIS
   DETECTA_DESDE / DETECTA_ATE  janela em RFC 3339 UTC (default: as últimas 72 h).
 
-CÓDIGO DE SAÍDA  0 = verde (nenhum par de syncs sobrepostos); 1 = vermelho; 2 = erro de
-leitura (gcloud sem credencial, janela inválida). Ver src/monitoring/sync_concorrente.py
-para as regras e os limites.
+CÓDIGO DE SAÍDA  0 = verde (houve sync na janela e nenhum par se sobrepôs); 1 = vermelho;
+2 = sem dado (janela sem nenhum sync real: não é verde) ou erro de leitura (gcloud sem
+credencial, janela inválida). Ver src/monitoring/sync_concorrente.py para as regras e os
+limites.
 """
 import os
 import subprocess

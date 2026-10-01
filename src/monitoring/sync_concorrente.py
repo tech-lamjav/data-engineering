@@ -259,7 +259,12 @@ def _hms(d: datetime) -> str:
 
 
 def monta_relatorio(resultado: ResultadoLogs, execs: list | None = None) -> tuple:
-    """(texto, codigo): 0 verde, 1 vermelho. Vermelho = dois syncs reais do mesmo alvo."""
+    """(texto, codigo): 0 verde, 1 vermelho, 2 sem dado.
+
+    Vermelho = dois syncs reais do mesmo alvo. Sem dado = nenhum sync real na janela (janela
+    errada, filtro de log que parou de casar, serviço fora do ar): "nenhum concorrente" seria
+    vacuamente verdadeiro, então não é verde.
+    """
     syncs = resultado.syncs
     concorrentes = acha_concorrentes(syncs)
     envolvidos = {id(x) for p in concorrentes for x in p}
@@ -293,6 +298,12 @@ def monta_relatorio(resultado: ResultadoLogs, execs: list | None = None) -> tupl
     if concorrentes:
         linhas.append(f"VERMELHO: {len(concorrentes)} par(es) de syncs concorrentes")
         return "\n".join(linhas), 1
+    if not syncs:
+        linhas.append(
+            "SEM DADO: nenhum sync real na janela (confira a janela, o filtro de log e se o "
+            "serviço rodou); isto NÃO é verde"
+        )
+        return "\n".join(linhas), 2
     linhas.append("VERDE: nenhum sync concorrente")
     return "\n".join(linhas), 0
 

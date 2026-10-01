@@ -77,6 +77,26 @@ def test_um_sync_normal_e_verde():
     assert codigo == 0 and "VERDE" in texto
 
 
+def test_janela_sem_nenhum_sync_nao_e_verde_e_sai_com_2():
+    # Janela errada, filtro de log que parou de casar ou serviço fora do ar: "nenhum sync
+    # concorrente" seria vacuamente verdadeiro e satisfaria o critério 4 sem prova alguma.
+    r = det.extrai_syncs([])
+
+    texto, codigo = det.monta_relatorio(r)
+
+    assert codigo == 2
+    assert "SEM DADO" in texto and "VERDE" not in texto
+
+
+def test_janela_so_com_409_tambem_e_sem_dado():
+    # O 409 é a trava trabalhando; sem nenhum sync real na janela, não há o que provar.
+    r = det.extrai_syncs([req(1805, 0.3, status=409), inicio(1805)])
+
+    texto, codigo = det.monta_relatorio(r)
+
+    assert codigo == 2 and "SEM DADO" in texto and "barradas pela trava (409)=1" in texto
+
+
 def test_prd_e_dev_em_sequencia_ou_ao_mesmo_tempo_nao_sao_concorrentes():
     entradas = [
         req(0, 100, env="prd"), inicio(0, env="prd"), fim(100, env="prd"),
