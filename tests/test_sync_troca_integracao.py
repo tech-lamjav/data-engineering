@@ -325,35 +325,44 @@ def test_tentativa_com_leitor_longo_falha_pelo_teto_e_a_seguinte_conclui(banco):
 
 
 def test_leitor_que_chega_durante_a_espera_fica_bloqueado_no_maximo_o_teto(banco):
+    """Linha do tempo: a sombra é commitada; a 1ª tentativa de RENAME entra na fila atrás do
+    leitor longo (`segurando`); um leitor NOVO chega e fica na fila atrás do RENAME pendente; o
+    RENAME estoura o teto e desiste; o leitor novo segue contra a tabela ANTIGA."""
     _cria_jogos()
     segurando = psycopg.connect(URL)
     segurando.execute(f"SELECT count(*) FROM {S}.jogos")
     medido = {}
-    chegou = threading.Event()
-
-    def pausa(_):
-        segurando.rollback()
 
     def novo_leitor():
-        chegou.wait(timeout=30)
-        time.sleep(0.1)  # o RENAME já está na fila atrás do leitor longo
+        time.sleep(0.3)  # o RENAME já está na fila atrás do leitor longo (teto 800 ms)
         with psycopg.connect(URL, autocommit=True) as c:
             inicio = time.monotonic()
-            c.execute(f"SELECT count(*) FROM {S}.jogos").fetchone()
+            medido["linhas"] = c.execute(f"SELECT count(*) FROM {S}.jogos").fetchone()[0]
             medido["espera"] = time.monotonic() - inicio
 
-    t = threading.Thread(target=novo_leitor)
-    t.start()
+    threads = []
+
+    def copiar_e_dispara_o_leitor(cur, alvo):
+        n = _copiar([(7, "novo", 3.0)])(cur, alvo)
+        # a carga termina e logo vem o RENAME: o leitor é lançado agora, para chegar DURANTE ele
+        t = threading.Thread(target=novo_leitor)
+        t.start()
+        threads.append(t)
+        return n
+
+    def pausa(_):
+        segurando.rollback()  # o leitor longo só termina depois da 1ª tentativa ter falhado
+
     ctx = _ctx(teto_espera_ms=800, tentativas=2, pausa=pausa)
-    chegou.set()
     with psycopg.connect(URL) as conn:
-        troca.carrega_por_troca(
-            conn, S, "jogos", ctx, copiar=_copiar([(7, "novo", 3.0)]), atualiza_estado=_estado
+        r = troca.carrega_por_troca(
+            conn, S, "jogos", ctx, copiar=copiar_e_dispara_o_leitor, atualiza_estado=_estado
         )
-    t.join(timeout=30)
+    threads[0].join(timeout=30)
     segurando.close()
-    # fila atrás do RENAME pendente: no máximo o teto (800 ms) + folga, nunca a carga inteira
-    assert medido["espera"] < 0.8 + 1.5
+    assert r["tentativas"] == 2  # a 1ª tentativa estourou o teto: o RENAME esteve mesmo na fila
+    assert medido["linhas"] == 2  # o leitor que esperou viu a tabela ANTIGA
+    assert 0.2 < medido["espera"] < 0.8 + 1.5  # esperou atrás do RENAME, mas no máximo o teto
 
 
 def test_esgotar_as_tentativas_levanta_remove_a_sombra_e_deixa_a_vigente_intacta(banco):
