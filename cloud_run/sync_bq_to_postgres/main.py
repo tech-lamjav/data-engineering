@@ -58,6 +58,9 @@ def sync_bq_to_postgres(request):
             "env": result["env"],
             "summary": result.get("summary", {}),
             "synced": result["synced"],
+            # DE#106: tamanho do DEV em MiB, medido ao fim do passe DEV. Aditivo: o workflow
+            # o lê com map.get (chave ausente não quebra); nulo em PRD ou se a medição falhou.
+            "dev_size_mb": result.get("dev_size_mb"),
         }, 200
     except Exception as e:
         # Não ecoar str(e) ao chamador (pode vazar DSN/host/schema do Postgres).

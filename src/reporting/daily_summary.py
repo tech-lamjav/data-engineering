@@ -36,6 +36,7 @@ from src.reporting.api_quota import build_quota_section, collect_quota, collect_
 from src.reporting.guardas import build_guardas_section
 from src.reporting.procedencia import build_procedencia_section, collect_procedencia
 from src.reporting.suite_dbt import SuiteRun, build_suite_section, collect_suite
+from src.reporting.tamanho_dev import DevSizeInfo, build_dev_size_section, collect_dev_size
 from src.reporting.formatting import SAO_PAULO, cell as _cell, fmt_brt as _fmt_brt
 from src.utils.logger import setup_logger
 
@@ -100,6 +101,10 @@ class WFAgg:
     # delas representa "o dia" é collect_quota_eod, não este agregador — o mesmo desenho
     # de suite_runs.
     quota_readings: list = field(default_factory=list)
+    # DE#106: leituras (timestamp UTC, dev_size_mb) que o workflow_futebol_sync emite no
+    # log_completion (tamanho do Postgres de DEV ao fim do passe DEV). Guardadas TODAS; quem
+    # escolhe a última do dia é collect_dev_size. Chave ausente/nula = sem leitura.
+    dev_size_readings: list = field(default_factory=list)
 
 
 def compute_window(target_date: date | None = None):
@@ -185,6 +190,16 @@ def collect_from_logging(client, start_utc, end_utc, agg) -> int:
                 a.quota_readings.append((ts, int(quota_remaining)))
             except (TypeError, ValueError):
                 pass
+        # DE#106: chave ausente ou nula = esse log não mede o DEV (qualquer workflow que não o
+        # futebol-sync, ou DEV que não mediu): não é leitura, nem vermelho. Valor ilegível é
+        # ignorado aqui sem derrubar a coleta; o estado "sem leitura" é decidido em
+        # collect_dev_size.
+        dev_size_mb = payload.get("dev_size_mb")
+        if dev_size_mb is not None and ts is not None:
+            try:
+                a.dev_size_readings.append((ts, float(dev_size_mb)))
+            except (TypeError, ValueError):
+                pass
         try:
             a.saved_count += int(payload.get("saved_count") or 0)
         except (TypeError, ValueError):
@@ -246,7 +261,8 @@ def _fmt_dur(seconds: float) -> str:
 
 
 def build_html(
-    day: date, agg: dict, quota=None, procedencia=None, suite=None, quota_eod=None
+    day: date, agg: dict, quota=None, procedencia=None, suite=None, quota_eod=None,
+    dev_size: DevSizeInfo | None = None,
 ) -> tuple[str, str]:
     """Monta (subject, html) do email consolidado. Sempre renderiza (mesmo vazio).
 
@@ -256,6 +272,8 @@ def build_html(
     independente do estado de `quota` (aparece mesmo com a leitura de madrugada
     degradada ou ausente). `procedencia` (ProcedenciaInfo | None) e `suite`
     (SuiteInfo | None, o resto da suíte dbt) fazem o mesmo para as suas seções.
+    `dev_size` (DevSizeInfo | None, DE#106) acrescenta o tamanho do Postgres de DEV; com
+    `reading=None` a seção sai degradada (não medido), nunca omitida; None omite.
     """
     total_runs = sum(a.total for a in agg.values())
     total_ok = sum(a.success for a in agg.values())
@@ -288,6 +306,10 @@ def build_html(
     # suite (orfaos conhecidos) e piscar todo dia treinaria todo mundo a ignorar o e-mail.
     if suite is not None and suite.alarme:
         flags.append("[SUITE]")
+    # DE#106: DEV acima de 450 MB (teto free de 500 MB). Mesma regra do [GUARDA]: sem token
+    # no assunto o alerta seria mudo. Leitura ausente NÃO sobe: seção degradada, sem token.
+    if dev_size is not None and dev_size.alarme:
+        flags.append("[DEV]")
     subject = f"{''.join(flags) or '[OK]'} Resumo diario de workflows — {day.isoformat()}"
 
     resumo_guardas = (
@@ -376,11 +398,14 @@ def build_html(
     # Procedência depois das duas e antes da cota: deriva de imagem é a causa que desliga as
     # DUAS fases de teste (elas rodam da mesma imagem), então lê-se na sequência delas.
     procedencia_section = build_procedencia_section(procedencia)
+    # Tamanho do DEV antes da cota: é acionável quando acende (o DEV passa a recusar escrita),
+    # a cota é acompanhamento.
+    dev_size_section = build_dev_size_section(dev_size)
     quota_section = build_quota_section(quota, day, quota_eod=quota_eod)
 
     html = (
         head + table + fail_section + guardas_section + suite_section
-        + procedencia_section + quota_section + "</div>"
+        + procedencia_section + dev_size_section + quota_section + "</div>"
     )
     return subject, html
 
@@ -435,8 +460,14 @@ def run_daily_summary(target_date: date | None = None) -> dict:
     # levanta; sem execução da fase 5 no dia devolve None e a seção some.
     suite = collect_suite([r for a in agg.values() for r in a.suite_runs], start_utc, end_utc)
 
+    # DE#106: nenhuma chamada nova. As leituras vieram de graça no log_completion do
+    # workflow_futebol_sync, agregadas por collect_from_logging. Nunca levanta; sem leitura no
+    # dia devolve o estado degradado (a seção aparece em âmbar).
+    dev_size = collect_dev_size([r for a in agg.values() for r in a.dev_size_readings])
+
     subject, html = build_html(
-        day, agg, quota=quota, quota_eod=quota_eod, procedencia=procedencia, suite=suite
+        day, agg, quota=quota, quota_eod=quota_eod, procedencia=procedencia, suite=suite,
+        dev_size=dev_size,
     )
 
     if os.getenv("SUMMARY_DRY_RUN"):
@@ -462,6 +493,8 @@ def run_daily_summary(target_date: date | None = None) -> dict:
             if quota_eod is not None
             else None
         ),
+        # DE#106: estado do tamanho do DEV (aditivo; reading None quando não houve leitura).
+        "dev_size": dev_size.as_log_dict(),
         "totals": {
             "runs": sum(a.total for a in agg.values()),
             "success": sum(a.success for a in agg.values()),

@@ -18,6 +18,13 @@
 #
 # TIMEOUT: 1800 s é o máximo do http.get do Workflows. O Cloud Run aceita 3600 s e o
 # statement_timeout da sessão do sync também sobe para 3600 s (src/sync/trava.py).
+#
+# TAMANHO DO DEV (DE#106). O serviço mede o Postgres de DEV ao fim do passe DEV (soma dos
+# bancos do cluster, em MiB) e devolve `dev_size_mb` no corpo. Aqui o valor é guardado e
+# emitido no log_completion, de onde o resumo diário lê a última leitura do dia e alerta acima
+# de 450 MB. O campo é ADITIVO: nasce nulo, só é preenchido no caminho de sucesso do DEV, e é
+# lido com map.get (imagem velha, sem o campo, deixa nulo em vez de quebrar o workflow). Um
+# 409 ou uma falha no DEV deixa nulo: "não medido" no resumo, que não é "está bem".
 # ============================================================
 
 main:
@@ -28,6 +35,7 @@ main:
         - workflow_start_time: ${sys.now()}
         - workflow_status: "SUCCESS"
         - failed_services: []
+        - dev_size_mb: null
 
     - log_start:
         call: sys.log
@@ -113,6 +121,7 @@ main:
                             sport: futebol
                             env: dev
                         timeout: 1800
+                    result: sync_dev_result
                 retry:
                     predicate: ${http.default_retry_predicate}
                     max_retries: 3
@@ -120,6 +129,9 @@ main:
                         initial_delay: 5
                         max_delay: 60
                         multiplier: 2
+            - guarda_dev_size_mb:
+                assign:
+                - dev_size_mb: ${map.get(sync_dev_result.body, "dev_size_mb")}
             - log_sync_dev_success:
                 call: sys.log
                 args:
@@ -174,6 +186,7 @@ main:
                 duration_seconds: ${duration_seconds}
                 failed_services: ${failed_services}
                 failed_count: ${failed_count}
+                dev_size_mb: ${dev_size_mb}
 
     - return_result:
         return:
