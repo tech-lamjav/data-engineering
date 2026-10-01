@@ -467,7 +467,18 @@ deploy_service() {
         # entre os requests PRD e DEV na mesma instância (max-instances=1) e com
         # 1Gi houve OOM kill em 10-12/07/2026 (pico 1,1Gi; ~700k linhas no total).
         # Dois secrets (PRD e DEV); workflow bate em ?env=prd e depois ?env=dev.
-        # max-instances=1: sync é serial, evitar concorrência destrutiva.
+        # SERIALIZAÇÃO (DE#107): o que impede dois syncs do mesmo (sport, env) NÃO é o
+        # `--max-instances 1`. Ele limita a UMA instância, mas o `containerConcurrency` do
+        # Cloud Run é 80 (default), então essa mesma instância aceita várias requisições
+        # ao mesmo tempo (foi assim que o retry do workflow rodou o sync duas vezes, na
+        # mesma instância, todo dia desde 01/09). O mecanismo real é a trava no Postgres:
+        # `pg_try_advisory_lock` de sessão por (sport, env), em src/sync/trava.py; ocupada,
+        # o handler responde 409 e o workflow trata como "em andamento". O max-instances=1
+        # fica só como teto de memória/conexões (2Gi, uma instância).
+        # --timeout 3600 (era 900): o rebuild das 13h leva ~1100-1470 s. O workflow usa
+        # http.get de 1800 s (máximo do Workflows) e o statement_timeout da sessão do
+        # sync é 3600 s (SYNC_STATEMENT_TIMEOUT_S): nunca pode passar do timeout daqui.
+        # ORDEM DE DEPLOY: workflow-futebol-sync (YAML que trata 409) ANTES desta imagem.
         # Python 3.13 pinado: psycopg[binary]==3.2.3 não tem wheels pra cp314 ainda.
         gcloud run deploy "$SERVICE_NAME" \
             --source "$TEMP_DIR" \
@@ -477,7 +488,7 @@ deploy_service() {
             --service-account "$SERVICE_ACCOUNT" \
             --memory "2Gi" \
             --cpu "$CPU" \
-            --timeout "900" \
+            --timeout "3600" \
             --max-instances "1" \
             --set-env-vars "$ENV_VARS" \
             --set-build-env-vars "GOOGLE_RUNTIME_VERSION=3.13,GOOGLE_FUNCTION_TARGET=${ENTRY_POINT}" \
