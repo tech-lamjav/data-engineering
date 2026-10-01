@@ -196,6 +196,10 @@ _Avoid_: reload, recarga
 **Tabela-sombra**:
 Cópia da tabela vigente com o mesmo formato, carregada fora do caminho dos leitores e trocada por ela ao fim. O formato é do app: o sync o deriva da tabela vigente e nunca o define.
 
+**Modo de carga**:
+Como o sync materializa UMA tabela nesta execução, escolhido por tabela e ecoado em cada item do retorno: `troca`, `staged` (COPY para temporária e TRUNCATE + INSERT…SELECT numa transação curta, para tabela com dependente), `no_lugar` (o default) ou `no_lugar_fallback` (habilitada na troca, mas com dependente, com WARNING). Quem liga a troca é o workflow, tabela a tabela e por ambiente; desligar é reverter o workflow.
+_Avoid_: estratégia (o verbete é modo; a escolha é por tabela, não uma política do sync)
+
 **Gate**:
 Condição que corta etapas downstream quando não há novidade ou o passo anterior falhou (ex.: dbt só roda se algo foi salvo; sync PRD só roda se o dbt passou).
 
