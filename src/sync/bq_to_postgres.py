@@ -2,7 +2,9 @@
 
 Decisões de design (ver PLANO_OTIMIZACAO_BQ_SUPABASE.md fase 2):
 - Usa `bq.list_rows()` (API tabledata.list, gratuita) em vez de `bq.query()` para
-  evitar custo de scan recorrente.
+  evitar custo de scan recorrente. ÚNICA exceção (DE#106): em DEV, a tabela com regra de
+  retenção é lida por query job filtrado (`filtro_bq`), para o corte rodar no BigQuery em vez
+  de em Python depois de ler tudo; isso exige `bigquery.jobs.create` na SA de runtime.
 - Usa `bq.get_table().schema` para parity check (API tables.get, gratuita) em vez
   de query em INFORMATION_SCHEMA.
 - Sync serial table-by-table, dim -> fact -> derived (ver *_TABLES_ORDERED em
@@ -33,7 +35,7 @@ nativo é escalar (no futebol, dim_leagues.coverage é RECORD e os arrays de
 evidências/avisos são reconstruídos nas RPCs a partir de colunas boolean).
 """
 import select
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 import psycopg
@@ -41,10 +43,12 @@ from google.cloud import bigquery
 
 from src.config import (
     BIGQUERY_PROJECT_ID,
-    get_dev_retention_rule,
     get_pg_url,
 )
 from src.sync.alvo import resolve_alvo_sync
+from src.sync.filtro_bq import FiltroBQ, le_tabela_filtrada
+from src.sync.retencao import resolve_regra_retencao
+from src.sync.tamanho_dev import medir_tamanho_dev_mb
 from src.sync.trava import (
     STATUS_OCUPADO,
     SYNC_STATEMENT_TIMEOUT_S,
@@ -296,58 +300,105 @@ def _format_value(v):
 
 
 # ============================================================
-# Filtro de retenção de DEV (DE#75/#76/#77)
+# Retenção de DEV (DE#75/#76/#77; filtro no BigQuery desde a DE#106)
 # ============================================================
-# Predicado por linha, resolvido por (esporte, ambiente, tabela) via
-# config.get_dev_retention_rule. Roda no loop de cópia já existente, ANTES do
-# write_row — não muda list_rows(), parity check, nem skip-if-unchanged (todos
-# resolvidos antes deste ponto). PRD e tabela sem regra configurada: rule é None,
-# _row_passes_retention nunca é chamado, byte-idêntico ao comportamento anterior.
-def _row_passes_retention(row, rule: dict, eligible_fixture_ids: set | None) -> bool:
-    """True se a linha deve ir para o COPY, segundo a regra de retenção de DEV.
+# A regra é resolvida por (esporte, ambiente, tabela) em `src.sync.retencao` (e NÃO em
+# `src.config`, que deriva os 29 serviços). Desde a DE#106 o corte roda NO BIGQUERY: a tabela
+# com regra, em DEV, é lida por query job parametrizado (`src.sync.filtro_bq`) e só as linhas
+# que entram chegam ao processo; antes, `list_rows` trazia a tabela inteira e um predicado em
+# Python descartava (4,16 mi de linhas lidas para gravar 698 mil, em odds).
+# PRD e tabela sem regra: rule é None, nenhuma query job, `list_rows` byte-idêntico ao anterior.
+# O que decide continua sendo a ordem: parity check e skip-if-unchanged vêm ANTES do job.
+_TETO_BYTES_FATURADOS_MINIMO = 100 * 1024 * 1024
+_FATOR_TETO_BYTES_FATURADOS = 2
 
-    Valor NULL na coluna da regra nunca passa: ausência de data/temporada não é
-    retenção, é dado sem como avaliar a janela.
+
+def _teto_de_bytes_faturados(num_bytes) -> int:
+    """Teto do query job, proporcional ao tamanho lógico da tabela, com folga.
+
+    Uma query nunca fatura mais que a tabela inteira (só lê colunas dela); o fator 2 é folga
+    para o tamanho mudar entre a leitura dos metadados e o job, e o piso evita teto menor que o
+    mínimo de cobrança do BigQuery em tabela minúscula. Estouro = o BigQuery recusa sem cobrar.
     """
-    value = row[rule["column"]]
-    if value is None:
-        return False
+    return max(int((num_bytes or 0) * _FATOR_TETO_BYTES_FATURADOS), _TETO_BYTES_FATURADOS_MINIMO)
 
+
+def _tipo_da_coluna(campos, nome: str) -> str:
+    """Tipo BQ da coluna no schema da tabela. Coluna ausente falha ANTES do job."""
+    for campo in campos:
+        if campo.name == nome:
+            return campo.field_type.upper()
+    raise ValueError(
+        f"coluna '{nome}' da regra de retenção não existe no schema BigQuery da tabela"
+    )
+
+
+def _filtro_da_regra(rule: dict, campos, agora: datetime, eligible_fixture_ids) -> FiltroBQ:
+    """Traduz a regra de retenção no filtro do BigQuery. NULL na coluna da regra nunca passa
+    (em SQL, NULL >= x, NULL = x e NULL IN (...) não são verdadeiros): ausência de data ou
+    temporada não é retenção, é dado sem como avaliar o corte.
+
+    - timestamp_days: coluna TIMESTAMP ou DATE >= agora - `days`. BQ nunca usa fuso local, então
+      o corte sai de UTC. Com `partition_column`, soma um corte de partição com 1 dia de folga
+      (uma coluna de partição derivada em outro fuso não pode perder linha que o corte por
+      instante deixaria entrar) para o job não ler dias inteiros que a retenção descarta.
+    - season: coluna == temporada corrente configurada.
+    - fixture_window: coluna IN (fixtures elegíveis, lidas do Postgres de destino).
+    """
     kind = rule["kind"]
+    coluna = rule["column"]
+    tipo = _tipo_da_coluna(campos, coluna)
     if kind == "timestamp_days":
-        # TIMESTAMP do BQ chega tz-aware; DATE chega como datetime.date puro —
-        # datetime é subclasse de date, por isso a checagem de datetime vem primeiro.
-        # BQ nunca usa timezone local: um DATETIME naive ainda representa um instante
-        # UTC, então o "agora" naive também é derivado de UTC (nunca do relógio local
-        # do processo) para não deslocar o corte pelo fuso do Cloud Run.
-        if isinstance(value, datetime):
-            now = datetime.now(timezone.utc) if value.tzinfo else datetime.now(timezone.utc).replace(tzinfo=None)
+        corte = agora - timedelta(days=rule["days"])
+        if tipo == "DATE":
+            valor = corte.date()
+        elif tipo == "TIMESTAMP":
+            valor = corte
         else:
-            now = date.today()
-        cutoff = now - timedelta(days=rule["days"])
-        return value >= cutoff
+            raise ValueError(
+                f"retenção por tempo em coluna '{coluna}' do tipo {tipo}: só TIMESTAMP e DATE"
+            )
+        filtro = FiltroBQ.desde(coluna, valor, "corte")
+        particao = rule.get("partition_column")
+        if particao:
+            _tipo_da_coluna(campos, particao)
+            filtro = filtro.e(
+                FiltroBQ.desde(particao, corte.date() - timedelta(days=1), "corte_particao")
+            )
+        return filtro
     if kind == "season":
-        return value == rule["season"]
+        return FiltroBQ.igual(coluna, rule["season"], "temporada")
     if kind == "fixture_window":
-        return eligible_fixture_ids is not None and value in eligible_fixture_ids
+        return FiltroBQ.em_lista(coluna, eligible_fixture_ids or (), "ids")
     raise ValueError(f"kind de regra de retenção desconhecido: {kind!r}")
 
 
-def _load_eligible_fixture_ids(pg_conn, schema: str, table_name: str, days: int) -> set:
-    """Conjunto de fixture_id com kickoff dentro da janela de retenção.
+def _load_eligible_fixture_ids(
+    pg_conn, schema: str, table_name: str, days: int, days_ahead: int | None = None
+) -> set:
+    """Conjunto de fixture_id com kickoff dentro da faixa de retenção de produto.
 
-    Consulta o Postgres de DESTINO (`table_name`, ex. fact_fixtures), já sincronizado
-    nesta mesma execução — não reconsulta o BigQuery. Chamada uma única vez por
-    execução do sync (uma vez por tabela que usa a regra 'fixture_window', nunca por
-    linha); `run_sync._assert_dev_retention_order` garante que `table_name` já foi
-    sincronizada nesta run antes desta consulta rodar.
+    A faixa é [agora - days, agora + days_ahead]; sem `days_ahead`, só o corte para trás.
+    Consulta o Postgres de DESTINO (`table_name`, ex. fact_fixtures), já sincronizado nesta
+    mesma execução — não reconsulta o BigQuery. É chamada uma vez por tabela que usa a regra
+    'fixture_window' (nunca por linha), então a execução de DEV faz até 7 consultas baratas, uma
+    por tabela de produto; sem cache. `run_sync._assert_dev_retention_order` garante que
+    `table_name` já foi sincronizada nesta run antes desta consulta rodar.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    agora = datetime.now(timezone.utc)
+    inicio = agora - timedelta(days=days)
     with pg_conn.cursor() as cur:
-        cur.execute(
-            f'SELECT fixture_id FROM "{schema}"."{table_name}" WHERE kickoff_utc >= %s',
-            (cutoff,),
-        )
+        if days_ahead is None:
+            cur.execute(
+                f'SELECT fixture_id FROM "{schema}"."{table_name}" WHERE kickoff_utc >= %s',
+                (inicio,),
+            )
+        else:
+            cur.execute(
+                f'SELECT fixture_id FROM "{schema}"."{table_name}" '
+                f"WHERE kickoff_utc >= %s AND kickoff_utc <= %s",
+                (inicio, agora + timedelta(days=days_ahead)),
+            )
         return {row[0] for row in cur.fetchall()}
 
 
@@ -415,9 +466,12 @@ def _sync_one_table(
     Colunas BQ complexas (REPEATED/RECORD) são puladas — o Postgres nativo é
     escalar. O column_list do COPY usa só as escalares, casando com o DDL nativo.
 
-    env/sport resolvem o filtro de retenção de DEV (DE#75/#76/#77) via
-    config.get_dev_retention_rule(sport, env, table_name). PRD e tabela sem regra
-    configurada: rule é None e toda linha vai pro COPY, byte-idêntico ao anterior.
+    env/sport resolvem a regra de retenção de DEV (DE#75/#76/#77, DE#106) via
+    `retencao.resolve_regra_retencao(sport, env, table_name)`. Com regra (só DEV), a tabela é
+    lida por query job filtrado no BigQuery (`filtro_bq`), submetido e ESPERADO antes do
+    TRUNCATE: sem `bigquery.jobs.create` (403) ou com o teto de bytes estourado, o passe
+    levanta com a tabela de destino intacta. PRD e tabela sem regra: rule é None e toda linha
+    vai pro COPY por `list_rows`, byte-idêntico ao anterior, sem query job.
     """
     # Invariante de segurança: table_name vem SEMPRE da allowlist resolvida
     # (via resolve_tables). O assert torna explícita a segurança das f-strings de SQL.
@@ -430,11 +484,8 @@ def _sync_one_table(
     # (API tables.get, também grátis). NBA mantém o caminho rápido onde `.table` existe.
     rows_iter = bq.list_rows(table_ref)
     _iter_table = getattr(rows_iter, "table", None)
-    bq_modified = (
-        _iter_table.modified
-        if _iter_table is not None
-        else bq.get_table(table_ref).modified
-    )  # timezone-aware datetime
+    bq_table = _iter_table if _iter_table is not None else bq.get_table(table_ref)
+    bq_modified = bq_table.modified  # timezone-aware datetime
 
     last_synced = _read_last_synced(pg_conn, table_name, schema)
     if not force and last_synced is not None and bq_modified <= last_synced:
@@ -460,11 +511,26 @@ def _sync_one_table(
         )
     column_list = ", ".join(f'"{c}"' for c in columns)
 
-    rule = get_dev_retention_rule(sport, env, table_name)
-    eligible_fixture_ids = None
-    if rule is not None and rule["kind"] == "fixture_window":
-        eligible_fixture_ids = _load_eligible_fixture_ids(
-            pg_conn, schema, rule["requires"], rule["days"]
+    rule = resolve_regra_retencao(sport, env, table_name)
+    if rule is None:
+        # PRD e tabela sem regra: a tabela inteira, por tabledata.list (gratuito, sem job).
+        dados = rows_iter
+    else:
+        eligible_fixture_ids = None
+        if rule["kind"] == "fixture_window":
+            eligible_fixture_ids = _load_eligible_fixture_ids(
+                pg_conn, schema, rule["requires"], rule["days"], rule.get("days_ahead")
+            )
+        filtro = _filtro_da_regra(
+            rule, all_fields, datetime.now(timezone.utc), eligible_fixture_ids
+        )
+        # Submete e espera o job AGORA, antes do TRUNCATE: 403 de IAM ou teto de bytes
+        # estourado levantam com a tabela de destino intacta.
+        dados = le_tabela_filtrada(
+            bq, table_ref, columns, filtro,
+            maximo_bytes_faturados=_teto_de_bytes_faturados(
+                getattr(bq_table, "num_bytes", None)
+            ),
         )
 
     with pg_conn.cursor() as cur:
@@ -478,11 +544,7 @@ def _sync_one_table(
         with cur.copy(
             f'COPY "{schema}"."{table_name}" ({column_list}) FROM STDIN'
         ) as copy:
-            for row in rows_iter:
-                if rule is not None and not _row_passes_retention(
-                    row, rule, eligible_fixture_ids
-                ):
-                    continue
+            for row in dados:
                 copy.write_row([_format_value(row[c]) for c in columns])
                 row_count += 1
                 if row_count % COPY_FLUSH_EVERY_ROWS == 0:
@@ -506,10 +568,10 @@ def _sync_one_table(
 
 def _assert_dev_retention_order(sport: str, env: str, resolved: list[str]) -> None:
     """Falha explícita se uma tabela com regra 'fixture_window' for sincronizada sem
-    sua dependência ('requires') na MESMA execução (DE#77).
+    sua dependência ('requires') na MESMA execução (DE#77, DE#106 história 9).
 
-    Sem esta checagem, sincronizar só `int_futebol_odds_devig` em DEV (sem
-    `fact_fixtures` na mesma run) produziria um filtro silenciosamente vazio: a
+    Sem esta checagem, sincronizar só `fact_insumos_medidos` (ou outra tabela de produto) em
+    DEV, sem `fact_fixtures` na mesma run, produziria um filtro silenciosamente vazio: a
     consulta de fixtures elegíveis rodaria contra o Postgres com `fact_fixtures`
     desatualizada (ou ausente), sem nenhum aviso. Só importa em DEV — em PRD nenhuma
     regra é aplicada.
@@ -517,7 +579,7 @@ def _assert_dev_retention_order(sport: str, env: str, resolved: list[str]) -> No
     if (env or "").lower() != "dev":
         return
     for table in resolved:
-        rule = get_dev_retention_rule(sport, env, table)
+        rule = resolve_regra_retencao(sport, env, table)
         if rule is None:
             continue
         requires = rule.get("requires")
@@ -550,7 +612,9 @@ def run_sync(
                allowlist (menos as exclusões) via alvo.resolve_alvo_sync().
 
     Returns:
-        {status, sport, env, synced: [...], drift: [...]}
+        {status, sport, env, synced: [...], drift: [...], summary, dev_size_mb}
+        (`dev_size_mb`: soma dos bancos do cluster em MiB, medida ao fim do passe DEV
+        bem-sucedido; None em PRD e quando a medição falha — DE#106.)
         Em caso de drift detectada no pre-flight, NÃO faz TRUNCATE em nenhuma
         tabela; retorna status='aborted_schema_drift' com o detalhe.
         Se já há outro sync do mesmo (sport, env) com a trava (DE#107), não toca em nada
@@ -630,6 +694,13 @@ def run_sync(
             f"sincronizada(s), {n_skipped} pulada(s) por BQ inalterado"
         )
 
+        # Tamanho do DEV (DE#106): medido AQUI, depois de todas as tabelas carregadas e com a
+        # conexão ainda aberta, para não confundir o pico de uma recarga com o tamanho de
+        # repouso. Só em DEV; nunca derruba o sync (falha vira None).
+        dev_size_mb = (
+            medir_tamanho_dev_mb(pg_conn) if (env or "").lower() == "dev" else None
+        )
+
         return {
             "status": "success",
             "sport": sport,
@@ -637,6 +708,7 @@ def run_sync(
             "synced": synced,
             "drift": [],
             "summary": {"synced": n_synced, "skipped": n_skipped},
+            "dev_size_mb": dev_size_mb,
         }
 
     except Exception:

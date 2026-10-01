@@ -58,7 +58,7 @@ with conn.cursor() as cur:
 conn.commit()
 if a.prefer_flush: psycopg._copy.PREFER_FLUSH = True
 print("PREFER_FLUSH =", psycopg._copy.PREFER_FLUSH, flush=True)
-mod.get_dev_retention_rule = lambda *a_, **k: None
+mod.resolve_regra_retencao = lambda *a_, **k: None
 print(f"baseline RSS {rss()['VmRSS']:.0f} MiB", flush=True)
 for r in range(a.runs):
     t = time.monotonic()
