@@ -373,6 +373,28 @@ def _filtro_da_regra(rule: dict, campos, agora: datetime, eligible_fixture_ids) 
     raise ValueError(f"kind de regra de retenção desconhecido: {kind!r}")
 
 
+def _verifica_query_job(bq: bigquery.Client) -> None:
+    """Pré-voo de IAM: prova `bigquery.jobs.create` com um dry-run, ANTES de qualquer TRUNCATE.
+
+    A retenção de DEV lê por query job, que exige essa permissão na conta de runtime (o
+    `list_rows` não exigia, e `extractscripts@` não a tem). Sem o pré-voo, a falta dela só
+    apareceria na primeira tabela com regra, depois de as anteriores já terem sido esvaziadas e
+    recarregadas, e o workflow ainda repetiria a chamada em 5xx. Aqui o 403 aborta o sync INTEIRO
+    com a mesma forma do aborto do parity check (nada tocado). Dry-run também exige a permissão e
+    não custa nada.
+    """
+    try:
+        bq.query("SELECT 1", job_config=bigquery.QueryJobConfig(dry_run=True))
+    except Exception as e:
+        logger.error(
+            f"Sync de DEV abortado ANTES de qualquer TRUNCATE: a conta de runtime não consegue "
+            f"criar query jobs no BigQuery ({type(e).__name__}: {e}). A retenção de DEV (DE#106) "
+            f"lê por query job e exige `bigquery.jobs.create` (ex.: roles/bigquery.jobUser) na "
+            f"conta de runtime do sync."
+        )
+        raise
+
+
 def _load_eligible_fixture_ids(
     pg_conn, schema: str, table_name: str, days: int, days_ahead: int | None = None
 ) -> set:
@@ -676,6 +698,11 @@ def run_sync(
                 "drift": drifts,
                 "synced": [],
             }
+
+        # Retenção de DEV lê por query job: provar a permissão agora, antes de qualquer carga.
+        # Só em DEV e só se alguma tabela da execução tem regra (PRD e NBA nunca precisam).
+        if any(resolve_regra_retencao(sport, env, t) is not None for t in resolved):
+            _verifica_query_job(bq)
 
         _ensure_sync_state_table(pg_conn, schema)
 

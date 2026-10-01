@@ -444,7 +444,7 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
   ex-views viraram table). **Exceção, só DEV (DE#106):** tabela com regra de retenção é lida por
   **query job parametrizado** (`src/sync/filtro_bq.py`), para o corte rodar no BigQuery e o DEV não
   ler o que vai descartar. Isso custa bytes faturados (teto por job = 2× o tamanho da tabela) e exige
-  `bigquery.jobs.create` na SA runtime; sem a permissão o passe DEV aborta com 403, antes do TRUNCATE.
+  `bigquery.jobs.create` na SA runtime; sem a permissão o passe DEV aborta com 403 num pré-voo (dry-run), antes de qualquer TRUNCATE.
 - **Escrita:** por tabela, **TRUNCATE + COPY tipado** (psycopg3) numa única transação. COPY tipado
   preserva `None`→NULL vs `''`→string vazia.
 - **Colunas complexas:** `_is_complex_field` pula campos BQ REPEATED/RECORD (o Postgres nativo é

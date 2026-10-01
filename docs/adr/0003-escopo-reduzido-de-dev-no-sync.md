@@ -63,7 +63,7 @@ que o sync já aplica (não liberavam nada). E, se a retenção do sync sumisse,
 cada mudança no BigQuery e o job apagaria de novo, num ciclo. O job 12 mantém o número, o nome e o
 horário (04:00 UTC) mas passa a limpar **só** o `cron.job_run_details` (SQL versionado em
 `scripts/sql/job12_purge_so_job_run_details.sql`, aplicado à mão no DEV). A proteção real passa a
-ser a **guarda de tamanho do resumo diário**: o sync mede o DEV ao fim do passe DEV (soma de
+ser o **alerta de tamanho do resumo diário** (verbete **Teto do DEV**): o sync mede o DEV ao fim do passe DEV (soma de
 `pg_database_size` de todos os bancos, a métrica do teto) e o resumo alerta acima de 450 MB, com `[DEV]`
 no assunto. Dia sem leitura é seção degradada, nunca silêncio.
 
@@ -96,7 +96,7 @@ DEV, é lida por query job parametrizado (`src/sync/filtro_bq.py`, reutilizável
 PRD). Isso custa bytes faturados (teto por job = 2× o tamanho lógico da tabela; `fact_odds_snapshot` é
 particionada por `collection_date` e o corte de 7 dias poda partições: ~62 MB lidos de ~720 MB) e **exige
 `bigquery.jobs.create` na conta de runtime do sync**, que não tem. Sem a permissão o passe DEV aborta com
-403, antes do TRUNCATE, como a falha de IAM já abortava: a retenção nunca degrada em silêncio para
+403, num pré-voo (dry-run) antes de qualquer TRUNCATE, como a falha de IAM já abortava: a retenção nunca degrada em silêncio para
 "sem filtro". PRD e tabela sem regra seguem por `list_rows`, byte-idênticos.
 
 **Onde moram as regras (e por quê).** As cinco regras de 09/09, a constante de 14 dias e

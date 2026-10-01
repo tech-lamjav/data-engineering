@@ -115,7 +115,8 @@ def run(monkeypatch):
     ordem: list[str] = []
 
     class _Bq:
-        pass
+        def query(self, sql, job_config=None):  # pré-voo de IAM do query job (dry-run)
+            ordem.append("preflight")
 
     def _sync_one(bq, pg_conn, table, *a, **kw):
         ordem.append(f"tabela:{table}")

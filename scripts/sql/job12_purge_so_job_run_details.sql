@@ -7,7 +7,7 @@
 -- que o próprio sync já aplica (TRUNCATE + COPY com a retenção de DEV, ADR 0003), então a limpeza
 -- não liberava nada. E ela nunca foi rede de segurança: se a retenção do sync sumisse, o sync
 -- recopiaria tudo a cada mudança no BigQuery e o job apagaria de novo, num ciclo. A proteção real
--- do DEV passa a ser a guarda de tamanho do resumo diário (alerta acima de 450 MB). Ver a emenda
+-- do DEV passa a ser o alerta de tamanho do resumo diário (acima de 450 MB; ver o verbete Teto do DEV). Ver a emenda
 -- da ADR 0003 e o verbete **Retenção** do CONTEXT.md.
 --
 -- A parte útil do job é a última linha (o `cron.job_run_details` cresce sem teto, ~16 MB de lixo
