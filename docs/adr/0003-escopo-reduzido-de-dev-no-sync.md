@@ -110,4 +110,5 @@ fica para uma mudança que já exija o redeploy da frota.
 **O que NÃO mudou.** PRD segue recebendo 100% das linhas **nesta fatia** (a ADR 0006 revoga isso para as
 odds, na #109, reaproveitando o filtro acima). Tabelas pequenas (fixtures, events, standings, h2h, board)
 continuam sem corte. A faixa −30/+14 e os 7 dias são os números decididos em 28/09 e **não** foram
-validados contra uso real do staging: o Victor foi avisado e pode pedir mais.
+validados contra uso real do staging: o Victor será avisado no deploy, por uma issue no
+prop-play-predictor (passo humano do runbook do PR #116), e poderá pedir mais.
