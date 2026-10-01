@@ -430,14 +430,14 @@ precisam de `storage.admin`/`logging.logWriter`/`artifactregistry.writer` (ver `
 ### 5.8 Sync BigQuery → Supabase Postgres
 
 `src/sync/bq_to_postgres.py` (+ serviço `sync-bq-to-postgres`) materializa as marts no Postgres que o
-app consome. **Sport-aware** (`?sport=nba|futebol`, default `nba`): `get_sync_target(sport)` resolve o
-trio (dataset BQ, schema Postgres, allowlist ordenada). Desde 2026-06 cobre **NBA e futebol** — o
+app consome. **Sport-aware** (`?sport=nba|futebol`, default `nba`): `resolve_alvo_sync(sport)` (`src/sync/alvo.py`) resolve o
+trio (dataset BQ, schema Postgres, allowlist ordenada menos as exclusões). Desde 2026-06 cobre **NBA e futebol** — o
 futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron) pro mesmo sync.
 
 | sport | dataset BQ | schema PG | allowlist | agendamento |
 |---|---|---|---|---|
 | `nba` | `nba` | `nba_mart` | `MART_TABLES_ORDERED` (15) | `workflow-data-engineering` (fase 3) |
-| `futebol` | `futebol` | `futebol` | `FUTEBOL_SYNC_TABLES_ORDERED` (21) | `workflow-futebol-sync` + scheduler horário |
+| `futebol` | `futebol` | `futebol` | `FUTEBOL_SYNC_TABLES_ORDERED` (23, **22 copiadas**: `int_futebol_odds_devig` é excluída em `alvo.SYNC_EXCLUSOES`) | `workflow-futebol-sync` + scheduler horário |
 
 - **Leitura sem custo de scan:** `bq.list_rows()` (grátis), não `query()`. ⚠️ `list_rows` **não lê
   view** — todo modelo sincronizado precisa ser `table` no BQ (no futebol, 5 ex-views viraram table).
@@ -445,7 +445,10 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
   preserva `None`→NULL vs `''`→string vazia.
 - **Colunas complexas:** `_is_complex_field` pula campos BQ REPEATED/RECORD (o Postgres nativo é
   escalar) — ex.: futebol `dim_leagues.coverage`, `evidencias`/`avisos`; as RPCs reconstroem.
-- **Tabelas:** allowlist por esporte (`config.py`), na ordem **dim → fact → derivada**.
+- **Tabelas:** allowlist por esporte (`config.py`), na ordem **dim → fact → derivada**, menos as
+  exclusões de `src/sync/alvo.py`. O sync, o detector de atraso e o gerador do contrato de
+  serving consomem o **mesmo** resolvedor (`resolve_alvo_sync`); ler `get_sync_target` direto
+  reabre a divergência e é barrado por `tests/test_sync_alvo.py`.
 - **skip-if-unchanged:** `<schema>._sync_state` guarda o `bq_modified` da última sync; pula a tabela
   se nada mudou (`force=true` ignora).
 - **Parity check pré-flight:** compara colunas/tipos BQ↔PG **antes** de qualquer TRUNCATE; se houver

@@ -162,6 +162,10 @@ Tabela final do dbt (repo `analytics-engineering`) pronta para consumo; é o que
 **Sync**:
 Materialização das marts do BigQuery no Postgres de serving (Supabase), por esporte e ambiente (PRD/DEV); em PRD, por **carga por troca**. O escopo pode ser reduzido por tabela e ambiente (**retenção**) — ver `docs/adr/0003`, `0005` e `0006`.
 
+**Alvo do sync**:
+O que o sync de fato copia por esporte: a allowlist de `config.py` menos as exclusões de `src/sync/alvo.py`. Sync, detector de atraso e gerador do contrato de serving leem o alvo pelo mesmo resolvedor; ler a allowlist crua faria o detector alarmar por atraso numa tabela que o sync parou de copiar. Hoje exclui `int_futebol_odds_devig` (sem leitor; a cópia no Postgres fica congelada até o `DROP`, DDL do app).
+_Avoid_: allowlist (é só a metade do alvo)
+
 **Cache de serving**:
 O Postgres de PRD enquanto camada que serve o app: guarda o que o app renderiza, não o histórico completo. A fonte de verdade é o BigQuery; perder uma linha do Postgres é um recorte, não uma perda de dado. Hoje só vale para as odds.
 _Avoid_: espelho (promete o histórico inteiro, que é o que deixa de valer nas odds)

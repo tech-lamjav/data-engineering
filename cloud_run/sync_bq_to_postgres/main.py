@@ -22,7 +22,7 @@ def sync_bq_to_postgres(request):
     Query params:
         env:    'prd' (default) ou 'dev'. Seleciona qual Supabase project.
         sport:  'nba' (default) ou 'futebol'. Resolve dataset BQ + schema
-                Postgres + allowlist (config.get_sync_target).
+                Postgres + allowlist (sync.alvo.resolve_alvo_sync).
         tables: 'all' (default) ou CSV de nomes, ex:
                 ?sport=futebol&tables=fact_value_opportunities,fact_fixtures
     """

@@ -19,7 +19,7 @@ Por isso: sem carimbo de data, tudo ordenado.
 """
 import re
 
-from src.config import get_sync_target
+from src.sync.alvo import resolve_alvo_sync
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -143,7 +143,7 @@ def renderiza(mapa: dict) -> str:
 
 def gera(pg_conn=None) -> str:
     """Gera o markdown. Abre a conexão de leitura ao PRD se não vier uma pronta."""
-    dataset, schema, tabelas = get_sync_target("futebol")
+    dataset, schema, tabelas = resolve_alvo_sync("futebol")
     if pg_conn is not None:
         return renderiza(coleta_mapa(pg_conn, schema, tabelas))
 

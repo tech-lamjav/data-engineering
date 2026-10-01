@@ -20,7 +20,8 @@ Decisões de design (ver PLANO_OTIMIZACAO_BQ_SUPABASE.md fase 2):
   (incidente Supavisor 05-06/07 prendia o connect ~381s); retry fica no workflow.
 
 Multi-esporte: o engine é sport-agnostic. `run_sync(sport=...)` resolve via
-`config.get_sync_target()` o trio (dataset BQ, schema Postgres, allowlist ordenada).
+`alvo.resolve_alvo_sync()` o trio (dataset BQ, schema Postgres, allowlist ordenada menos
+as exclusões — ex.: `int_futebol_odds_devig` saiu do sync, DE#112).
 'nba' -> dataset `nba` / schema `nba_mart`; 'futebol' -> dataset `futebol` /
 schema `futebol`. Colunas BQ complexas (REPEATED/RECORD) são puladas: o Postgres
 nativo é escalar (no futebol, dim_leagues.coverage é RECORD e os arrays de
@@ -37,8 +38,8 @@ from src.config import (
     BIGQUERY_PROJECT_ID,
     get_dev_retention_rule,
     get_pg_url,
-    get_sync_target,
 )
+from src.sync.alvo import resolve_alvo_sync
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -533,14 +534,14 @@ def run_sync(
         force: True ignora o skip-if-unchanged e força full-resync de todas as
                tabelas resolvidas (recupera de drift no Postgres feito fora do sync).
         sport: 'nba' (default) ou 'futebol'. Resolve dataset BQ + schema Postgres +
-               allowlist via config.get_sync_target().
+               allowlist (menos as exclusões) via alvo.resolve_alvo_sync().
 
     Returns:
         {status, sport, env, synced: [...], drift: [...]}
         Em caso de drift detectada no pre-flight, NÃO faz TRUNCATE em nenhuma
         tabela; retorna status='aborted_schema_drift' com o detalhe.
     """
-    dataset, schema, tables_ordered = get_sync_target(sport)
+    dataset, schema, tables_ordered = resolve_alvo_sync(sport)
     pg_url = get_pg_url(env)
     resolved = resolve_tables(tables, tables_ordered)
     _assert_dev_retention_order(sport, env, resolved)

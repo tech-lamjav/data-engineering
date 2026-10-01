@@ -38,8 +38,8 @@ from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from html import escape
 
-from src.config import get_sync_target
 from src.reporting.formatting import MUTED, RED, cell as _cell
+from src.sync.alvo import resolve_alvo_sync
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -362,7 +362,7 @@ def roda_detector(agora: datetime | None = None) -> dict:
     from src.config import BIGQUERY_PROJECT_ID, get_pg_url_ro
 
     agora = agora or datetime.now(timezone.utc)
-    dataset, schema, tabelas = get_sync_target("futebol")
+    dataset, schema, tabelas = resolve_alvo_sync("futebol")
     bq_client = bigquery.Client(project=BIGQUERY_PROJECT_ID)
 
     por_ambiente: dict[str, list[Atraso]] = {}
