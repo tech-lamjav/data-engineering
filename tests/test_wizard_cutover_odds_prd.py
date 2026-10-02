@@ -138,3 +138,9 @@ def test_o_diff_da_rpc_do_estagio_de_conferencia_usa_o_arquivo_da_linha_de_base(
     assert "scripts/captura_rpc_quotes.py" in base and "scripts/captura_rpc_quotes.py" in conferir
     ligar = t[t.index('stage "LIGAR o cache de serving'):t.index('stage "Conferir pelo DADO')]
     assert "linha de base" in ligar  # não liga sem ela
+
+
+def test_o_estagio_de_conferir_lembra_que_a_109_fecha_a_mao_com_os_numeros_colados():
+    t = _texto()
+    conferir = t[t.index('stage "Conferir pelo DADO'):t.index('stage "LIGAR a carga por troca nas odds')]
+    assert "'Refs', não 'Closes'" in conferir

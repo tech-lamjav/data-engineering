@@ -492,6 +492,8 @@ PYEOF
 if confirm "Rodar a contagem agora (SELECT em PRD)?"; then
   mostra_e_roda conta_odds_prd || warn "a contagem falhou"
 fi
+note "O PR da #109 usa 'Refs', não 'Closes': a issue só fecha à mão, depois destes números colados nela"
+note "(contagem exata, duração, saída do diff da RPC) e do smoke do BigQuery real."
 confirm "Contagem, duração e diff da RPC conferidos e dentro do esperado?" \
   || { warn "Não ligue a troca. Reverta o workflow (cache_serving_prd: \"\") se precisar."; exit 1; }
 
