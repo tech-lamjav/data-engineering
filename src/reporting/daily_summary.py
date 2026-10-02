@@ -37,6 +37,13 @@ from src.reporting.guardas import build_guardas_section
 from src.reporting.procedencia import build_procedencia_section, collect_procedencia
 from src.reporting.suite_dbt import SuiteRun, build_suite_section, collect_suite
 from src.reporting.tamanho_dev import DevSizeInfo, build_dev_size_section, collect_dev_size
+from src.reporting.troca_sync import (
+    TrocaInfo,
+    blocos_do_log,
+    build_troca_section,
+    collect_troca,
+    nomes_das_falhas,
+)
 from src.reporting.formatting import SAO_PAULO, cell as _cell, fmt_brt as _fmt_brt
 from src.utils.logger import setup_logger
 
@@ -105,6 +112,11 @@ class WFAgg:
     # log_completion (tamanho do Postgres de DEV ao fim do passe DEV). Guardadas TODAS; quem
     # escolhe a última do dia é collect_dev_size. Chave ausente/nula = sem leitura.
     dev_size_readings: list = field(default_factory=list)
+    # DE#108: blocos (timestamp UTC, ambiente, {summary, falhas, avisos}) que o
+    # workflow_futebol_sync emite no log_completion (`sync_prd`/`sync_dev`): fallbacks, falhas de
+    # troca, aviso de sombra órfã e duração de cada troca. Guardados TODOS; collect_troca agrega.
+    # Chave ausente ou nula = log que não carrega a troca (409, imagem velha, troca desligada).
+    troca_sync: list = field(default_factory=list)
 
 
 def compute_window(target_date: date | None = None):
@@ -171,6 +183,11 @@ def collect_from_logging(client, start_utc, end_utc, agg) -> int:
             a.partial += 1
             failed_services = payload.get("failed_services") or []
             detail = ", ".join(str(s) for s in failed_services) if failed_services else "—"
+            # DE#108: a falha de troca marca o serviço inteiro como falho; o corpo do 500 diz QUAIS
+            # tabelas não trocaram. Sem o bloco (imagem velha, erro sem JSON), o detalhe é o de antes.
+            tabelas_que_falharam = nomes_das_falhas(blocos_do_log(payload))
+            if tabelas_que_falharam:
+                detail += f" — troca falhou: {tabelas_que_falharam}"
             a.failures.append((ts, status, detail))
         # Status PROPRIO das guardas, emitido pelos workflows futebol/odds. Ausente nos
         # demais workflows (que nao rodam guardas) — ausencia nao e vermelho.
@@ -200,6 +217,9 @@ def collect_from_logging(client, start_utc, end_utc, agg) -> int:
                 a.dev_size_readings.append((ts, float(dev_size_mb)))
             except (TypeError, ValueError):
                 pass
+        # DE#108: só o futebol-sync carrega estes blocos; a coleta é tolerante a bloco malformado.
+        for env, bloco in blocos_do_log(payload):
+            a.troca_sync.append((ts, env, bloco))
         try:
             a.saved_count += int(payload.get("saved_count") or 0)
         except (TypeError, ValueError):
@@ -262,7 +282,7 @@ def _fmt_dur(seconds: float) -> str:
 
 def build_html(
     day: date, agg: dict, quota=None, procedencia=None, suite=None, quota_eod=None,
-    dev_size: DevSizeInfo | None = None,
+    dev_size: DevSizeInfo | None = None, troca_sync: TrocaInfo | None = None,
 ) -> tuple[str, str]:
     """Monta (subject, html) do email consolidado. Sempre renderiza (mesmo vazio).
 
@@ -274,6 +294,9 @@ def build_html(
     (SuiteInfo | None, o resto da suíte dbt) fazem o mesmo para as suas seções.
     `dev_size` (DevSizeInfo | None, DE#106) acrescenta o tamanho do Postgres de DEV; com
     `reading=None` a seção sai degradada (não medido), nunca omitida; None omite.
+    `troca_sync` (TrocaInfo | None, DE#108) acrescenta fallbacks, falhas de troca, avisos de
+    sombra órfã e a duração de cada troca; None (nada a relatar, troca desligada) omite. Sem token
+    no assunto: a falha de troca já vira [FALHAS] pelo parcial do workflow.
     """
     total_runs = sum(a.total for a in agg.values())
     total_ok = sum(a.success for a in agg.values())
@@ -401,11 +424,13 @@ def build_html(
     # Tamanho do DEV antes da cota: é acionável quando acende (o DEV passa a recusar escrita),
     # a cota é acompanhamento.
     dev_size_section = build_dev_size_section(dev_size)
+    # Troca do sync junto do tamanho do DEV: as duas são saúde do destino do sync.
+    troca_section = build_troca_section(troca_sync)
     quota_section = build_quota_section(quota, day, quota_eod=quota_eod)
 
     html = (
         head + table + fail_section + guardas_section + suite_section
-        + procedencia_section + dev_size_section + quota_section + "</div>"
+        + procedencia_section + dev_size_section + troca_section + quota_section + "</div>"
     )
     return subject, html
 
@@ -465,9 +490,13 @@ def run_daily_summary(target_date: date | None = None) -> dict:
     # dia devolve o estado degradado (a seção aparece em âmbar).
     dev_size = collect_dev_size([r for a in agg.values() for r in a.dev_size_readings])
 
+    # DE#108: nenhuma chamada nova; os blocos vieram do log_completion do workflow_futebol_sync.
+    # Nunca levanta; None quando não há nada a relatar (troca desligada) e a seção some.
+    troca_sync = collect_troca([r for a in agg.values() for r in a.troca_sync])
+
     subject, html = build_html(
         day, agg, quota=quota, quota_eod=quota_eod, procedencia=procedencia, suite=suite,
-        dev_size=dev_size,
+        dev_size=dev_size, troca_sync=troca_sync,
     )
 
     if os.getenv("SUMMARY_DRY_RUN"):

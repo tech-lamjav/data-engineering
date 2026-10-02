@@ -445,8 +445,41 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
   **query job parametrizado** (`src/sync/filtro_bq.py`), para o corte rodar no BigQuery e o DEV não
   ler o que vai descartar. Isso custa bytes faturados (teto por job = 2× o tamanho da tabela) e exige
   `bigquery.jobs.create` na SA runtime; sem a permissão o passe DEV aborta com 403 num pré-voo (dry-run), antes de qualquer TRUNCATE.
-- **Escrita:** por tabela, **TRUNCATE + COPY tipado** (psycopg3) numa única transação. COPY tipado
-  preserva `None`→NULL vs `''`→string vazia.
+- **Escrita:** por tabela, **COPY tipado** (psycopg3), que preserva `None`→NULL vs `''`→string
+  vazia. Três modos, escolhidos **por tabela** no início da carga dela e ecoados em cada item de
+  `synced` (`modo`, `duracao_s`, e `tentativas`/`troca_ms` quando há troca):
+  - **`no_lugar`** (o default): TRUNCATE + COPY numa transação. O TRUNCATE segura ACCESS EXCLUSIVE até
+    o fim do COPY: o leitor **espera** (não vê o dado antigo) e o PostgREST o cancela por timeout.
+  - **`troca`** (DE#108, ADR 0005, `src/sync/troca.py`): COPY para uma tabela-sombra (`<tabela>__new`),
+    fora do caminho dos leitores, que seguem vendo o dado antigo; índices e constraints criados
+    depois, `ANALYZE`, e uma transação de milissegundos faz `RENAME` vigente→`__old`, reaplica dono/ACL/RLS/
+    políticas/comentário (lidos da vigente sob lock), confere o fingerprint de formato, `RENAME`
+    sombra→vigente, `DROP` da velha, nomes canônicos de volta aos índices e o estado de sync.
+    Teto de espera 2 s por tentativa, até 8 tentativas com pausa de 8–12 s, orçamento de 300 s de
+    retentativas por execução. Tabela que não troca **falha alto**: as demais sincronizam, o retorno é
+    `status=swap_failed` com `falhas: [{table, motivo}]` (HTTP 500), a vigente fica intacta e o
+    `_sync_state` dela não avança (o detector de atraso a vê).
+  - **`staged`** e **`no_lugar_fallback`**: tabela com dependente por OID (view, regra, função com o
+    tipo na assinatura, sequência, FK, trigger, publicação, ACL por coluna, e, por uma consulta
+    genérica em `pg_depend`, política de RLS de outra tabela, função com corpo `BEGIN ATOMIC`,
+    estatística estendida; hoje as cinco `int_futebol_premissas_*`, por causa de
+    `vw_premissas_acesas`) nunca usa a troca. `staged` = COPY
+    para temporária e, numa transação curta, TRUNCATE + INSERT…SELECT (habilitado à parte);
+    `no_lugar_fallback` = carga no lugar com WARNING.
+  - **Lançamento escuro:** o serviço só usa a troca nas tabelas listadas nos parâmetros `troca=` e
+    `staged=` da chamada. Quem os passa é o `workflow_futebol_sync.yml` (variáveis `troca_prd`,
+    `staged_prd`, `troca_dev`, `staged_dev`, **vazias** hoje); rollback = reverter o workflow. NBA nunca
+    usa a troca; `fact_odds_snapshot` é recusada até a DE#109 (ADR 0006).
+  - **Sombras órfãs:** com a trava em mãos, no início de cada execução (mesmo com a troca desligada)
+    toda tabela `*__new`/`*__old` do schema é removida; a com marcador de mais de 2 h vira aviso em
+    `avisos` do retorno (e no log), sem abortar.
+  - **Modo no item pulado:** a tabela pulada por BQ inalterado também ecoa `modo` (o que seria
+    usado), mas só as CARREGADAS contam em `summary.fallback`.
+  - **Resumo diário:** `summary` traz `fallback_tabelas` e `trocas` (`troca_ms` e `tentativas` de cada
+    troca); o `workflow_futebol_sync` guarda `summary`, `falhas` e `avisos` por ambiente (também do
+    corpo do 500) e os emite no `log_completion` (`sync_prd`/`sync_dev`); o resumo diário
+    (`src/reporting/troca_sync.py`) mostra fallbacks, falhas com o nome da tabela, avisos e a duração
+    por tabela. Sem token novo no assunto; com a troca desligada a seção não aparece.
 - **Colunas complexas:** `_is_complex_field` pula campos BQ REPEATED/RECORD (o Postgres nativo é
   escalar) — ex.: futebol `dim_leagues.coverage`, `evidencias`/`avisos`; as RPCs reconstroem.
 - **Tabelas:** allowlist por esporte (`config.py`), na ordem **dim → fact → derivada**, menos as
@@ -465,7 +498,8 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
 - **skip-if-unchanged:** `<schema>._sync_state` guarda o `bq_modified` da última sync; pula a tabela
   se nada mudou (`force=true` ignora).
 - **Parity check pré-flight:** compara colunas/tipos BQ↔PG **antes** de qualquer TRUNCATE; se houver
-  drift, aborta com `aborted_schema_drift` (HTTP 500) sem truncar nada.
+  drift, aborta com `aborted_schema_drift` (HTTP 500) sem truncar nada. Parity e IAM abortam o sync
+  INTEIRO, inclusive com a troca ligada: erro de contrato nunca vira carga parcial.
 - **PRD e DEV** são bancos Supabase independentes, cada um com seu `_sync_state`; o workflow chama
   `?env=prd` e depois `?env=dev`. Conexões usam **porta 5432** (sessão), não 6543 (pgbouncer não
   suporta COPY).

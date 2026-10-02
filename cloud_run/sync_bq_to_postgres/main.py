@@ -14,6 +14,7 @@ sys.path.insert(0, scripts_dir)
 
 from src.sync.bq_to_postgres import run_sync
 from src.sync.trava import STATUS_OCUPADO
+from src.sync.troca import STATUS_TROCA_FALHOU
 
 
 @functions_framework.http
@@ -26,15 +27,26 @@ def sync_bq_to_postgres(request):
                 Postgres + allowlist (sync.alvo.resolve_alvo_sync).
         tables: 'all' (default) ou CSV de nomes, ex:
                 ?sport=futebol&tables=fact_value_opportunities,fact_fixtures
+        troca:  CSV de tabelas habilitadas na CARGA POR TROCA (DE#108, ADR 0005). Vazio ou
+                ausente (default) = nenhuma: carga no lugar, como antes. Só futebol; nunca
+                `fact_odds_snapshot` (até a DE#109). É o workflow quem liga, tabela a tabela
+                e por ambiente; desligar = reverter o workflow, sem build de imagem.
+        staged: CSV de tabelas habilitadas no caminho STAGED (tabelas com dependente, como as
+                `int_futebol_premissas_*`).
 
     Respostas: 200 sucesso; 409 já há sync do mesmo (sport, env) em andamento (trava de
-    sessão no Postgres, DE#107); 500 schema drift ou erro.
+    sessão no Postgres, DE#107); 500 schema drift, erro ou TROCA FALHA (alguma tabela
+    habilitada não conseguiu trocar: o corpo traz `falhas` com os nomes das tabelas e um
+    código de motivo; as demais tabelas foram sincronizadas e as falhas mantêm a vigente
+    intacta e o estado sem avançar).
     """
     env = request.args.get("env", default="prd")
     sport = request.args.get("sport", default="nba")
     tables = request.args.get("tables", default="all")
+    troca = request.args.get("troca", default="")
+    staged = request.args.get("staged", default="")
     try:
-        result = run_sync(tables=tables, env=env, sport=sport)
+        result = run_sync(tables=tables, env=env, sport=sport, troca=troca, staged=staged)
         if result["status"] == STATUS_OCUPADO:
             # Trava por (sport, env) com outro sync (DE#107): 409, não 5xx. O workflow
             # trata 409 como "em andamento" (WARNING, fora de failed_services) e o retry
@@ -52,12 +64,26 @@ def sync_bq_to_postgres(request):
                 "env": result["env"],
                 "drift": result["drift"],
             }, 500
+        if result["status"] == STATUS_TROCA_FALHOU:
+            # Status parcial (DE#108): o corpo carrega os NOMES das tabelas que falharam (e um
+            # código de motivo, sem texto do banco). 500: o workflow marca PARTIAL_FAILURE; o
+            # retry padrão não repete 500, e uma repetição só gastaria o orçamento de novo.
+            return {
+                "status": STATUS_TROCA_FALHOU,
+                "sport": result["sport"],
+                "env": result["env"],
+                "falhas": result["falhas"],
+                "summary": result.get("summary", {}),
+                "synced": result["synced"],
+                "avisos": result.get("avisos", []),
+            }, 500
         return {
             "status": "success",
             "sport": result["sport"],
             "env": result["env"],
             "summary": result.get("summary", {}),
             "synced": result["synced"],
+            "avisos": result.get("avisos", []),
             # DE#106: tamanho do DEV em MiB, medido ao fim do passe DEV. Aditivo: o workflow
             # o lê com map.get (chave ausente não quebra); nulo em PRD ou se a medição falhou.
             "dev_size_mb": result.get("dev_size_mb"),
