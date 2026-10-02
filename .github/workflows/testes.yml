@@ -15,6 +15,13 @@
 # Sem instalar, esses dois caem no fallback documentado no próprio teste e ainda
 # passam — mas instalar aqui faz a checagem valer de verdade, e evita achar o próximo
 # gap só quando o CI quebrar de novo.
+#
+# POSTGRES EFÊMERO (DE#108). O serviço `postgres:17` abaixo existe para a integração da carga por
+# troca (`tests/test_sync_troca_integracao.py`): ela prova o que os mocks não provam (leitor não
+# bloqueia, teto de espera, fila de RENAME, rollback, fidelidade de ACL/RLS) e é PULADA sem a
+# variável `SYNC_TESTE_PG_URL`. Sem banco no CI, o pytest verde só cobria os mocks. Com `CI=true` e
+# sem a variável, `tests/test_ci_postgres_efemero.py` FALHA em vez de deixar tudo pular em silêncio.
+# O banco é descartável e só aceita conexão local do runner; o teste cria schema e papéis nele.
 name: testes
 
 on:
@@ -28,6 +35,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: teste
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Checkout
@@ -46,4 +66,6 @@ jobs:
           done
 
       - name: pytest
+        env:
+          SYNC_TESTE_PG_URL: postgresql://postgres:teste@localhost:5432/postgres
         run: python -m pytest tests/ -v
