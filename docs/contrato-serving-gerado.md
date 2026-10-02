@@ -197,4 +197,3 @@ Lida por 4 RPC(s):
 Sincronizadas para o Postgres mas não lidas por nenhuma função `public.*`. Ou o app as consome por outro caminho, ou estão sendo copiadas à toa:
 
 - `dim_leagues`
-- `int_futebol_odds_devig`
