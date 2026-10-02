@@ -81,3 +81,36 @@ def test_script_local_sai_com_3_quando_ocupado(monkeypatch):
     )
 
     assert script.main() == 3
+
+
+# ------------------------------------------------------------------
+# DE#106: o tamanho do DEV (medido ao fim do passe DEV) atravessa o wrapper HTTP
+# ------------------------------------------------------------------
+def test_sucesso_repassa_o_tamanho_do_dev_no_corpo(handler, monkeypatch):
+    monkeypatch.setattr(
+        handler,
+        "run_sync",
+        lambda **kw: {
+            "status": "success", "sport": "futebol", "env": "dev", "synced": [],
+            "summary": {}, "dev_size_mb": 412.3,
+        },
+    )
+
+    corpo, codigo = handler.sync_bq_to_postgres(_Req(sport="futebol", env="dev"))
+
+    assert codigo == 200
+    assert corpo["dev_size_mb"] == 412.3
+
+
+def test_sucesso_sem_o_campo_sai_nulo_e_nao_levanta(handler, monkeypatch):
+    """PRD (e qualquer resposta de antes do campo existir) não traz `dev_size_mb`."""
+    monkeypatch.setattr(
+        handler,
+        "run_sync",
+        lambda **kw: {"status": "success", "sport": "futebol", "env": "prd", "synced": [], "summary": {}},
+    )
+
+    corpo, codigo = handler.sync_bq_to_postgres(_Req(sport="futebol", env="prd"))
+
+    assert codigo == 200
+    assert corpo["dev_size_mb"] is None
