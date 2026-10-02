@@ -353,17 +353,23 @@ done
 stage "Confirmar que NÃO há execução ACTIVE do workflow-futebol-sync"
 say "Redeployar o serviço no meio de um sync mataria a execução em curso (ordem de deploy do usuário)."
 say "Saída vazia = nenhuma. O sync roda de hora em hora; espere a janela entre execuções."
-while true; do
-  ATIVAS=$(gcloud workflows executions list workflow-futebol-sync --location="$REGIAO" \
-    --project="$P" --filter="state=ACTIVE" --format="value(name,startTime)" --limit=5 2>&1 || true)
-  if [[ -z "$ATIVAS" ]]; then
-    say "Nenhuma execução ACTIVE."
-    break
-  fi
-  warn "Há execução ACTIVE:"
-  printf '%s\n' "$ATIVAS"
-  confirm "Esperar e conferir de novo?" || { warn "Não redeploye com execução ACTIVE."; exit 1; }
-done
+note "Esta checagem envelhece: o deploy do workflow (estágio 9) vem depois dela e o sync pode começar"
+note "no meio. Por isso ela RODA DE NOVO no estágio 10, colada ao redeploy do serviço."
+confere_sem_execucao_active() {
+  local ativas
+  while true; do
+    ativas=$(gcloud workflows executions list workflow-futebol-sync --location="$REGIAO" \
+      --project="$P" --filter="state=ACTIVE" --format="value(name,startTime)" --limit=5 2>&1 || true)
+    if [[ -z "$ativas" ]]; then
+      say "Nenhuma execução ACTIVE."
+      return 0
+    fi
+    warn "Há execução ACTIVE:"
+    printf '%s\n' "$ativas"
+    confirm "Esperar e conferir de novo?" || { warn "Não redeploye com execução ACTIVE."; exit 1; }
+  done
+}
+confere_sem_execucao_active
 
 # ── 9. Deploy do workflow ANTES da imagem ────────────────────────────────
 stage "Deploy do workflow (o YAML vai ANTES da imagem)"
@@ -377,6 +383,9 @@ so_se_confirmar "Deployar o workflow-futebol-sync (scripts/deploy_workflows.sh)?
 stage "Deploy do serviço sync-bq-to-postgres COM a conta dedicada"
 say "SYNC_SERVICE_ACCOUNT prende SÓ o sync na conta dedicada; as outras 28 ficam como estão."
 say "Sem a variável o serviço voltaria à conta compartilhada, sem jobUser, e o sync abortaria no pré-voo."
+say "Antes do redeploy, confere DE NOVO que nenhuma execução começou desde o estágio 8 (o deploy do"
+say "workflow e a espera por confirmações passaram no meio e o sync roda de hora em hora):"
+confere_sem_execucao_active
 so_se_confirmar "Deployar o sync-bq-to-postgres com SYNC_SERVICE_ACCOUNT=$SA_NOME?" \
   env SYNC_SERVICE_ACCOUNT="$SA_NOME" scripts/deploy_cloud_run.sh sync-bq-to-postgres
 mostra_e_roda scripts/checa_deriva_servicos.sh sync-bq-to-postgres daily-summary || true

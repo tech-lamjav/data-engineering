@@ -93,3 +93,19 @@ def test_todo_comando_que_muda_algo_passa_por_confirmacao():
                 achados += 1
                 assert comando.startswith("so_se_confirmar") or comando.startswith("aplica_sql_admin()"), comando
     assert achados >= 8  # o teste não é vacuamente verde
+
+
+def test_a_checagem_de_execucao_active_se_repete_colada_ao_redeploy_do_servico():
+    """O sync roda de hora em hora: a checagem do estágio 8 envelhece durante o deploy do workflow.
+
+    A mesma checagem (a função `confere_sem_execucao_active`) roda de novo DENTRO do estágio do
+    deploy do serviço, depois do deploy do workflow e antes do `deploy_cloud_run.sh`.
+    """
+    t = _texto()
+    chamadas = [m.start() for m in re.finditer(r"^confere_sem_execucao_active$", t, flags=re.MULTILINE)]
+    deploy_workflow = t.index("scripts/deploy_workflows.sh workflow-futebol-sync")
+    deploy_servico = t.index("scripts/deploy_cloud_run.sh sync-bq-to-postgres")
+    antes_do_workflow = [p for p in chamadas if p < deploy_workflow]
+    coladas_ao_servico = [p for p in chamadas if deploy_workflow < p < deploy_servico]
+    assert antes_do_workflow, "falta a checagem do estágio 8"
+    assert coladas_ao_servico, "falta repetir a checagem logo antes do redeploy do serviço"
