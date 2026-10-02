@@ -642,6 +642,16 @@ def test_as_odds_so_entram_na_troca_de_prd_depois_do_filtro():
     _valida(cache=LIGADA, troca_=LIGADA)  # com o filtro ligado, entra
 
 
+def test_a_recusa_diz_como_sair_quando_o_cache_e_desligado_com_as_odds_na_troca():
+    """Rollback à mão do cache (`cache_serving_prd: ""`) com as odds já em `troca_prd` derrubaria o
+    sync inteiro de PRD: a mensagem tem de dizer o conserto (tirar as odds da troca no MESMO deploy)."""
+    with pytest.raises(ValueError) as erro:
+        _valida(cache=frozenset(), troca_=LIGADA)
+    mensagem = str(erro.value)
+    assert "troca_prd" in mensagem and "staged_prd" in mensagem
+    assert "mesmo" in mensagem  # no mesmo YAML/deploy do cache
+
+
 def test_a_troca_aceita_as_odds_a_lista_de_proibidas_esvaziou_na_de109():
     troca.valida_selecao("futebol", LIGADA, frozenset(), _TODAS)
     assert troca.TABELAS_FORA_DA_TROCA == frozenset()

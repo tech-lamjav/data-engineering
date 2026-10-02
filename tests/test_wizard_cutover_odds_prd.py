@@ -109,3 +109,17 @@ def test_a_checagem_de_execucao_active_se_repete_colada_ao_redeploy_do_servico()
     coladas_ao_servico = [p for p in chamadas if deploy_workflow < p < deploy_servico]
     assert antes_do_workflow, "falta a checagem do estágio 8"
     assert coladas_ao_servico, "falta repetir a checagem logo antes do redeploy do serviço"
+
+
+def test_o_rollback_depois_da_troca_das_odds_tira_a_troca_e_zera_o_cache_no_mesmo_deploy():
+    """Com `fact_odds_snapshot` em troca_prd, zerar só o cache faz o serviço recusar o sync de PRD
+    INTEIRO (`valida_cache_serving`). O wizard diz a ordem inversa, e o rollback simples do
+    estágio de ligar o cache só vale enquanto a troca das odds está desligada."""
+    t = _texto()
+    ligar_cache = t[t.index('stage "LIGAR o cache de serving'):t.index('stage "Conferir pelo DADO')]
+    assert "enquanto as odds não estiverem em troca_prd" in ligar_cache
+    ligar_troca = t[t.index('stage "LIGAR a carga por troca nas odds'):]
+    assert "ROLLBACK" in ligar_troca
+    assert "troca_prd" in ligar_troca and "staged_prd" in ligar_troca
+    assert 'cache_serving_prd: \\"\\"' in ligar_troca  # aspas escapadas dentro do say "..."
+    assert "MESMO deploy" in ligar_troca

@@ -150,5 +150,8 @@ def valida_cache_serving(
         raise ValueError(
             f"{TABELA_ODDS} só entra na carga por troca de PRD depois do filtro do cache de "
             f"serving (ADR 0006): a sombra completa custaria ~+920 MB. Ligue o cache de serving "
-            f"para a tabela na mesma execução."
+            f"para a tabela na mesma execução. Para DESLIGAR o cache (rollback), tire "
+            f"{TABELA_ODDS} de troca_prd e de staged_prd no MESMO YAML e no mesmo deploy de "
+            f"workflows que zera cache_serving_prd: esta recusa vale para o sync de PRD inteiro, "
+            f"não só para as odds."
         )

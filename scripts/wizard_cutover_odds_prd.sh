@@ -408,6 +408,7 @@ stage "LIGAR o cache de serving das odds em PRD (edição do workflow)"
 say "É o ponto sem volta funcional: a próxima carga de PRD grava só os mercados servidos, as fixtures"
 say "dos últimos 30 dias e futuras com todas as janelas, e o resto só com o fechamento (T-15m)."
 say "Rollback: voltar a linha para \"\" e redeployar o workflow (a versão da regra recarrega a tabela completa)."
+say "Isso vale enquanto as odds não estiverem em troca_prd. Depois de ligar a troca (último estágio) o rollback muda: ver lá."
 warn "O snapshot do estágio 3 TEM de existir e o smoke do estágio 7 TEM de estar verde."
 confirm "Snapshot criado e smoke verde: ligar?" || exit 1
 say "Edição (num branch, via PR, como qualquer mudança no master):"
@@ -463,6 +464,11 @@ say "A odds só entra na troca DEPOIS do filtro (a sombra completa custaria ~+92
 say "Ordem de habilitação da spec: ... demais tabelas, e 'fact_odds_snapshot só depois da #109', com"
 say "observação de dezenas de execuções entre etapas. O serviço RECUSA a troca das odds sem o cache ligado."
 warn "Só prossiga se já passaram dezenas de execuções com o cache ligado, sem regressão de leitura."
+warn "ROLLBACK DEPOIS DESTE ESTÁGIO é outro: com fact_odds_snapshot em troca_prd, zerar só"
+warn "cache_serving_prd derruba o sync de PRD INTEIRO (o serviço recusa a combinação antes de conectar)."
+say "Ordem inversa do ligar: no $WORKFLOW_YAML, tirar fact_odds_snapshot de troca_prd (e de staged_prd, se"
+say "estiver lá) E voltar cache_serving_prd: \"\", no MESMO deploy do workflow (scripts/deploy_workflows.sh)."
+say "Só tirar a troca (mantendo o cache) também é válido; só zerar o cache, não."
 if confirm "Já observei dezenas de execuções com o cache e quero ligar a troca nas odds agora?"; then
   step "git checkout -b liga-troca-odds"
   step "No $WORKFLOW_YAML, acrescente fact_odds_snapshot ao CSV de  troca_prd  (junto das já ligadas)"
@@ -472,7 +478,7 @@ if confirm "Já observei dezenas de execuções com o cache e quero ligar a troc
     scripts/deploy_workflows.sh workflow-futebol-sync
   note "Conferir depois: duracao_s/troca_ms das odds no log, zero 503 no edge_logs e a sombra sem sobras."
 else
-  warn "Troca das odds NÃO ligada. Rode de novo (estágio 14) quando a observação estiver feita."
+  warn "Troca das odds NÃO ligada. Rode de novo (último estágio) quando a observação estiver feita."
   SKIPPED+=("ligar a troca nas odds (troca_prd) depois da observação do cache")
 fi
 

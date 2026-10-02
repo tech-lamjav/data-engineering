@@ -355,3 +355,13 @@ def test_as_odds_na_troca_de_prd_exigem_o_cache_de_serving_ligado_no_mesmo_yaml(
     na_troca = parse_lista(atrib["troca_prd"]) | parse_lista(atrib["staged_prd"])
     if TABELA_ODDS in na_troca:
         assert TABELA_ODDS in parse_lista(atrib["cache_serving_prd"])
+
+
+def test_o_comentario_do_workflow_documenta_o_rollback_depois_da_troca_das_odds():
+    """Quem desliga o cache à mão com as odds em `troca_prd` derruba o sync de PRD inteiro: o
+    comentário do YAML (o lugar onde se edita) diz que as duas linhas saem no mesmo deploy."""
+    texto = WORKFLOW.read_text(encoding="utf-8")
+    assert "ROLLBACK DEPOIS DA TROCA DAS ODDS" in texto
+    trecho = texto[texto.index("ROLLBACK DEPOIS DA TROCA DAS ODDS"):]
+    assert "troca_prd" in trecho[:600] and "staged_prd" in trecho[:600]
+    assert "MESMO deploy" in trecho[:600]

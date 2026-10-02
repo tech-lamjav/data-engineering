@@ -49,6 +49,13 @@
 # a ordem inversa. O runbook de ligar (IAM da conta dedicada, smoke, snapshot congelado, deploy)
 # está em scripts/wizard_cutover_odds_prd.sh e no PR da DE#109.
 #
+# ROLLBACK DEPOIS DA TROCA DAS ODDS. Com `fact_odds_snapshot` em `troca_prd` (ou `staged_prd`),
+# zerar só `cache_serving_prd` NÃO é rollback: o serviço recusa a combinação ANTES de conectar e o
+# sync de PRD INTEIRO (as 22 tabelas, não só as odds) responde 500. A ordem inversa do ligar: tirar
+# `fact_odds_snapshot` de `troca_prd` e de `staged_prd` E zerar `cache_serving_prd` no MESMO deploy
+# deste YAML (`scripts/deploy_workflows.sh`). Só zerar o cache é o rollback enquanto as odds não
+# estiverem na troca.
+#
 # RESUMO DA TROCA NO LOG DE CONCLUSÃO (DE#108, histórias 9/20/27/54). O corpo da resposta do serviço
 # traz `summary` (fallback, falhas_de_troca, fallback_tabelas, trocas com troca_ms), `falhas` (as
 # tabelas que não trocaram, com o código do motivo) e `avisos` (sombra órfã > 2 h). Antes o workflow
