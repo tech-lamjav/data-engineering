@@ -554,22 +554,28 @@ def _sync_one_table(
     bq_table = _iter_table if _iter_table is not None else bq.get_table(table_ref)
     bq_modified = bq_table.modified  # timezone-aware datetime
 
+    # Modo de carga desta tabela. Decidido ANTES do skip-if-unchanged para o item pulado também
+    # ecoar o `modo` (o runbook da DE#108 confere o modo de todos os itens da resposta, e numa
+    # execução comum a maioria das tabelas é pulada). Sem contexto de troca nada consulta o
+    # catálogo e o caminho é o de sempre; com troca habilitada a checagem de dependentes custa
+    # umas consultas de catálogo por tabela habilitada, sem lock em tabela de usuário.
+    modo, fallback_motivo = troca_mod.escolhe_modo(pg_conn, schema, table_name, ctx_troca)
+
     last_synced = _read_last_synced(pg_conn, table_name, schema)
     if not force and last_synced is not None and bq_modified <= last_synced:
         logger.info(
             f"Skip {table_name}: BQ não mudou (modified={bq_modified.isoformat()}, "
-            f"last_synced={last_synced.isoformat()})"
+            f"last_synced={last_synced.isoformat()}, modo={modo})"
         )
-        return {"table": table_name, "rows": 0, "skipped": True}
+        pulada = {"table": table_name, "rows": 0, "skipped": True, "modo": modo}
+        if fallback_motivo:
+            pulada["fallback_motivo"] = fallback_motivo
+        return pulada
 
     logger.info(
         f"Sincronizando {table_name} (BQ modified={bq_modified.isoformat()}"
         f"{', force=True' if force else ''})"
     )
-
-    # Modo de carga desta tabela, decidido AGORA (depois do skip-if-unchanged): sem contexto,
-    # nenhuma consulta ao catálogo e o caminho é o de sempre.
-    modo, fallback_motivo = troca_mod.escolhe_modo(pg_conn, schema, table_name, ctx_troca)
 
     # Pula colunas complexas (REPEATED/RECORD); só escalares vão pro COPY.
     all_fields = list(rows_iter.schema)
@@ -707,8 +713,9 @@ def run_sync(
 
     Returns:
         {status, sport, env, synced: [...], drift: [...], summary, dev_size_mb}
-        Cada item de `synced` ecoa `modo` (troca | staged | no_lugar | no_lugar_fallback),
-        `duracao_s` e, quando há troca, `tentativas` e `troca_ms`.
+        Cada item de `synced` ecoa `modo` (troca | staged | no_lugar | no_lugar_fallback) --
+        inclusive o pulado por BQ inalterado, que ecoa o modo que seria usado --, e o carregado
+        traz também `duracao_s` e, quando há troca, `tentativas` e `troca_ms`.
         Se uma tabela habilitada não conseguir trocar (teto de espera esgotado, formato
         divergente, dependente novo, orçamento de retentativas), as demais seguem e o retorno
         é status='swap_failed' com `falhas: [{table, motivo}]` (a vigente fica intacta e o
@@ -821,8 +828,10 @@ def run_sync(
 
         n_synced = sum(1 for r in synced if not r.get("skipped"))
         n_skipped = sum(1 for r in synced if r.get("skipped"))
+        # Conta só as CARREGADAS: a pulada ecoa o modo mas não carregou nada (contá-la faria uma
+        # tabela em fallback aparecer uma vez por hora no resumo diário sem ter sido carregada).
         por_modo = {
-            m: sum(1 for r in synced if r.get("modo") == m)
+            m: sum(1 for r in synced if not r.get("skipped") and r.get("modo") == m)
             for m in (
                 troca_mod.MODO_TROCA, troca_mod.MODO_STAGED,
                 troca_mod.MODO_NO_LUGAR, troca_mod.MODO_FALLBACK,

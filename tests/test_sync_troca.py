@@ -375,6 +375,33 @@ def test_troca_que_falha_propaga_a_excecao_e_nao_devolve_resultado(monkeypatch):
 
 
 # ------------------------------------------------------------------
+# Tabela pulada (BQ inalterado) também ecoa o modo (o runbook confere o modo de TODOS os itens)
+# ------------------------------------------------------------------
+def _pulada(ctx, conn, monkeypatch):
+    monkeypatch.setattr(sync, "_read_last_synced", lambda *a: AGORA)  # BQ não mudou: pula
+    return _um(ctx, conn, monkeypatch)
+
+
+def test_tabela_pulada_ecoa_o_modo_no_lugar_sem_contexto_e_sem_tocar_no_catalogo(monkeypatch):
+    monkeypatch.setattr(troca, "dependentes", lambda *a: pytest.fail("consultou o catálogo"))
+    r = _pulada(None, _Conn(), monkeypatch)
+    assert r["skipped"] is True and r["modo"] == "no_lugar"
+
+
+def test_tabela_pulada_ecoa_o_modo_que_seria_usado_se_estivesse_habilitada(monkeypatch):
+    monkeypatch.setattr(troca, "dependentes", lambda *a: [])
+    assert _pulada(_ctx(troca={"dim_leagues"}), _Conn(), monkeypatch)["modo"] == "troca"
+    assert _pulada(_ctx(staged={"dim_leagues"}), _Conn(), monkeypatch)["modo"] == "staged"
+    assert _pulada(_ctx(), _Conn(), monkeypatch)["modo"] == "no_lugar"
+
+
+def test_tabela_pulada_com_dependente_ecoa_o_fallback_e_o_motivo(monkeypatch):
+    monkeypatch.setattr(troca, "dependentes", lambda *a: ["view ou regra de outra relação: vw"])
+    r = _pulada(_ctx(troca={"dim_leagues"}), _Conn(), monkeypatch)
+    assert r["skipped"] is True and r["modo"] == "no_lugar_fallback" and "vw" in r["fallback_motivo"]
+
+
+# ------------------------------------------------------------------
 # run_sync: status parcial, tabelas seguintes e abortos que NÃO viram parcial
 # ------------------------------------------------------------------
 @pytest.fixture
@@ -448,3 +475,14 @@ def test_trava_ocupada_nao_limpa_nada(monkeypatch, run):
     monkeypatch.setattr(troca, "limpa_sombras", lambda *a, **kw: pytest.fail("limpou sem a trava"))
     r = sync.run_sync(tables="dim_leagues", env="prd", sport="futebol")
     assert r["status"] == "busy"
+
+
+def test_tabela_pulada_nao_conta_no_fallback_do_resumo(monkeypatch, run):
+    """`summary.fallback` conta as tabelas CARREGADAS em fallback; a pulada só ecoa o modo (senão
+    uma tabela em fallback contaria uma vez por hora no resumo diário, mesmo sem carregar)."""
+    def _sync_one(bq, pg_conn, table, *a, **kw):
+        return {"table": table, "rows": 0, "skipped": True, "modo": "no_lugar_fallback"}
+
+    monkeypatch.setattr(sync, "_sync_one_table", _sync_one)
+    r = sync.run_sync(tables="dim_leagues", env="prd", sport="futebol", troca="dim_leagues")
+    assert r["summary"]["fallback"] == 0 and r["summary"]["skipped"] == 1
