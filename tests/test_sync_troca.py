@@ -486,3 +486,34 @@ def test_tabela_pulada_nao_conta_no_fallback_do_resumo(monkeypatch, run):
     monkeypatch.setattr(sync, "_sync_one_table", _sync_one)
     r = sync.run_sync(tables="dim_leagues", env="prd", sport="futebol", troca="dim_leagues")
     assert r["summary"]["fallback"] == 0 and r["summary"]["skipped"] == 1
+
+
+# ------------------------------------------------------------------
+# summary leva o que o resumo diário precisa (DE#108, histórias 9, 20, 27, 54)
+# ------------------------------------------------------------------
+def test_summary_leva_os_nomes_dos_fallbacks_e_a_duracao_de_cada_troca(monkeypatch, run):
+    itens = {
+        "dim_leagues": {"table": "dim_leagues", "rows": 9, "skipped": False, "modo": "troca",
+                        "tentativas": 2, "troca_ms": 12.5, "duracao_s": 3.0},
+        "fact_h2h": {"table": "fact_h2h", "rows": 9, "skipped": False, "modo": "no_lugar_fallback",
+                     "fallback_motivo": "view ou regra de outra relação: vw", "duracao_s": 1.0},
+        "dim_teams": {"table": "dim_teams", "rows": 0, "skipped": True, "modo": "troca"},
+        "fact_standings_snapshot": {"table": "fact_standings_snapshot", "rows": 4, "skipped": False, "modo": "staged",
+                       "tentativas": 1, "troca_ms": 3.0, "duracao_s": 0.5},
+    }
+    monkeypatch.setattr(sync, "_sync_one_table", lambda bq, c, table, *a, **kw: itens[table])
+    r = sync.run_sync(
+        tables="dim_leagues,fact_h2h,dim_teams,fact_standings_snapshot", env="prd", sport="futebol",
+        troca="dim_leagues,fact_h2h,dim_teams", staged="fact_standings_snapshot",
+    )
+    assert r["summary"]["fallback_tabelas"] == ["fact_h2h"]
+    # só as cargas que trocaram (troca ou staged), com a duração da troca; pulada e fallback não
+    assert r["summary"]["trocas"] == [
+        {"table": "dim_leagues", "modo": "troca", "troca_ms": 12.5, "tentativas": 2},
+        {"table": "fact_standings_snapshot", "modo": "staged", "troca_ms": 3.0, "tentativas": 1},
+    ]
+
+
+def test_sem_troca_habilitada_o_summary_nao_traz_trocas_nem_fallbacks(run):
+    r = sync.run_sync(tables="dim_leagues", env="prd", sport="futebol")
+    assert r["summary"]["trocas"] == [] and r["summary"]["fallback_tabelas"] == []

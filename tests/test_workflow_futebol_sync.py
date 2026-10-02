@@ -213,3 +213,109 @@ def test_a_selecao_commitada_respeita_o_desenho_mesmo_depois_de_ligada():
         assert not ((troca_sel | staged_sel) & TABELAS_FORA_DA_TROCA), amb
         assert (troca_sel | staged_sel) <= set(alvo), amb
         assert not (troca_sel & premissas), f"{amb}: premissas têm view dependente, vão no staged"
+
+
+# ------------------------------------------------------------------
+# DE#108: fallback, falha de troca e aviso de sombra órfã chegam ao log de conclusão, de onde o
+# resumo diário os lê (histórias 9, 20, 27, 54). Antes só viviam no corpo HTTP, que o workflow
+# descartava, e a falha de troca aparecia como o serviço inteiro, sem o nome da tabela.
+# ------------------------------------------------------------------
+CAMPOS_DO_RESUMO = ("summary", "falhas", "avisos")
+
+
+def _ramo_de_erro_generico(bloco):
+    ramos = [
+        r
+        for item in bloco["except"]["steps"]
+        for _, corpo in item.items()
+        for r in corpo.get("switch", [])
+        if "409" not in str(r.get("condition", ""))
+    ]
+    assert len(ramos) == 1
+    return ramos[0]
+
+
+def test_o_resumo_de_cada_ambiente_nasce_nulo_para_o_campo_ser_aditivo():
+    """Um 409 ou erro sem corpo legível deixa o resumo sem escrita; o log_completion lê a
+    variável e, sem o init, derrubaria o workflow inteiro."""
+    atrib = _init()
+    for env in ("prd", "dev"):
+        assert f"resumo_{env}" in atrib and atrib[f"resumo_{env}"] is None, env
+
+
+def test_os_dois_ambientes_guardam_o_resultado_da_chamada():
+    for env, bloco in _blocos():
+        assert _chamada(bloco)["try"].get("result") == f"sync_{env}_result", env
+
+
+def test_no_sucesso_o_resumo_sai_do_corpo_da_resposta_so_com_map_get():
+    """Imagem velha (corpo sem os campos) tem de dar nulo, não erro: acesso direto a chave
+    ausente derruba o workflow."""
+    for env, bloco in _blocos():
+        atrib = _atribuicoes(bloco["try"]["steps"])
+        resumo = atrib[f"resumo_{env}"]
+        assert set(resumo) == set(CAMPOS_DO_RESUMO), env
+        for campo in CAMPOS_DO_RESUMO:
+            expr = str(resumo[campo])
+            assert "map.get" in expr and f"sync_{env}_result.body" in expr and campo in expr, (env, campo)
+
+
+def _passo_que_guarda_o_resumo_no_erro(bloco):
+    for item in _ramo_de_erro_generico(bloco)["steps"]:
+        for nome, corpo in item.items():
+            if "try" in corpo:
+                return nome, corpo
+    raise AssertionError("o ramo de erro não lê o corpo da resposta")
+
+
+def test_no_erro_o_corpo_e_lido_dentro_de_um_try_proprio_para_nao_derrubar_o_workflow():
+    """Corpo de erro que não é JSON (HTML de um 502 do Cloud Run) faz map.get sobre string
+    levantar: sem o try aninhado, o except que marca PARTIAL_FAILURE morreria no meio."""
+    for env, bloco in _blocos():
+        _, passo = _passo_que_guarda_o_resumo_no_erro(bloco)
+        assert "except" in passo, env
+        lido = _atribuicoes(passo["try"]["steps"])[f"resumo_{env}"]
+        assert set(lido) == set(CAMPOS_DO_RESUMO), env
+        for campo in CAMPOS_DO_RESUMO:
+            expr = str(lido[campo])
+            assert 'map.get(e, ["body", "%s"])' % campo in expr, (env, campo)
+
+
+def test_a_leitura_do_corpo_vem_depois_de_marcar_a_falha_e_nao_a_substitui():
+    for env, bloco in _blocos():
+        nomes = [n for item in _ramo_de_erro_generico(bloco)["steps"] for n in item]
+        guarda = _passo_que_guarda_o_resumo_no_erro(bloco)[0]
+        marca = next(n for n in nomes if n.startswith("handle_sync_"))
+        assert nomes.index(marca) < nomes.index(guarda), env
+        textos = " ".join(_achata(_ramo_de_erro_generico(bloco)["steps"]))
+        assert "PARTIAL_FAILURE" in textos and f"sync-bq-to-postgres[futebol/{env}]" in textos
+
+
+def test_o_log_de_erro_do_sync_leva_o_corpo_da_resposta():
+    """O 500 de falha de troca traz `falhas` com os nomes das tabelas: precisa estar no log."""
+    for env, bloco in _blocos():
+        log = next(
+            corpo
+            for item in _ramo_de_erro_generico(bloco)["steps"]
+            for nome, corpo in item.items()
+            if nome == f"log_sync_{env}_error"
+        )
+        assert 'map.get(e, "body")' in " ".join(_achata(log)), env
+
+
+def test_o_ramo_409_nao_escreve_o_resumo():
+    for env, bloco in _blocos():
+        assert f"resumo_{env}" not in " ".join(_achata(_ramo_409(bloco))), env
+
+
+def test_o_log_de_conclusao_emite_o_resumo_dos_dois_ambientes():
+    dados = _log_completion()
+    assert dados["sync_prd"] == "${resumo_prd}"
+    assert dados["sync_dev"] == "${resumo_dev}"
+    # nada do que o resumo diário já lê mudou
+    for campo in ("status", "duration_seconds", "failed_services", "failed_count", "dev_size_mb"):
+        assert campo in dados
+
+
+def test_o_passe_prd_continua_sem_tocar_no_tamanho_do_dev():
+    assert "dev_size_mb" not in " ".join(_achata(dict(_blocos())["prd"]))

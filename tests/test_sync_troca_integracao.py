@@ -585,6 +585,19 @@ def test_sombras_orfas_sao_removidas_e_a_com_mais_de_2h_gera_aviso(banco):
     assert len(avisos) == 1 and "a__new" in avisos[0]
 
 
+def test_o_aviso_de_sombra_orfa_com_mais_de_2h_tambem_vai_para_o_log(banco, caplog):
+    """O retorno de `run_sync` morre no corpo HTTP (o workflow o descarta): o texto do aviso tem
+    de estar também no log do Cloud Run, onde dá para achá-lo sem o corpo."""
+    _cria_jogos()
+    velha = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    _exec(f"CREATE TABLE {S}.a__new (x int)")
+    _exec(f"COMMENT ON TABLE {S}.a__new IS '{troca.MARCADOR_SOMBRA}{velha}'")
+    with psycopg.connect(URL) as conn:
+        avisos = troca.limpa_sombras(conn, S, _ctx())
+    assert len(avisos) == 1
+    assert any(avisos[0] in m for m in caplog.messages)
+
+
 def test_limpeza_nao_toca_em_tabela_que_nao_e_sombra(banco):
     _cria_jogos()
     _exec(f"CREATE TABLE {S}.dados_new (x int)")  # um único underscore: não é sombra

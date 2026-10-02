@@ -865,10 +865,14 @@ def limpa_sombras(pg_conn, schema: str, ctx: ContextoTroca) -> list[str]:
                 criada = datetime.fromisoformat(comentario[len(MARCADOR_SOMBRA):])
                 idade = (ctx.agora() - criada).total_seconds()
                 if idade > ctx.cfg.idade_orfa_s:
-                    avisos.append(
+                    aviso = (
                         f"sombra órfã {schema}.{nome} com {idade / 3600:.1f} h (> "
                         f"{ctx.cfg.idade_orfa_s / 3600:.0f} h): execução anterior interrompida"
                     )
+                    avisos.append(aviso)
+                    # O retorno vai só no corpo HTTP, que o workflow descarta nos caminhos de
+                    # erro: o texto do aviso também precisa estar no log do Cloud Run.
+                    logger.warning(aviso)
             except ValueError:
                 pass
         logger.warning(f"Removendo sombra órfã {schema}.{nome}")

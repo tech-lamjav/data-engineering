@@ -460,8 +460,10 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
     `status=swap_failed` com `falhas: [{table, motivo}]` (HTTP 500), a vigente fica intacta e o
     `_sync_state` dela não avança (o detector de atraso a vê).
   - **`staged`** e **`no_lugar_fallback`**: tabela com dependente por OID (view, regra, função com o
-    tipo na assinatura, sequência, FK, trigger, publicação, ACL por coluna; hoje as cinco
-    `int_futebol_premissas_*`, por causa de `vw_premissas_acesas`) nunca usa a troca. `staged` = COPY
+    tipo na assinatura, sequência, FK, trigger, publicação, ACL por coluna, e, por uma consulta
+    genérica em `pg_depend`, política de RLS de outra tabela, função com corpo `BEGIN ATOMIC`,
+    estatística estendida; hoje as cinco `int_futebol_premissas_*`, por causa de
+    `vw_premissas_acesas`) nunca usa a troca. `staged` = COPY
     para temporária e, numa transação curta, TRUNCATE + INSERT…SELECT (habilitado à parte);
     `no_lugar_fallback` = carga no lugar com WARNING.
   - **Lançamento escuro:** o serviço só usa a troca nas tabelas listadas nos parâmetros `troca=` e
@@ -470,7 +472,14 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
     usa a troca; `fact_odds_snapshot` é recusada até a DE#109 (ADR 0006).
   - **Sombras órfãs:** com a trava em mãos, no início de cada execução (mesmo com a troca desligada)
     toda tabela `*__new`/`*__old` do schema é removida; a com marcador de mais de 2 h vira aviso em
-    `avisos` do retorno, sem abortar.
+    `avisos` do retorno (e no log), sem abortar.
+  - **Modo no item pulado:** a tabela pulada por BQ inalterado também ecoa `modo` (o que seria
+    usado), mas só as CARREGADAS contam em `summary.fallback`.
+  - **Resumo diário:** `summary` traz `fallback_tabelas` e `trocas` (`troca_ms` e `tentativas` de cada
+    troca); o `workflow_futebol_sync` guarda `summary`, `falhas` e `avisos` por ambiente (também do
+    corpo do 500) e os emite no `log_completion` (`sync_prd`/`sync_dev`); o resumo diário
+    (`src/reporting/troca_sync.py`) mostra fallbacks, falhas com o nome da tabela, avisos e a duração
+    por tabela. Sem token novo no assunto; com a troca desligada a seção não aparece.
 - **Colunas complexas:** `_is_complex_field` pula campos BQ REPEATED/RECORD (o Postgres nativo é
   escalar) — ex.: futebol `dim_leagues.coverage`, `evidencias`/`avisos`; as RPCs reconstroem.
 - **Tabelas:** allowlist por esporte (`config.py`), na ordem **dim → fact → derivada**, menos as

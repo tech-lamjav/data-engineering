@@ -863,6 +863,21 @@ def run_sync(
                 "skipped": n_skipped,
                 "fallback": por_modo[troca_mod.MODO_FALLBACK],
                 "falhas_de_troca": len(falhas),
+                # O workflow leva estes campos ao log_completion e o resumo diário os mostra
+                # (DE#108, histórias 9/20/27/54): quais tabelas caíram no fallback e quanto cada
+                # troca durou. Só as CARREGADAS; a pulada não trocou nada.
+                "fallback_tabelas": [
+                    r["table"] for r in synced
+                    if not r.get("skipped") and r.get("modo") == troca_mod.MODO_FALLBACK
+                ],
+                "trocas": [
+                    {
+                        "table": r["table"], "modo": r["modo"],
+                        "troca_ms": r["troca_ms"], "tentativas": r["tentativas"],
+                    }
+                    for r in synced
+                    if not r.get("skipped") and "troca_ms" in r
+                ],
             },
             "dev_size_mb": dev_size_mb,
         }
