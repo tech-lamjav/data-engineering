@@ -19,7 +19,9 @@ Por isso: sem carimbo de data, tudo ordenado.
 """
 import re
 
+from src.sync import alvo
 from src.sync.alvo import resolve_alvo_sync
+from src.sync.retencao import TABELA_ODDS
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -61,21 +63,22 @@ def _referencias_de_coluna(corpo: str, colunas: set[str]) -> list[str]:
     return sorted(achadas)
 
 
+_SQL_FUNCOES = """
+    select p.oid::regprocedure::text, pg_get_functiondef(p.oid)
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    -- prokind='f' (função comum): pg_get_functiondef LEVANTA em agregado ('a') e
+    -- window ('w'), e derrubaria o gerador inteiro por causa de uma entrada que
+    -- nem é RPC de serving.
+    where n.nspname = 'public' and p.prokind = 'f'
+    order by 1
+"""
+
+
 def coleta_mapa(pg_conn, schema: str, tabelas) -> dict:
     """{tabela: [(assinatura, [colunas lidas]), ...]}, tudo ordenado."""
     with pg_conn.cursor() as cur:
-        cur.execute(
-            """
-            select p.oid::regprocedure::text, pg_get_functiondef(p.oid)
-            from pg_proc p
-            join pg_namespace n on n.oid = p.pronamespace
-            -- prokind='f' (função comum): pg_get_functiondef LEVANTA em agregado ('a') e
-            -- window ('w'), e derrubaria o gerador inteiro por causa de uma entrada que
-            -- nem é RPC de serving.
-            where n.nspname = 'public' and p.prokind = 'f'
-            order by 1
-            """
-        )
+        cur.execute(_SQL_FUNCOES)
         funcoes = cur.fetchall()
 
         # pg_catalog, e NÃO information_schema.columns: aquela view filtra por privilégio,
@@ -153,3 +156,106 @@ def gera(pg_conn=None) -> str:
 
     with psycopg.connect(get_pg_url_ro("prd"), connect_timeout=15) as conn:
         return renderiza(coleta_mapa(conn, schema, tabelas))
+
+
+# ============================================================
+# Mercados servidos x RPCs vivas (DE#109, história 38)
+# ============================================================
+# Os mercados de `fact_odds_snapshot` que o dbt grava e que a lista de mercados servidos NÃO traz
+# para o Postgres de PRD (o `WHERE market_id IN (...)` do dbt tem 13 ids; os 6 servidos estão em
+# `alvo.MERCADOS_SERVIDOS_NOMES`). Existe só para o check enxergar uma RPC que cite um desses por
+# NOME ou por id; um mercado novo no dbt entra aqui quando alguém o ligar no app.
+MERCADOS_CONHECIDOS_NAO_SERVIDOS: dict[int, str] = {
+    7: "HT/FT Double",
+    10: "Exact Score",
+    45: "Corners Over Under",
+    56: "Corners Asian Handicap",
+    57: "Home Corners Over/Under",
+    58: "Away Corners Over/Under",
+    77: "Total Corners (1st Half)",
+}
+
+_NOME_NA_COMPARACAO = re.compile(r"market_name\s*(?:=|<>|!=)\s*'((?:[^']|'')*)'", re.IGNORECASE)
+_NOMES_EM_LISTA = re.compile(r"market_name\s+(?:not\s+)?in\s*\(([^)]*)\)", re.IGNORECASE)
+_ID_NA_COMPARACAO = re.compile(r"market_id\s*(?:=|<>|!=)\s*(\d+)", re.IGNORECASE)
+_IDS_EM_LISTA = re.compile(r"market_id\s+(?:not\s+)?in\s*\(([\d,\s]+)\)", re.IGNORECASE)
+_IDS_EM_ANY = re.compile(
+    r"market_id\s*=\s*any\s*\(\s*(?:array\s*)?[\[(]([\d,\s]+)[\])]", re.IGNORECASE
+)
+
+
+def _literais(trecho: str) -> list[str]:
+    return [m.replace("''", "'") for m in re.findall(r"'((?:[^']|'')*)'", trecho)]
+
+
+def mercados_fora_da_lista(funcoes, schema: str, tabela: str) -> dict:
+    """{assinatura: [mercados citados fora da lista de servidos]} para as funções que leem `tabela`.
+
+    A lista é `alvo.MERCADOS_SERVIDOS_NOMES`, lida na CHAMADA (a MESMA constante do sync). Conta
+    como citação: o NOME do mercado numa comparação ou lista de `market_name`, um literal igual a
+    um mercado conhecido que a lista não serve (cobre `case market_name when '...'`), e o id em
+    `market_id = N`, `IN (...)` e `= ANY(ARRAY[...])`. Função que não lê `schema.tabela` é ignorada.
+    """
+    servidos_nomes = set(alvo.MERCADOS_SERVIDOS_NOMES.values())
+    servidos_ids = set(alvo.MERCADOS_SERVIDOS)
+    nao_servidos_por_nome = {n: i for i, n in MERCADOS_CONHECIDOS_NAO_SERVIDOS.items()
+                             if i not in servidos_ids}
+    leitura = re.compile(rf"\b{re.escape(schema)}\.{re.escape(tabela)}\b")
+    achados: dict[str, list[str]] = {}
+    for assinatura, corpo in funcoes:
+        if not leitura.search(corpo):
+            continue
+        fora: list[str] = []
+
+        def anota(texto):
+            if texto not in fora:
+                fora.append(texto)
+
+        nomes = [m.replace("''", "'") for m in _NOME_NA_COMPARACAO.findall(corpo)]
+        for lista in _NOMES_EM_LISTA.findall(corpo):
+            nomes.extend(_literais(lista))
+        for nome in nomes:
+            if nome in servidos_nomes:
+                continue
+            if nome in nao_servidos_por_nome:
+                anota(f"{nome} (id {nao_servidos_por_nome[nome]})")
+            else:
+                anota(f"{nome} (mercado desconhecido)")
+        # `case market_name when 'X'` e qualquer outro literal que seja um mercado conhecido.
+        for literal in _literais(corpo):
+            if literal in nao_servidos_por_nome:
+                anota(f"{literal} (id {nao_servidos_por_nome[literal]})")
+
+        ids = [int(i) for i in _ID_NA_COMPARACAO.findall(corpo)]
+        for lista in (*_IDS_EM_LISTA.findall(corpo), *_IDS_EM_ANY.findall(corpo)):
+            ids.extend(int(i) for i in re.findall(r"\d+", lista))
+        for i in ids:
+            if i not in servidos_ids:
+                anota(f"market_id {i}")
+        if fora:
+            achados[assinatura] = fora
+    return achados
+
+
+def confere_mercados_servidos(pg_conn=None) -> list[str]:
+    """Mensagens (uma por RPC) das funções vivas do PRD que citam mercado fora da lista de servidos.
+
+    Lista vazia = a lista e as RPCs estão no mesmo passo. Só leitura, no molde de `gera`.
+    """
+    dataset, schema, _ = resolve_alvo_sync("futebol")
+    if pg_conn is None:
+        import psycopg
+
+        from src.config import get_pg_url_ro
+
+        with psycopg.connect(get_pg_url_ro("prd"), connect_timeout=15) as conn:
+            return confere_mercados_servidos(conn)
+    with pg_conn.cursor() as cur:
+        cur.execute(_SQL_FUNCOES)
+        funcoes = cur.fetchall()
+    achados = mercados_fora_da_lista(funcoes, schema, TABELA_ODDS)
+    return [
+        f"{assinatura} cita mercado fora da lista de servidos: {', '.join(mercados)}"
+        for assinatura, mercados in sorted(achados.items())
+    ]
+
