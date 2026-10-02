@@ -53,13 +53,19 @@ class Comparacao:
 def le_leitura(pg_conn, env: str, schema: str, tabela: str) -> Leitura:
     """Lê os contadores da tabela. Só SELECT.
 
-    Sem linha, ou com contador NULL (papel sem visibilidade das estatísticas), levanta
-    LookupError: imprimir zeros pareceria "ninguém lê" quando na verdade não se mediu nada.
+    Sem linha, ou com `seq_scan` ou `n_live_tup` NULL (papel sem visibilidade das
+    estatísticas), levanta LookupError: imprimir zeros pareceria "ninguém lê" quando na
+    verdade não se mediu nada.
+
+    `idx_scan` é a exceção: o pg_stat_user_tables o devolve NULL (e não 0) numa tabela sem
+    nenhum índice, e a cópia congelada do de-vig não tem índice algum. NULL ali é "nenhuma
+    leitura por índice é possível" e vale 0. Só se aceita quando os outros dois contadores
+    existem; um papel sem visibilidade os devolve NULL todos juntos.
     """
     with pg_conn.cursor() as cur:
         cur.execute(_CONSULTA, (schema, tabela))
         row = cur.fetchone()
-    if row is None or any(v is None for v in row[1:]):
+    if row is None or row[1] is None or row[3] is None:
         raise LookupError(
             f"{schema}.{tabela} sem estatísticas legíveis em pg_stat_user_tables "
             f"(env={env}): tabela ausente, em outro schema ou papel sem visibilidade"
@@ -69,7 +75,7 @@ def le_leitura(pg_conn, env: str, schema: str, tabela: str) -> Leitura:
         env=env,
         medido_em=momento,
         seq_scan=int(seq_scan),
-        idx_scan=int(idx_scan),
+        idx_scan=int(idx_scan or 0),
         n_live_tup=int(n_live_tup),
     )
 

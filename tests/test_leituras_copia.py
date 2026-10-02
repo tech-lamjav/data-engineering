@@ -162,6 +162,35 @@ def test_contador_nulo_e_erro():
         le_leitura(_Conn([(T0, None, None, None)]), "prd", "futebol", "int_futebol_odds_devig")
 
 
+def test_tabela_sem_indices_tem_idx_scan_nulo_e_conta_como_zero():
+    # A cópia congelada do de-vig não tem nenhum índice, e o pg_stat_user_tables devolve
+    # idx_scan NULL (não 0) numa tabela sem índice. Medido em PRD e DEV em 02/10/2026:
+    # seq_scan e n_live_tup legíveis, idx_scan NULL, 0 índices. Tratar como erro derrubava
+    # a leitura do dia 0 com "papel sem visibilidade", que era mentira.
+    conn = _Conn([(T0, 14561, None, 838_049)])
+
+    leitura = le_leitura(conn, "prd", "futebol", "int_futebol_odds_devig")
+
+    assert leitura == _leitura(seq=14561, idx=0, linhas=838_049)
+
+
+def test_seq_scan_ou_n_live_tup_nulos_continuam_sendo_erro_mesmo_com_idx_scan_lido():
+    # O NULL de idx_scan só é "sem índices" quando os outros dois contadores existem; se
+    # faltar seq_scan ou n_live_tup, é falta de visibilidade e não se mediu nada.
+    with pytest.raises(LookupError):
+        le_leitura(_Conn([(T0, None, 3, 811_000)]), "prd", "futebol", "int_futebol_odds_devig")
+    with pytest.raises(LookupError):
+        le_leitura(_Conn([(T0, 14500, 3, None)]), "prd", "futebol", "int_futebol_odds_devig")
+
+
+def test_idx_scan_nulo_nas_duas_leituras_e_estavel_depois_de_7_dias():
+    # O caso real do DROP: tabela sem índice nos dois dias, seq_scan parado.
+    base = _leitura(seq=14561, idx=0, linhas=838_049)
+    repeticao = _leitura(seq=14561, idx=0, linhas=838_049, quando=T0 + timedelta(days=7))
+
+    assert compara(base, repeticao).veredito == "estavel"
+
+
 # ------------------------------------------------------------------
 # Arquivo de registros: uma linha por ambiente
 # ------------------------------------------------------------------
