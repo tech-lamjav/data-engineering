@@ -243,9 +243,11 @@ def dependentes(pg_conn, schema: str, table: str) -> list[str]:
     Olha o catálogo por OID, não por texto: views/regras de OUTRAS relações, funções com o tipo
     da tabela na assinatura, sequências da tabela (serial/identity), chaves estrangeiras nos dois
     sentidos, triggers, publicações, regras da própria tabela, ACL por coluna, identidade de
-    réplica por índice, herança/partição. O que a troca não reproduz na sombra e não é
-    descartável com a velha manda a tabela para o caminho staged ou para a carga no lugar. O que
-    pertence à tabela e é recriado (índices, constraints, defaults, comentários) não conta.
+    réplica por índice, herança/partição, e uma consulta genérica sobre `pg_depend` que pega o
+    resto (política de RLS de outra tabela, função com corpo `BEGIN ATOMIC`, estatística
+    estendida...). O que a troca não reproduz na sombra e não é descartável com a velha manda a
+    tabela para o caminho staged ou para a carga no lugar. O que pertence à tabela e é recriado
+    (índices, constraints, defaults, políticas e comentários dela) não conta.
     """
     motivos: list[str] = []
     with pg_conn.cursor() as cur:
@@ -323,7 +325,44 @@ def dependentes(pg_conn, schema: str, table: str) -> list[str]:
             (oid, oid),
         ):
             motivos.append(n)
+        # Rede de segurança GENÉRICA (ADR 0005 §1): tudo o que o catálogo registra como dependente
+        # da tabela (ou do tipo dela) por OID e que as consultas acima não cobrem nem pertence à
+        # própria tabela. Pega o que uma lista de tipos não vê: política de RLS de OUTRA tabela,
+        # função SQL com corpo `BEGIN ATOMIC`, estatística estendida, e qualquer tipo de objeto
+        # que o Postgres passe a registrar. Sem ela a tabela escolheria a troca e o DROP da velha
+        # falharia toda hora (`TrocaFalhou(dependente_novo)`) em vez de cair no fallback.
+        for n in nomes(_SQL_DEPENDENTES_GENERICOS, {"oid": oid, "reltype": reltype}):
+            motivos.append(f"dependente por OID: {n}")
     return motivos
+
+
+# Dependentes por OID que NÃO são de outro objeto nem têm consulta própria acima:
+#   - `deptype` i (interno: toast, tipo composto, gatilhos de FK) e e (extensão) ficam de fora;
+#   - já cobertos por consulta específica: regras/views, triggers, publicações, sequências,
+#     chaves estrangeiras (nos dois sentidos) e função com o tipo na assinatura;
+#   - pertencem à própria tabela e a troca recria ou reaplica: índices, constraints, defaults
+#     (inclusive colunas geradas) e políticas de RLS da própria tabela.
+_SQL_DEPENDENTES_GENERICOS = """
+SELECT DISTINCT pg_describe_object(d.classid, d.objid, d.objsubid)
+FROM pg_depend d
+WHERE d.deptype IN ('n', 'a')
+  AND ((d.refclassid = 'pg_class'::regclass AND d.refobjid = %(oid)s)
+       OR (d.refclassid = 'pg_type'::regclass AND d.refobjid = %(reltype)s))
+  AND d.classid NOT IN ('pg_rewrite'::regclass, 'pg_trigger'::regclass,
+                        'pg_publication_rel'::regclass)
+  AND NOT (d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_type'::regclass)
+  AND NOT (d.classid = 'pg_constraint'::regclass AND EXISTS (
+        SELECT 1 FROM pg_constraint k WHERE k.oid = d.objid
+        AND (k.conrelid = %(oid)s OR k.confrelid = %(oid)s)))
+  AND NOT (d.classid = 'pg_class'::regclass AND (
+        EXISTS (SELECT 1 FROM pg_class x WHERE x.oid = d.objid AND x.relkind = 'S')
+        OR EXISTS (SELECT 1 FROM pg_index i WHERE i.indexrelid = d.objid AND i.indrelid = %(oid)s)))
+  AND NOT (d.classid = 'pg_attrdef'::regclass AND EXISTS (
+        SELECT 1 FROM pg_attrdef a WHERE a.oid = d.objid AND a.adrelid = %(oid)s))
+  AND NOT (d.classid = 'pg_policy'::regclass AND EXISTS (
+        SELECT 1 FROM pg_policy p WHERE p.oid = d.objid AND p.polrelid = %(oid)s))
+ORDER BY 1
+"""
 
 
 def escolhe_modo(pg_conn, schema: str, table: str, ctx: ContextoTroca | None) -> tuple:

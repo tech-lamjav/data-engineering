@@ -516,22 +516,57 @@ def test_view_sobre_a_tabela_aparece_como_dependente_e_tabela_limpa_nao(banco):
     assert motivos and "vw" in " ".join(motivos)
 
 
-@pytest.mark.parametrize(
-    "ddl",
-    [
-        "CREATE FUNCTION {S}.f(x {S}.jogos) RETURNS int LANGUAGE sql AS $$ SELECT 1 $$",
-        "CREATE TABLE {S}.filha (j int REFERENCES {S}.jogos(id))",
-        "CREATE FUNCTION {S}.tg() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$; "
-        "CREATE TRIGGER tg BEFORE INSERT ON {S}.jogos FOR EACH ROW EXECUTE FUNCTION {S}.tg()",
-        "CREATE SEQUENCE {S}.sq OWNED BY {S}.jogos.id",
-        "GRANT SELECT (valor) ON {S}.jogos TO " + LEITOR,
-    ],
-)
+DDLS_DE_DEPENDENTE = [
+    "CREATE FUNCTION {S}.f(x {S}.jogos) RETURNS int LANGUAGE sql AS $$ SELECT 1 $$",
+    "CREATE TABLE {S}.filha (j int REFERENCES {S}.jogos(id))",
+    "CREATE FUNCTION {S}.tg() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$; "
+    "CREATE TRIGGER tg BEFORE INSERT ON {S}.jogos FOR EACH ROW EXECUTE FUNCTION {S}.tg()",
+    "CREATE SEQUENCE {S}.sq OWNED BY {S}.jogos.id",
+    "GRANT SELECT (valor) ON {S}.jogos TO " + LEITOR,
+    # Os dois que a lista enumerada não via (achado da revisão do PR #117): a checagem é por OID
+    # e genérica, não uma lista de tipos de objeto.
+    "CREATE TABLE {S}.outra (id int); ALTER TABLE {S}.outra ENABLE ROW LEVEL SECURITY; "
+    "CREATE POLICY p ON {S}.outra USING (id IN (SELECT id FROM {S}.jogos))",
+    "CREATE FUNCTION {S}.fa() RETURNS bigint LANGUAGE sql BEGIN ATOMIC "
+    "SELECT count(*) FROM {S}.jogos; END",
+    # a troca renomearia a estatística (o LIKE a recria com nome gerado): conservador, vai no fallback
+    "CREATE STATISTICS {S}.est_jogos ON id, valor FROM {S}.jogos",
+]
+IDS_DE_DEPENDENTE = [
+    "funcao_com_o_tipo", "fk", "trigger", "sequencia", "acl_por_coluna",
+    "policy_de_outra_tabela", "funcao_begin_atomic",
+    "estatistica_estendida",
+]
+
+
+@pytest.mark.parametrize("ddl", DDLS_DE_DEPENDENTE, ids=IDS_DE_DEPENDENTE)
 def test_outros_dependentes_tambem_mandam_a_tabela_para_a_carga_no_lugar(banco, ddl):
     _cria_jogos()
     _exec(ddl.format(S=S))
     with psycopg.connect(URL) as conn:
         assert troca.dependentes(conn, S, "jogos")
+
+
+@pytest.mark.parametrize("ddl", DDLS_DE_DEPENDENTE, ids=IDS_DE_DEPENDENTE)
+def test_tabela_com_qualquer_dependente_cai_no_fallback_e_nunca_chega_a_falhar_a_troca(banco, ddl):
+    """História 19: a tabela com dependente NUNCA usa a troca (o DROP da velha falharia toda
+    hora). O modo é decidido pela checagem, antes de carregar a sombra."""
+    _cria_jogos()
+    _exec(ddl.format(S=S))
+    with psycopg.connect(URL) as conn:
+        modo, motivo = troca.escolhe_modo(conn, S, "jogos", _ctx(troca=["jogos"]))
+    assert modo == troca.MODO_FALLBACK
+    assert motivo
+
+
+def test_o_que_pertence_a_propria_tabela_nao_conta_como_dependente(banco):
+    """Índices, constraints, defaults, políticas e comentários da própria tabela são recriados
+    ou reaplicados pela troca: a checagem genérica não pode barrá-los."""
+    _cria_jogos(com_dono_e_rls=True)
+    _exec(f"ALTER TABLE {S}.jogos ADD COLUMN gerada int GENERATED ALWAYS AS (id * 2) STORED")
+    _exec(f"ALTER TABLE {S}.jogos ADD COLUMN texto text")  # ganha toast
+    with psycopg.connect(URL) as conn:
+        assert troca.dependentes(conn, S, "jogos") == []
 
 
 def test_sombras_orfas_sao_removidas_e_a_com_mais_de_2h_gera_aviso(banco):
