@@ -618,11 +618,12 @@ def _sync_one_table(
     escalar. O column_list do COPY usa só as escalares, casando com o DDL nativo.
 
     env/sport resolvem a regra de retenção de DEV (DE#75/#76/#77, DE#106) via
-    `retencao.resolve_regra_retencao(sport, env, table_name)`. Com regra (só DEV), a tabela é
-    lida por query job filtrado no BigQuery (`filtro_bq`), submetido e ESPERADO antes do
-    TRUNCATE: sem `bigquery.jobs.create` (403) ou com o teto de bytes estourado, o passe
-    levanta com a tabela de destino intacta. PRD e tabela sem regra: rule é None e toda linha
-    vai pro COPY por `list_rows`, byte-idêntico ao anterior, sem query job.
+    `retencao.resolve_regra_retencao(sport, env, table_name, cache_serving)`. Com regra (DEV, ou
+    PRD nas odds com o cache de serving ligado), a tabela é lida por query job filtrado no
+    BigQuery (`filtro_bq`), submetido e ESPERADO antes do TRUNCATE: sem `bigquery.jobs.create`
+    (403) ou com o teto de bytes estourado, o passe levanta com a tabela de destino intacta.
+    PRD sem o cache e tabela sem regra: rule é None e toda linha vai pro COPY por `list_rows`,
+    byte-idêntico ao anterior, sem query job.
     """
     # Invariante de segurança: table_name vem SEMPRE da allowlist resolvida
     # (via resolve_tables). O assert torna explícita a segurança das f-strings de SQL.
