@@ -139,7 +139,10 @@ def test_nenhum_codigo_do_repo_le_a_allowlist_crua_fora_do_resolvedor():
 # Comportamento observável de cada consumidor com uma exclusão no resolvedor
 # ------------------------------------------------------------------
 class _FakeCursor:
-    """Cursor que não devolve nada: nenhuma função no pg_proc, nenhum estado de sync."""
+    """Cursor que não devolve nada: nenhuma função no pg_proc, nenhum estado de sync.
+
+    Única exceção: a trava de sync (DE#107) é concedida, senão `run_sync` voltaria "ocupado".
+    """
 
     def __init__(self):
         self.executados = []
@@ -157,6 +160,8 @@ class _FakeCursor:
         return []
 
     def fetchone(self):
+        if self.executados and "pg_try_advisory_lock" in self.executados[-1]:
+            return (True,)
         return None
 
 

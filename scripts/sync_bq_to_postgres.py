@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.sync.bq_to_postgres import run_sync
+from src.sync.trava import STATUS_OCUPADO
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -27,6 +28,10 @@ def main():
         if result["status"] == "aborted_schema_drift":
             logger.error(f"Sync abortado por schema drift: {result['drift']}")
             return 2
+        if result["status"] == STATUS_OCUPADO:
+            # Outro sync do mesmo (sport, env) está com a trava (DE#107): nada foi tocado.
+            logger.warning(f"Sync já em andamento para sport={result['sport']} env={result['env']}")
+            return 3
         logger.info(f"Sync concluído: {result}")
         return 0
     except Exception as e:

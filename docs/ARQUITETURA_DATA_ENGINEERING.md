@@ -344,7 +344,7 @@ região `us-east1`, `512Mi`, `1 CPU`, timeout `3600s`, `--no-allow-unauthenticat
 | Serviço | Memória/timeout | Secrets injetados | Env |
 |---|---|---|---|
 | extractors (default) | 512Mi / 3600s | `BALLDONTLIE_KEY`, `API_FOOTBALL_KEY` | `GCS_BUCKET_NAME, GCP_PROJECT_ID, SEASON, LOG_LEVEL` |
-| `sync-bq-to-postgres` | 1Gi / 900s, `max-instances 1` | `SUPABASE_PG_URL_PRD/DEV` | `GCP_PROJECT_ID, LOG_LEVEL` (+ runtime Python 3.13) |
+| `sync-bq-to-postgres` | 2Gi / 3600s, `max-instances 1` (não serializa: a serialização é a trava de sessão por (sport, env) em `src/sync/trava.py`) | `SUPABASE_PG_URL_PRD/DEV` | `GCP_PROJECT_ID, LOG_LEVEL` (+ runtime Python 3.13) |
 | `daily-summary` | 600s | `GMAIL_USER/APP_PASSWORD`, `NOTIFY_EMAIL` | `GCP_PROJECT_ID, LOG_LEVEL` |
 | `notify-execution` | — | `GMAIL_USER/APP_PASSWORD`, `NOTIFY_EMAIL` | — |
 

@@ -7,15 +7,20 @@ Decisões de design (ver PLANO_OTIMIZACAO_BQ_SUPABASE.md fase 2):
   de query em INFORMATION_SCHEMA.
 - Sync serial table-by-table, dim -> fact -> derived (ver *_TABLES_ORDERED em
   config.py) para minimizar janela de inconsistência cross-table.
-- TRUNCATE + COPY dentro de uma única transação por tabela: leitores veem dados
-  velhos ou novos, nunca parciais.
+- TRUNCATE + COPY dentro de uma única transação por tabela: nenhum leitor vê dado
+  parcial (mas o TRUNCATE segura ACCESS EXCLUSIVE até o fim da carga, então o leitor
+  ESPERA; ver DE#108).
+- Trava por (sport, env): `pg_try_advisory_lock` de sessão logo depois do connect (DE#107,
+  src/sync/trava.py). Lock ocupado = o sync volta com STATUS_OCUPADO sem tocar em nada.
 - COPY TIPADO do psycopg3 (`cur.copy(...).write_row(row)`): serializa tipos e NULL
   nativamente. Distingue None (NULL) de '' (string vazia real) — resolve o M11, em
   que o CSV textual com `NULL ''` colapsava ambos no mesmo token. Também faz
   streaming linha-a-linha (sem materializar a tabela inteira em StringIO).
-- Sessão Postgres com `SET statement_timeout = '900s'`: o default do Supabase no
-  nível do database é 2min, insuficiente p/ COPY de marts grandes em compute
-  pequeno (DEV cancelou fact_fixture_player_stats em 10/07 com QueryCanceled).
+- Sessão Postgres com `SET statement_timeout` de SYNC_STATEMENT_TIMEOUT_S (3600 s, o
+  timeout do Cloud Run): o default do Supabase no nível do database é 2min,
+  insuficiente p/ COPY de marts grandes em compute pequeno (DEV cancelou
+  fact_fixture_player_stats em 10/07 com QueryCanceled; a DE#107 subiu de 900 s para
+  3600 s porque o COPY de odds já passou de 860 s).
   E `connect_timeout=15`: fail-fast quando o pooler não completa o handshake
   (incidente Supavisor 05-06/07 prendia o connect ~381s); retry fica no workflow.
 
@@ -40,6 +45,14 @@ from src.config import (
     get_pg_url,
 )
 from src.sync.alvo import resolve_alvo_sync
+from src.sync.trava import (
+    STATUS_OCUPADO,
+    SYNC_STATEMENT_TIMEOUT_S,
+    chave_trava,
+    solta_trava,
+    tenta_trava,
+    verifica_pooler_de_sessao,
+)
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -540,9 +553,12 @@ def run_sync(
         {status, sport, env, synced: [...], drift: [...]}
         Em caso de drift detectada no pre-flight, NÃO faz TRUNCATE em nenhuma
         tabela; retorna status='aborted_schema_drift' com o detalhe.
+        Se já há outro sync do mesmo (sport, env) com a trava (DE#107), não toca em nada
+        e retorna status=STATUS_OCUPADO ('busy') com synced=[].
     """
     dataset, schema, tables_ordered = resolve_alvo_sync(sport)
     pg_url = get_pg_url(env)
+    verifica_pooler_de_sessao(pg_url)
     resolved = resolve_tables(tables, tables_ordered)
     _assert_dev_retention_order(sport, env, resolved)
     logger.info(
@@ -557,12 +573,30 @@ def run_sync(
     pg_conn = psycopg.connect(pg_url, connect_timeout=15)
     pg_conn.autocommit = False
 
+    trava_obtida = False
     try:
+        # Trava por (sport, env) ANTES de qualquer outra coisa no destino (nem o
+        # CREATE TABLE do _sync_state, nem o SET): ocupada = volta sem tocar em nada.
+        trava_obtida = tenta_trava(pg_conn, sport, env)
+        if not trava_obtida:
+            logger.warning(
+                f"Sync sport={sport} env={env} já em andamento (trava ocupada); "
+                f"esta execução não toca em nada"
+            )
+            return {
+                "status": STATUS_OCUPADO,
+                "sport": sport,
+                "env": env,
+                "synced": [],
+                "drift": [],
+            }
+
         # Override por sessão do statement_timeout=2min que o Supabase seta no
         # database: COPY de marts grandes excede 2min (sobretudo no compute menor
-        # do DEV). 900s alinha com o timeout do Cloud Run; não altera nada global.
+        # do DEV). Acompanha o timeout do Cloud Run (3600s, ver trava.py); não
+        # altera nada global.
         with pg_conn.cursor() as cur:
-            cur.execute("SET statement_timeout = '900s'")
+            cur.execute(f"SET statement_timeout = '{SYNC_STATEMENT_TIMEOUT_S}s'")
         pg_conn.commit()
 
         drifts = check_schema_parity(bq, pg_conn, resolved, dataset, schema)
@@ -609,4 +643,6 @@ def run_sync(
         pg_conn.rollback()
         raise
     finally:
+        if trava_obtida:
+            solta_trava(pg_conn, sport, env)
         pg_conn.close()

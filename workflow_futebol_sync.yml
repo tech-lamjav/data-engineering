@@ -8,6 +8,16 @@
 # skip-if-unchanged no engine torna o run barato quando o BQ não mudou desde o último sync.
 #
 # try/except independentes: falha num ambiente não bloqueia o outro.
+#
+# TRAVA DE SYNC (DE#107). O serviço toma um advisory lock de sessão no Postgres por
+# (sport, env); se outro sync do mesmo alvo estiver rodando, responde HTTP 409. Aqui 409 é
+# "já em andamento": WARNING, SEM entrar em failed_services e SEM PARTIAL_FAILURE (o outro
+# sync é quem responde pelo resultado). O retry padrão do Workflows não repete 409.
+# ORDEM DE DEPLOY: este workflow vai ANTES da imagem do serviço; com a imagem nova e o YAML
+# velho, todo 409 viraria PARTIAL_FAILURE.
+#
+# TIMEOUT: 1800 s é o máximo do http.get do Workflows. O Cloud Run aceita 3600 s e o
+# statement_timeout da sessão do sync também sobe para 3600 s (src/sync/trava.py).
 # ============================================================
 
 main:
@@ -42,7 +52,7 @@ main:
                         query:
                             sport: futebol
                             env: prd
-                        timeout: 900
+                        timeout: 1800
                 # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.
                 retry:
                     predicate: ${http.default_retry_predicate}
@@ -60,17 +70,32 @@ main:
         except:
             as: e
             steps:
-            - log_sync_prd_error:
-                call: sys.log
-                args:
-                    severity: ERROR
-                    data:
-                        message: "Sync futebol PRD falhou"
-                        error: ${e.message}
-            - handle_sync_prd_errors:
-                assign:
-                - workflow_status: "PARTIAL_FAILURE"
-                - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[futebol/prd]"])}
+            # `map.get`: TimeoutError/ConnectionError não têm `code`, e o Workflows levanta
+            # erro ao ler chave ausente de um map.
+            - classifica_sync_prd_erro:
+                switch:
+                - condition: ${default(map.get(e, "code"), 0) == 409}
+                  steps:
+                  - log_sync_prd_em_andamento:
+                      call: sys.log
+                      args:
+                          severity: WARNING
+                          data:
+                              message: "Sync futebol PRD já em andamento (trava de sync, 409); esta execução não sincronizou"
+                              workflow_name: "workflow_futebol_sync"
+                - condition: true
+                  steps:
+                  - log_sync_prd_error:
+                      call: sys.log
+                      args:
+                          severity: ERROR
+                          data:
+                              message: "Sync futebol PRD falhou"
+                              error: ${e.message}
+                  - handle_sync_prd_errors:
+                      assign:
+                      - workflow_status: "PARTIAL_FAILURE"
+                      - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[futebol/prd]"])}
 
     # ── Sync DEV ──────────────────────────────────────────────────────────────
     - sync_dev:
@@ -87,7 +112,7 @@ main:
                         query:
                             sport: futebol
                             env: dev
-                        timeout: 900
+                        timeout: 1800
                 retry:
                     predicate: ${http.default_retry_predicate}
                     max_retries: 3
@@ -104,17 +129,32 @@ main:
         except:
             as: e
             steps:
-            - log_sync_dev_error:
-                call: sys.log
-                args:
-                    severity: ERROR
-                    data:
-                        message: "Sync futebol DEV falhou"
-                        error: ${e.message}
-            - handle_sync_dev_errors:
-                assign:
-                - workflow_status: "PARTIAL_FAILURE"
-                - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[futebol/dev]"])}
+            # `map.get`: TimeoutError/ConnectionError não têm `code`, e o Workflows levanta
+            # erro ao ler chave ausente de um map.
+            - classifica_sync_dev_erro:
+                switch:
+                - condition: ${default(map.get(e, "code"), 0) == 409}
+                  steps:
+                  - log_sync_dev_em_andamento:
+                      call: sys.log
+                      args:
+                          severity: WARNING
+                          data:
+                              message: "Sync futebol DEV já em andamento (trava de sync, 409); esta execução não sincronizou"
+                              workflow_name: "workflow_futebol_sync"
+                - condition: true
+                  steps:
+                  - log_sync_dev_error:
+                      call: sys.log
+                      args:
+                          severity: ERROR
+                          data:
+                              message: "Sync futebol DEV falhou"
+                              error: ${e.message}
+                  - handle_sync_dev_errors:
+                      assign:
+                      - workflow_status: "PARTIAL_FAILURE"
+                      - failed_services: ${list.concat(failed_services, ["sync-bq-to-postgres[futebol/dev]"])}
 
     # ── Finalização ───────────────────────────────────────────────────────────
     - finalize:

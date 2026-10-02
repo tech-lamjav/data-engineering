@@ -162,6 +162,10 @@ Tabela final do dbt (repo `analytics-engineering`) pronta para consumo; é o que
 **Sync**:
 Materialização das marts do BigQuery no Postgres de serving (Supabase), por esporte e ambiente (PRD/DEV); em PRD, por **carga por troca**. O escopo pode ser reduzido por tabela e ambiente (**retenção**) — ver `docs/adr/0003`, `0005` e `0006`.
 
+**Trava de sync**:
+Advisory lock de **sessão** do Postgres, um por (sport, env), que o sync toma na conexão de destino logo depois do connect (`src/sync/trava.py`, DE#107). Lock ocupado = o sync volta sem tocar em nada, o handler responde 409 e o workflow trata como "em andamento" (WARNING, fora de `failed_services`). É a serialização de verdade: o `max-instances=1` do Cloud Run não serializa (`containerConcurrency=80`). Vale só no Shared Pooler em modo sessão (5432); a porta 6543 é recusada. O **detector de sync concorrente** (`scripts/detecta_sync_concorrente.py`, somente leitura) confere a sobreposição de syncs do mesmo alvo nos logs (sai 0 verde, 1 vermelho, 2 sem dado: janela sem nenhum sync real não é verde).
+_Avoid_: lock de sync em memória ou no YAML (a instância muda a cada hora e o workflow não cobre Scheduler duplicado nem execução manual)
+
 **Alvo do sync**:
 O que o sync de fato copia por esporte: a allowlist de `config.py` menos as exclusões de `src/sync/alvo.py`. Sync, detector de atraso e gerador do contrato de serving leem o alvo pelo mesmo resolvedor; ler a allowlist crua faria o detector alarmar por atraso numa tabela que o sync parou de copiar. Hoje exclui `int_futebol_odds_devig` (sem leitor; a cópia no Postgres fica congelada até o `DROP`, DDL do app).
 _Avoid_: allowlist (é só a metade do alvo)
