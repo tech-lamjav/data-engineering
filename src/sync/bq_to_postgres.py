@@ -510,6 +510,17 @@ def _tem_coluna_regra_versao(pg_conn, schema: str) -> bool:
         return cur.fetchone() is not None
 
 
+def _exige_coluna_regra_versao(schema: str, table_name: str | None = None) -> None:
+    """Levanta com a instrução do SQL administrativo (a coluna não existe)."""
+    quem = f"{table_name}: a" if table_name else "A"
+    raise RuntimeError(
+        f"{quem} regra de retenção das odds é versionada (coluna `regra_versao` do estado de "
+        f"sincronização) e a coluna não existe em {schema}._sync_state. Aplique "
+        f"scripts/sql/sync_state_regra_versao.sql por psycopg (SQL administrativo) ANTES da "
+        f"imagem. Nada foi tocado."
+    )
+
+
 def _read_regra_versao(pg_conn, table_name: str, schema: str):
     """Versão da regra gravada junto do estado da tabela, ou None (nunca carimbada)."""
     with pg_conn.cursor() as cur:
@@ -642,12 +653,7 @@ def _sync_one_table(
     versao_esperada = odds_serving.regra_versao(rule) if versionada else None
     tem_coluna_versao = _tem_coluna_regra_versao(pg_conn, schema) if versionada else False
     if versao_esperada is not None and not tem_coluna_versao:
-        raise RuntimeError(
-            f"{table_name}: a regra de retenção das odds é versionada (coluna `regra_versao` do "
-            f"estado de sincronização) e a coluna não existe em {schema}._sync_state. Aplique "
-            f"scripts/sql/sync_state_regra_versao.sql por psycopg (SQL administrativo) ANTES da "
-            f"imagem. Nada foi tocado."
-        )
+        _exige_coluna_regra_versao(schema, table_name)
     versao_gravada = (
         _read_regra_versao(pg_conn, table_name, schema) if versionada and tem_coluna_versao else None
     )
@@ -927,6 +933,21 @@ def run_sync(
             _verifica_query_job(bq)
 
         _ensure_sync_state_table(pg_conn, schema)
+
+        # A regra das odds é versionada no estado: sem a coluna (SQL administrativo esquecido) o
+        # sync INTEIRO aborta agora, antes de recarregar as tabelas que vêm antes das odds.
+        if (sport or "").lower() == "futebol" and any(
+            t == odds_serving.TABELA_ODDS
+            and odds_serving.regra_versao(resolve_regra_retencao(sport, env, t, selecao_cache))
+            is not None
+            for t in resolved
+        ):
+            if not _tem_coluna_regra_versao(pg_conn, schema):
+                logger.error(
+                    f"Sync abortado ANTES de qualquer TRUNCATE: falta a coluna regra_versao em "
+                    f"{schema}._sync_state (sport={sport}, env={env})."
+                )
+                _exige_coluna_regra_versao(schema)
 
         synced: list[dict] = []
         falhas: list[dict] = []

@@ -708,3 +708,32 @@ def test_prd_sem_o_cache_ligado_nao_exige_o_iam_de_query_job(run):
     mod.run_sync(tables="all", env="prd", sport="futebol")
 
     assert run.preflights == []
+
+
+def test_sem_a_coluna_o_sync_inteiro_aborta_antes_de_carregar_qualquer_tabela(run, monkeypatch):
+    """A coluna `regra_versao` faltando é erro de deploy (SQL administrativo esquecido): aborta o
+    sync INTEIRO antes de qualquer carga, não só quando a execução chega nas odds (as tabelas
+    anteriores já teriam sido recarregadas)."""
+    monkeypatch.setattr(mod, "_tem_coluna_regra_versao", lambda conn, schema: False)
+
+    with pytest.raises(RuntimeError, match="sync_state_regra_versao.sql"):
+        mod.run_sync(tables="all", env="prd", sport="futebol", cache_serving=ODDS)
+
+    assert list(run) == []  # nenhuma tabela foi carregada
+
+
+def test_sem_a_coluna_e_sem_regra_ativa_o_sync_segue_como_antes(run, monkeypatch):
+    monkeypatch.setattr(mod, "_tem_coluna_regra_versao", lambda conn, schema: False)
+
+    mod.run_sync(tables="all", env="prd", sport="futebol")  # PRD, cache desligado
+
+    assert len(run) > 0
+
+
+def test_em_dev_a_regra_de_mercados_tambem_exige_a_coluna(run, monkeypatch):
+    monkeypatch.setattr(mod, "_tem_coluna_regra_versao", lambda conn, schema: False)
+
+    with pytest.raises(RuntimeError, match="sync_state_regra_versao.sql"):
+        mod.run_sync(tables="all", env="dev", sport="futebol")
+
+    assert list(run) == []

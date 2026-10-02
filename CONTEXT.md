@@ -171,11 +171,11 @@ O que o sync de fato copia por esporte: a allowlist de `config.py` menos as excl
 _Avoid_: allowlist (é só a metade do alvo)
 
 **Cache de serving**:
-O Postgres de PRD enquanto camada que serve o app: guarda o que o app renderiza, não o histórico completo. A fonte de verdade é o BigQuery; perder uma linha do Postgres é um recorte, não uma perda de dado. Hoje só vale para as odds.
+O Postgres de PRD enquanto camada que serve o app: guarda o que o app renderiza, não o histórico completo. A fonte de verdade é o BigQuery; perder uma linha do Postgres é um recorte, não uma perda de dado. Hoje só vale para as odds (`fact_odds_snapshot`): em PRD, só mercados servidos, fixtures futuras e dos últimos 30 dias com todas as janelas e, nas mais antigas, só o fechamento (T-15m); o filtro roda no BigQuery e o workflow o liga por tabela (`cache_serving_prd`). O que sai do Postgres continua no BigQuery e num snapshot congelado datado (`fact_odds_snapshot_pre_corte_AAAAMMDD`).
 _Avoid_: espelho (promete o histórico inteiro, que é o que deixa de valer nas odds)
 
 **Retenção**:
-Recorte temporal de linhas que o sync aplica ao materializar uma tabela no Postgres. Tem duas famílias: **retenção de coleta** (contada pelo momento da captura) e **retenção de produto** (contada pelo kickoff da fixture, ou pela temporada corrente onde a tabela é por temporada). Cada família tem a sua constante, em `src/sync/retencao.py`, e mudar uma não mexe na outra. Hoje só vale em DEV (a #109 a estende a PRD nas odds, ADR 0006); em DEV o corte roda no BigQuery, por query job, e não depois de ler a tabela inteira.
+Recorte temporal de linhas que o sync aplica ao materializar uma tabela no Postgres. Tem duas famílias: **retenção de coleta** (contada pelo momento da captura) e **retenção de produto** (contada pelo kickoff da fixture, ou pela temporada corrente onde a tabela é por temporada). Cada família tem a sua constante, em `src/sync/retencao.py`, e mudar uma não mexe na outra. Vale em DEV e, só nas odds e quando o workflow liga o cache de serving (DE#109, ADR 0006), em PRD; o corte roda no BigQuery, por query job, e não depois de ler a tabela inteira.
 _Avoid_: purge, limpeza (a retenção é aplicada na carga, não depois dela); janela (janela é banda de kickoff da coleta); "retenção de DEV" como verbete à parte (é só esta, em DEV)
 
 **Teto do DEV**:
@@ -183,7 +183,7 @@ Os 500 MB do plano free do projeto Supabase de DEV, medidos como a soma de `pg_d
 _Avoid_: guarda (guarda é teste dbt, ver **Guarda**; este é um alerta do resumo diário)
 
 **Mercado servido**:
-Mercado de odds que o Postgres guarda porque o app o lê (por RPC ou por decisão do dono do app). Só mercados servidos entram na tabela de odds do Postgres, em PRD e em DEV; os demais ficam no BigQuery. A lista vigente mora na spec da #109.
+Mercado de odds que o Postgres guarda porque o app o lê (por RPC ou por decisão do dono do app). Só mercados servidos entram na tabela de odds do Postgres, em PRD e em DEV; os demais ficam no BigQuery. A lista é UMA constante, `MERCADOS_SERVIDOS_NOMES` em `src/sync/alvo.py` (id → nome), hoje 1, 4, 5, 6, 8 e 12; o sync a lê e o contrato de serving confere as RPCs vivas contra ela (as RPCs citam o nome do mercado).
 _Avoid_: mercado suportado (o BigQuery coleta mais mercados do que o app serve)
 
 **Carga no lugar**:
