@@ -194,3 +194,31 @@ def test_script_local_sai_com_4_quando_a_troca_falha(monkeypatch):
         },
     )
     assert script.main() == 4
+
+
+# ------------------------------------------------------------------
+# DE#109: cache de serving das odds (parâmetro `cache_serving`)
+# ------------------------------------------------------------------
+def test_o_parametro_cache_serving_chega_ao_run_sync(handler, monkeypatch):
+    visto = {}
+
+    def fake(**kw):
+        visto.update(kw)
+        return {"status": "success", "sport": "futebol", "env": "prd", "synced": [], "summary": {}}
+
+    monkeypatch.setattr(handler, "run_sync", fake)
+    handler.sync_bq_to_postgres(_Req(sport="futebol", env="prd", cache_serving="fact_odds_snapshot"))
+    assert visto["cache_serving"] == "fact_odds_snapshot"
+
+
+def test_sem_o_parametro_o_cache_de_serving_fica_desligado(handler, monkeypatch):
+    """Rollback por workflow: sem `cache_serving`, o PRD volta a receber a tabela completa."""
+    visto = {}
+
+    def fake(**kw):
+        visto.update(kw)
+        return {"status": "success", "sport": "futebol", "env": "prd", "synced": [], "summary": {}}
+
+    monkeypatch.setattr(handler, "run_sync", fake)
+    handler.sync_bq_to_postgres(_Req(sport="futebol", env="prd"))
+    assert not visto["cache_serving"]

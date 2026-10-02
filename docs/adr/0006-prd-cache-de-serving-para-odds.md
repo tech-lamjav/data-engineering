@@ -1,6 +1,6 @@
 # O Postgres de PRD é cache de serving para as odds: só mercados servidos e retenção de produto
 
-**Status:** proposed (2026-09-29) — vira accepted com o aceite do Victor; aceita, revoga para as odds a cláusula "PRD nunca usa este filtro" da ADR 0003
+**Status:** accepted (2026-09-30, aceite do Victor em prop-play-predictor#542), implementada na DE#109 e ainda DESLIGADA em PRD (lançamento escuro) até o cutover; revoga para as odds a cláusula "PRD nunca usa este filtro" da ADR 0003
 **Issue:** [DE #109](https://github.com/tech-lamjav/data-engineering/issues/109)
 
 ## Contexto
@@ -74,3 +74,21 @@ rebuild de imagem do dbt, e põe uma regra de serving no modelo.
 - **A query job exige `bigquery.jobs.create`** na conta de runtime do sync. Preferir uma conta
   dedicada ao sync a ampliar a que os 29 serviços compartilham.
 - **A ADR 0003** continua valendo para DEV; a linha de Status dela aponta para esta ADR.
+
+## Emenda de 2026-10-02 (implementação da DE#109)
+
+- **Mercados servidos:** 1, 4, 5, 6, 8 e 12. O Victor respondeu em 30/09 e **manteve o 6** (Gols
+  mais/menos no 1º tempo), por plano e não por uso; tirou 10, 7, 57, 58 e 77; os escanteios 45 e 56
+  saem do Postgres de PRD (a #448 roda no BigQuery). A lista é uma constante só em `src/sync/alvo.py`.
+- **Sem corte de partição.** A decisão 3 previa um corte derivado da coleta mais antiga das fixtures
+  elegíveis. Não entrou: o ramo do fechamento (T-15m das fixtures antigas) lê as partições todas, e uma
+  cláusula em OR não poda partição, então o job fatura a tabela inteira de qualquer jeito (separar em
+  dois jobs só faturaria mais). O teto de bytes continua o de um full scan, como a spec já assumia; o
+  ganho é nas linhas que chegam ao processo, que é o que dita o tempo.
+- **O filtro não usa marca-d'água.** A tabela não é append-only (a janela `daily` é regravada), então o
+  filtro decide por mercado, fixture elegível e janela, e a carga é completa a cada vez.
+- **A versão da regra** vive na coluna `regra_versao` do estado de sincronização; mudar a lista, o
+  corte de 30 dias ou desligar o cache recarrega a tabela mesmo com o BigQuery inalterado.
+- **Snapshot congelado** (história 57 da #112): antes de ligar o corte, `scripts/snapshot_odds_pre_corte.py`
+  copia `fact_odds_snapshot` para uma tabela datada no BigQuery; o Victor aceitou apontar os scripts de
+  análise para ela.

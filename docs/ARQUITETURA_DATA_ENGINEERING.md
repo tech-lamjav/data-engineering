@@ -441,10 +441,15 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
 
 - **Leitura sem custo de scan (PRD e tabela sem retenção):** `bq.list_rows()` (grátis), não `query()`.
   ⚠️ `list_rows` **não lê view** — todo modelo sincronizado precisa ser `table` no BQ (no futebol, 5
-  ex-views viraram table). **Exceção, só DEV (DE#106):** tabela com regra de retenção é lida por
-  **query job parametrizado** (`src/sync/filtro_bq.py`), para o corte rodar no BigQuery e o DEV não
-  ler o que vai descartar. Isso custa bytes faturados (teto por job = 2× o tamanho da tabela) e exige
-  `bigquery.jobs.create` na SA runtime; sem a permissão o passe DEV aborta com 403 num pré-voo (dry-run), antes de qualquer TRUNCATE.
+  ex-views viraram table). **Exceções (query job parametrizado, `src/sync/filtro_bq.py`):** (DE#106) em DEV, a tabela
+  com regra de retenção, para o corte rodar no BigQuery e o DEV não ler o que vai descartar; (DE#109) em
+  PRD, `fact_odds_snapshot` quando o workflow liga o **cache de serving** (`cache_serving=`): dois jobs,
+  as fixtures elegíveis (`fact_fixtures`, kickoff nos últimos 30 dias ou futuro) e as odds filtradas
+  (`market_id IN mercados AND (fixture_id IN elegíveis OR collection_window = 't15m')`). Isso custa
+  bytes faturados (teto por job = 2× o tamanho da tabela; o job das odds é ~um full scan, porque o
+  fechamento das fixtures antigas lê todas as partições) e exige `bigquery.jobs.create` na SA runtime
+  **dedicada ao sync** (`sync-bq-postgres@`, `SYNC_SERVICE_ACCOUNT` no deploy; a conta dos 29 serviços
+  não ganha o papel); sem a permissão o sync aborta com 403 num pré-voo (dry-run), antes de qualquer TRUNCATE.
 - **Escrita:** por tabela, **COPY tipado** (psycopg3), que preserva `None`→NULL vs `''`→string
   vazia. Três modos, escolhidos **por tabela** no início da carga dela e ecoados em cada item de
   `synced` (`modo`, `duracao_s`, e `tentativas`/`troca_ms` quando há troca):
@@ -469,7 +474,9 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
   - **Lançamento escuro:** o serviço só usa a troca nas tabelas listadas nos parâmetros `troca=` e
     `staged=` da chamada. Quem os passa é o `workflow_futebol_sync.yml` (variáveis `troca_prd`,
     `staged_prd`, `troca_dev`, `staged_dev`, **vazias** hoje); rollback = reverter o workflow. NBA nunca
-    usa a troca; `fact_odds_snapshot` é recusada até a DE#109 (ADR 0006).
+    usa a troca; `fact_odds_snapshot` só entra na troca de PRD com o cache de serving ligado (DE#109,
+    ADR 0006; o serviço recusa a ordem inversa) e, como a tabela NÃO é append-only (a janela `daily` é
+    recapturada), a sombra é sempre carregada inteira. `cache_serving_prd` também nasce vazio.
   - **Sombras órfãs:** com a trava em mãos, no início de cada execução (mesmo com a troca desligada)
     toda tabela `*__new`/`*__old` do schema é removida; a com marcador de mais de 2 h vira aviso em
     `avisos` do retorno (e no log), sem abortar.
@@ -491,7 +498,18 @@ futebol saiu do FDW BigQuery (`wrappers`/`bq_futebol`/`futebol.sync_all`/pg_cron
   momento da captura; **produto** (`fact_insumos_medidos`, as cinco `int_futebol_premissas_*` e
   `fact_value_opportunities_hist`) = fixtures com kickoff de −30 a +14 dias, lidas de `fact_fixtures`
   na mesma execução; por temporada, `fact_fixture_player_stats` e `fact_fixture_lineups_players`.
-  PRD recebe tudo (até a #109, que muda PRD nas odds, ADR 0006).
+  PRD recebe tudo, **exceto as odds** quando o workflow liga o cache de serving (DE#109, ADR 0006, ver
+  abaixo). Em DEV as odds também só carregam os **mercados servidos** (`alvo.MERCADOS_SERVIDOS_NOMES`,
+  uma constante só, hoje 1, 4, 5, 6, 8 e 12).
+- **Cache de serving das odds em PRD (DE#109, `src/sync/odds_serving.py`):** só mercados servidos; fixtures
+  futuras e dos últimos 30 dias (kickoff de `fact_fixtures`) com todas as janelas, as mais antigas só
+  com a de fechamento (T-15m). Sem corte de partição (o ramo do fechamento lê todas) e sem marca-d'água
+  (a tabela não é append-only: a `daily` é regravada). A regra é **versionada** em
+  `_sync_state.regra_versao` (SQL administrativo `scripts/sql/sync_state_regra_versao.sql`, aplicado
+  antes da imagem em DEV e PRD): o skip-if-unchanged exige BigQuery inalterado E versão igual; mudar a
+  lista, o corte ou desligar o cache recarrega. Lançamento escuro: `cache_serving_prd` vazio no
+  workflow. Antes do corte, o snapshot congelado (`scripts/snapshot_odds_pre_corte.py`, dry-run por
+  padrão) guarda o universo de hoje no BigQuery. Runbook: `scripts/wizard_cutover_odds_prd.sh`.
 - **Tamanho do DEV:** ao fim do passe DEV o sync mede a soma de `pg_database_size` de todos os
   bancos do cluster (a métrica do teto de 500 MB do plano free) e devolve `dev_size_mb`; o workflow
   o emite no `log_completion` e o resumo diário alerta acima de 450 MB (token `[DEV]` no assunto).

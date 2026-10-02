@@ -33,9 +33,28 @@
 # `scripts/deploy_workflows.sh`; DESLIGAR (rollback) = tirar o nome (ou reverter este arquivo) e
 # rodar o deploy de workflows, sem build de imagem. Ordem de habilitação e o runbook completo
 # estão no PR da DE#108. `staged_*` serve às tabelas com view dependente (as cinco
-# `int_futebol_premissas_*`). `fact_odds_snapshot` NÃO pode entrar até a DE#109 (o serviço
-# recusa). Uma tabela que não conseguir trocar faz o serviço responder 500 com os nomes no corpo
+# `int_futebol_premissas_*`). `fact_odds_snapshot` só pode entrar em PRD com o cache de serving
+# ligado (DE#109, abaixo; o serviço recusa sem ele). Uma tabela que não conseguir trocar faz o serviço responder 500 com os nomes no corpo
 # (as outras sincronizam): aqui isso vira PARTIAL_FAILURE como qualquer 5xx não repetido.
+#
+# CACHE DE SERVING DAS ODDS (DE#109, ADR 0006). `cache_serving_prd` liga, SÓ EM PRD, o filtro que
+# faz o Postgres de PRD carregar de `fact_odds_snapshot` apenas os mercados servidos, as fixtures
+# dos últimos 30 dias e futuras com todas as janelas, e o resto só com o fechamento (T-15m). SAI
+# VAZIO neste commit (lançamento escuro): a imagem entra com o cache desligado e o PRD segue
+# recebendo a tabela completa. Ligar = `cache_serving_prd: "fact_odds_snapshot"` e rodar
+# `scripts/deploy_workflows.sh`; DESLIGAR (rollback) = voltar a "" e rodar o deploy de workflows
+# (a versão da regra no estado de sincronização faz a tabela completa voltar na carga seguinte,
+# sem build de imagem). Em DEV não há parâmetro: o filtro de mercados e a coleta de 7 dias valem
+# sempre. As odds só entram na troca de PRD (`troca_prd`) depois do cache ligado; o serviço recusa
+# a ordem inversa. O runbook de ligar (IAM da conta dedicada, smoke, snapshot congelado, deploy)
+# está em scripts/wizard_cutover_odds_prd.sh e no PR da DE#109.
+#
+# ROLLBACK DEPOIS DA TROCA DAS ODDS. Com `fact_odds_snapshot` em `troca_prd` (ou `staged_prd`),
+# zerar só `cache_serving_prd` NÃO é rollback: o serviço recusa a combinação ANTES de conectar e o
+# sync de PRD INTEIRO (as 22 tabelas, não só as odds) responde 500. A ordem inversa do ligar: tirar
+# `fact_odds_snapshot` de `troca_prd` e de `staged_prd` E zerar `cache_serving_prd` no MESMO deploy
+# deste YAML (`scripts/deploy_workflows.sh`). Só zerar o cache é o rollback enquanto as odds não
+# estiverem na troca.
 #
 # RESUMO DA TROCA NO LOG DE CONCLUSÃO (DE#108, histórias 9/20/27/54). O corpo da resposta do serviço
 # traz `summary` (fallback, falhas_de_troca, fallback_tabelas, trocas com troca_ms), `falhas` (as
@@ -62,6 +81,7 @@ main:
         - resumo_dev: null
         - troca_prd: ""
         - staged_prd: ""
+        - cache_serving_prd: ""
         - troca_dev: ""
         - staged_dev: ""
 
@@ -90,6 +110,7 @@ main:
                             env: prd
                             troca: ${troca_prd}
                             staged: ${staged_prd}
+                            cache_serving: ${cache_serving_prd}
                         timeout: 1800
                     result: sync_prd_result
                 # Retry com backoff exponencial: reexecuta em 429/5xx/timeout/erro de conexão.

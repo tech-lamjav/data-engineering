@@ -50,6 +50,8 @@ class _Cursor:
                 self._linha = (sum(self._s.bancos.values()) if self._s.bancos else None,)
         elif "pg_try_advisory_lock" in sql or "pg_advisory_unlock" in sql:
             self._linha = (True,)
+        elif "information_schema.columns" in sql:
+            self._linha = (1,)  # DE#109: a coluna regra_versao do estado existe
         else:
             self._linha = None
 

@@ -171,6 +171,7 @@ load_env() {
         echo "  SEASON=2025"
         echo "  LOG_LEVEL=INFO"
         echo "  SERVICE_ACCOUNT=ExtractScripts (opcional, padrão: ExtractScripts)"
+        echo "  SYNC_SERVICE_ACCOUNT=sync-bq-postgres (opcional: conta de runtime SÓ do sync-bq-to-postgres)"
         exit 1
     fi
     
@@ -224,7 +225,24 @@ load_env() {
         fi
         print_info "Usando service account: $SERVICE_ACCOUNT"
     fi
-    
+
+    # Conta de runtime DEDICADA ao sync (DE#109, história 51 da #112). O sync lê o BigQuery por
+    # query job (retenção de DEV da DE#106 e cache de serving de PRD da DE#109) e isso exige
+    # `bigquery.jobs.create` (roles/bigquery.jobUser). Dar esse papel à conta compartilhada pelos
+    # 29 serviços daria criação de query jobs a todos; por isso o papel entra numa conta só do
+    # sync (`sync-bq-postgres@`), e esta variável a aplica SÓ ao `sync-bq-to-postgres`. Sem ela o
+    # sync fica na `SERVICE_ACCOUNT` (comportamento de sempre; sem `jobUser` ali, o pré-voo do
+    # sync aborta antes de qualquer TRUNCATE, fail-closed). Aceita nome curto como a outra.
+    if [ -n "${SYNC_SERVICE_ACCOUNT:-}" ]; then
+        if [[ "$SYNC_SERVICE_ACCOUNT" != *"@"* ]]; then
+            SYNC_SERVICE_ACCOUNT="${SYNC_SERVICE_ACCOUNT}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+        fi
+        print_info "sync-bq-to-postgres usará a conta dedicada: $SYNC_SERVICE_ACCOUNT"
+    else
+        SYNC_SERVICE_ACCOUNT="$SERVICE_ACCOUNT"
+        print_warning "SYNC_SERVICE_ACCOUNT não definida: o sync-bq-to-postgres fica na conta compartilhada ($SERVICE_ACCOUNT). Sem bigquery.jobUser nela o sync aborta no pré-voo; use SYNC_SERVICE_ACCOUNT=sync-bq-postgres (ver o runbook da DE#109)."
+    fi
+
     print_info "Variáveis de ambiente carregadas com sucesso"
 }
 
@@ -441,7 +459,11 @@ deploy_service() {
 
     # Faz deploy
     print_info "Executando gcloud run deploy..."
-    print_info "Service account (runtime): $SERVICE_ACCOUNT"
+    if [ "$SERVICE_NAME" = "sync-bq-to-postgres" ]; then
+        print_info "Service account (runtime): $SYNC_SERVICE_ACCOUNT"
+    else
+        print_info "Service account (runtime): $SERVICE_ACCOUNT"
+    fi
     print_info "Entry point: $ENTRY_POINT"
 
     # DEPLOY_EXIT_CODE inicia em 0; cada gcloud usa `|| DEPLOY_EXIT_CODE=$?` para que
@@ -479,13 +501,16 @@ deploy_service() {
         # http.get de 1800 s (máximo do Workflows) e o statement_timeout da sessão do
         # sync é 3600 s (SYNC_STATEMENT_TIMEOUT_S): nunca pode passar do timeout daqui.
         # ORDEM DE DEPLOY: workflow-futebol-sync (YAML que trata 409) ANTES desta imagem.
+        # CONTA DE RUNTIME (DE#109): $SYNC_SERVICE_ACCOUNT (dedicada, com bigquery.jobUser), que
+        # cai em $SERVICE_ACCOUNT quando a variável não está definida. É a única ramificação que
+        # a usa: as outras 28 seguem na conta compartilhada.
         # Python 3.13 pinado: psycopg[binary]==3.2.3 não tem wheels pra cp314 ainda.
         gcloud run deploy "$SERVICE_NAME" \
             --source "$TEMP_DIR" \
             --region "$REGION" \
             --platform managed \
             --no-allow-unauthenticated \
-            --service-account "$SERVICE_ACCOUNT" \
+            --service-account "$SYNC_SERVICE_ACCOUNT" \
             --memory "2Gi" \
             --cpu "$CPU" \
             --timeout "3600" \
@@ -727,6 +752,7 @@ main() {
     echo "  Região: $REGION"
     echo "  Projeto: $GCP_PROJECT_ID"
     echo "  Service Account (runtime): $SERVICE_ACCOUNT"
+    echo "  Service Account do sync-bq-to-postgres: $SYNC_SERVICE_ACCOUNT"
     echo "  Memória: $MEMORY"
     echo "  CPU: $CPU"
     echo "  Timeout: ${TIMEOUT}s"
