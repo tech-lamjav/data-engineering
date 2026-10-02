@@ -43,6 +43,8 @@ def test_os_passos_humanos_estao_na_ordem_do_dono():
         "state=ACTIVE",
         "scripts/deploy_workflows.sh workflow-futebol-sync",  # o YAML ANTES da imagem
         "scripts/deploy_cloud_run.sh sync-bq-to-postgres",
+        'stage "Linha de base da RPC',  # ANTES de ligar o cache: depois, o "antes" não existe mais
+        "CAPTURA_RPC_MODO=captura",
         'stage "LIGAR o cache de serving',
         'stage "Conferir pelo DADO',
         'stage "LIGAR a carga por troca nas odds',
@@ -123,3 +125,16 @@ def test_o_rollback_depois_da_troca_das_odds_tira_a_troca_e_zera_o_cache_no_mesm
     assert "troca_prd" in ligar_troca and "staged_prd" in ligar_troca
     assert 'cache_serving_prd: \\"\\"' in ligar_troca  # aspas escapadas dentro do say "..."
     assert "MESMO deploy" in ligar_troca
+
+
+def test_o_diff_da_rpc_do_estagio_de_conferencia_usa_o_arquivo_da_linha_de_base():
+    """O critério 'a RPC devolve o mesmo antes e depois' só é executável se o 'antes' foi gravado:
+    o estágio de conferir pelo dado roda o MODO diff sobre o MESMO arquivo da captura."""
+    t = _texto()
+    base = t[t.index('stage "Linha de base da RPC'):t.index('stage "LIGAR o cache de serving')]
+    conferir = t[t.index('stage "Conferir pelo DADO'):t.index('stage "LIGAR a carga por troca nas odds')]
+    assert "RPC_BASELINE" in base and "RPC_BASELINE" in conferir
+    assert "CAPTURA_RPC_MODO=diff" in conferir
+    assert "scripts/captura_rpc_quotes.py" in base and "scripts/captura_rpc_quotes.py" in conferir
+    ligar = t[t.index('stage "LIGAR o cache de serving'):t.index('stage "Conferir pelo DADO')]
+    assert "linha de base" in ligar  # não liga sem ela

@@ -194,7 +194,7 @@ finish() {
 # Textos em português (a regra do repositório); a biblioteca acima é a do template e fica como está.
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=14
+TOTAL_STAGES=15
 
 P="${GCP_PROJECT_ID:-smartbetting-dados}"
 REGIAO="us-east1"
@@ -202,6 +202,9 @@ SA_NOME="sync-bq-postgres"
 SA="${SA_NOME}@${P}.iam.gserviceaccount.com"
 PY=".venv/bin/python3"
 WORKFLOW_YAML="workflow_futebol_sync.yml"
+# Linha de base da RPC (estágio 12 grava, estágio 14 compara). Fora da árvore: o estágio 13 faz o PR
+# de ligar o cache a partir da master limpa. Sobrescreva com RPC_BASELINE=/outro/caminho.json.
+RPC_BASELINE="${RPC_BASELINE:-$HOME/rpc_quotes_pre_cache.json}"
 
 # Raiz do repositório (o wizard vive em scripts/): todos os caminhos abaixo são relativos a ela.
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -403,14 +406,40 @@ open_url "https://console.cloud.google.com/workflows/workflow/${REGIAO}/workflow
 step "Aguarde (ou dispare) uma execução depois do deploy e confira a linha 'sync_dev' do log_completion."
 confirm "A execução pós-deploy terminou SUCCESS?" || { warn "Investigue antes de ligar o cache."; exit 1; }
 
-# ── 12. Ligar o cache de serving em PRD ──────────────────────────────────
+# ── 12. Linha de base da RPC (ANTES de ligar o cache) ────────────────────
+stage "Linha de base da RPC get_futebol_fixture_quotes (ANTES de ligar o cache)"
+say "O critério 'a RPC devolve o mesmo antes e depois' só é executável se o 'antes' for GRAVADO agora:"
+say "depois do cache de serving a saída antiga não existe mais. Só LEITURA no PRD (conexão read_only)."
+say "Amostra determinística de fixtures com odds em 3 grupos (15 por grupo): recentes (jogo já disputado,"
+say "últimos 25 dias; têm de ficar IDÊNTICAS), futuras (a coleta continua: diferença é aviso) e antigas"
+say "(>30 dias: só o T-15m sobra; a abertura da Pinnacle, pin_open, some e é aviso). Os ids vão no arquivo,"
+say "e o diff do estágio 14 reconsulta os MESMOS ids."
+say "Arquivo: $RPC_BASELINE (nunca sobrescrito; apague-o à mão só se for refazer a linha de base ANTES do cache)."
+note "Se uma carga de odds estiver em curso (rodam de hora em hora), a consulta pode esperar o lock e"
+note "falhar em 90 s com 'statement timeout': espere o fim da carga e rode de novo."
+if [[ -f "$RPC_BASELINE" ]]; then
+  say "A linha de base já existe: mantida (rode de novo só depois de apagá-la, se estiver velha)."
+else
+  while true; do
+    if CAPTURA_RPC_MODO=captura CAPTURA_RPC_ARQUIVO="$RPC_BASELINE" mostra_e_roda "$PY" scripts/captura_rpc_quotes.py; then
+      break
+    fi
+    warn "A captura falhou."
+    confirm "Tentar de novo?" || { warn "Sem linha de base não há como provar o 'antes e depois'."; exit 1; }
+  done
+fi
+note "Esperado: 'GRAVADO ...: N fixtures, M linhas da RPC'. Guarde o arquivo até o diff do estágio 14."
+pause "Linha de base gravada?"
+
+# ── 13. Ligar o cache de serving em PRD ──────────────────────────────────
 stage "LIGAR o cache de serving das odds em PRD (edição do workflow)"
 say "É o ponto sem volta funcional: a próxima carga de PRD grava só os mercados servidos, as fixtures"
 say "dos últimos 30 dias e futuras com todas as janelas, e o resto só com o fechamento (T-15m)."
 say "Rollback: voltar a linha para \"\" e redeployar o workflow (a versão da regra recarrega a tabela completa)."
 say "Isso vale enquanto as odds não estiverem em troca_prd. Depois de ligar a troca (último estágio) o rollback muda: ver lá."
-warn "O snapshot do estágio 3 TEM de existir e o smoke do estágio 7 TEM de estar verde."
-confirm "Snapshot criado e smoke verde: ligar?" || exit 1
+warn "Precisam existir o snapshot do estágio 3 e a linha de base da RPC do estágio 12, e o smoke do estágio 7 tem de estar verde."
+confirm "Snapshot criado, linha de base da RPC gravada e smoke verde: ligar?" || exit 1
+[[ -f "$RPC_BASELINE" ]] || { warn "Falta a linha de base da RPC ($RPC_BASELINE): depois de ligar o cache ela não se refaz."; exit 1; }
 say "Edição (num branch, via PR, como qualquer mudança no master):"
 step "git checkout -b liga-cache-serving-odds"
 step "No $WORKFLOW_YAML, troque  cache_serving_prd: \"\"  por  cache_serving_prd: \"fact_odds_snapshot\""
@@ -420,16 +449,24 @@ pause "PR mergeado e master atualizada?"
 so_se_confirmar "Deployar o workflow-futebol-sync com o cache LIGADO?" \
   scripts/deploy_workflows.sh workflow-futebol-sync
 
-# ── 13. Conferir pelo dado ───────────────────────────────────────────────
+# ── 14. Conferir pelo dado ───────────────────────────────────────────────
 stage "Conferir pelo DADO (não pelo exit code) depois da primeira carga de PRD com o cache"
 say "Critérios de pronto da #109 (spec #112), medidos depois da primeira carga de PRD:"
 step "Contagem de linhas de fact_odds_snapshot em PRD entre 0,6 e 1,0 milhão (medido antes: ~1,007 mi;"
 step "  vai ficar na beira de cima por causa do mercado 6 e do crescimento; reporte o número exato)."
 step "Duração da carga das odds em PRD <= 150 s (campo duracao_s da resposta/log do sync)."
-step "A RPC get_futebol_fixture_quotes devolve o MESMO, antes e depois, para uma amostra de fixtures"
-step "  dos últimos 30 dias (diff por fixture e mercado); fixtures antigas mostram o fechamento (T-15m)."
+step "A RPC get_futebol_fixture_quotes devolve o MESMO, antes e depois, para a amostra gravada no estágio 12"
+step "  (diff por fixture e linha, abaixo); fixtures antigas mostram o fechamento (T-15m)."
 step "Sem 503 no edge_logs nem espera de leitor acima de 2 s durante o sync (critério da #108)."
 step "Detector de atraso verde nas janelas das 13h UTC (o rebuild que passava de 900 s)."
+say ""
+say "Diff da RPC contra a linha de base do estágio 12 (SOMENTE leitura; reconsulta os MESMOS ids):"
+say "  VERDE (exit 0): nenhuma linha sumiu e as fixtures recentes estão idênticas; avisos são esperados"
+say "  em futuras (coleta nova) e antigas (pin_open). VERMELHO (exit 1): linha sumida ou recente alterada."
+if confirm "Rodar o diff da RPC agora (SELECT em PRD)?"; then
+  CAPTURA_RPC_MODO=diff CAPTURA_RPC_ARQUIVO="$RPC_BASELINE" mostra_e_roda "$PY" scripts/captura_rpc_quotes.py \
+    || warn "o diff está VERMELHO (ou falhou): investigue antes de seguir."
+fi
 say ""
 say "Contagem rápida (SOMENTE leitura, sem imprimir segredo):"
 conta_odds_prd() {
@@ -458,7 +495,7 @@ fi
 confirm "Contagem, duração e diff da RPC conferidos e dentro do esperado?" \
   || { warn "Não ligue a troca. Reverta o workflow (cache_serving_prd: \"\") se precisar."; exit 1; }
 
-# ── 14. Ligar a troca nas odds (depois de dezenas de execuções) ──────────
+# ── 15. Ligar a troca nas odds (depois de dezenas de execuções) ──────────
 stage "LIGAR a carga por troca nas odds (só depois de dezenas de execuções com o cache)"
 say "A odds só entra na troca DEPOIS do filtro (a sombra completa custaria ~+920 MB; com o filtro ~+180 MB)."
 say "Ordem de habilitação da spec: ... demais tabelas, e 'fact_odds_snapshot só depois da #109', com"
