@@ -23,7 +23,10 @@ Duas famílias de retenção (verbete **Retenção** do CONTEXT.md), cada uma co
   porque, medido em 28/09, 75% do que sobraria de valor medido com corte só para trás eram
   fixtures a mais de 14 dias.
 
-Só vale em DEV. PRD nunca recebe regra daqui: o que muda PRD nas odds é a #109 (ADR 0006).
+Em DEV a regra vale sempre. PRD só recebe regra nas odds, e só quando o workflow liga a tabela
+(`cache_serving`, lançamento escuro da DE#109, ADR 0006): o Postgres de PRD vira cache de
+serving. Mercados servidos (`alvo.MERCADOS_SERVIDOS`) valem nos dois ambientes; a retenção de
+produto de 30 dias, com o fechamento (T-15m) das fixtures mais antigas, só em PRD.
 
 As constantes leem env var com default; o serviço de sync não as define no deploy, então valem
 os defaults. São lidas na CHAMADA do resolvedor (não copiadas para as regras na importação),
@@ -34,7 +37,7 @@ Sem dependência de banco nem de nuvem (só `src.config` e `src.sync.alvo`).
 import os
 
 from src.config import get_dev_retention_rule
-from src.sync.alvo import SYNC_EXCLUSOES
+from src.sync.alvo import MERCADOS_SERVIDOS, SYNC_EXCLUSOES  # noqa: F401 (reexporta: uma constante só)
 
 # Retenção de coleta (dias contados a partir do instante da captura).
 RETENCAO_COLETA_DIAS = int(os.getenv("SYNC_RETENCAO_COLETA_DIAS", "7"))
@@ -56,29 +59,57 @@ TABELAS_RETENCAO_PRODUTO_FUTEBOL = (
     "fact_value_opportunities_hist",
 )
 
+# Cache de serving das odds em PRD (DE#109). A janela de FECHAMENTO é a banda t15m (0-15 min antes
+# do apito, a linha de CLV; `src.config.FUTEBOL_ODDS_WINDOWS`): fixture mais antiga que a
+# retenção de produto fica só com ela. O corte usa o kickoff de `fact_fixtures` (não o das odds:
+# medido, 8 fixtures divergem).
+JANELA_FECHAMENTO = "t15m"
+
 # Tabelas de coleta cujo número de dias vem da retenção de coleta (a coluna do corte continua
 # a do `config.py`), e a coluna de partição que o filtro no BigQuery usa para não ler dias
 # inteiros que o corte já descarta (`fact_odds_snapshot` é particionada por `collection_date`).
+TABELA_ODDS = "fact_odds_snapshot"
 TABELAS_RETENCAO_COLETA_FUTEBOL = {
     "fact_odds_snapshot": {"partition_column": "collection_date"},
     "fact_injuries_snapshot": {},
 }
 
 
-def resolve_regra_retencao(sport: str, env: str, table_name: str) -> dict | None:
-    """Regra de retenção de DEV para (esporte, ambiente, tabela), ou None.
+def resolve_regra_retencao(
+    sport: str, env: str, table_name: str, cache_serving: frozenset = frozenset()
+) -> dict | None:
+    """Regra de retenção para (esporte, ambiente, tabela), ou None.
 
-    Mesmo contrato de `config.get_dev_retention_rule` e o substitui no sync:
-    - fora de DEV (PRD e qualquer ambiente desconhecido): sempre None;
+    Mesmo contrato de `config.get_dev_retention_rule` (que ela substitui no sync) mais o cache de
+    serving de PRD (DE#109):
+    - PRD: None, EXCETO `fact_odds_snapshot` do futebol quando está em `cache_serving` (a lista
+      que o workflow liga): regra `cache_serving`, com mercados servidos, as fixtures dos
+      últimos `RETENCAO_PRODUTO_DIAS_ATRAS` dias e futuras com todas as janelas, e as mais
+      antigas só com a janela de fechamento. Qualquer outro ambiente desconhecido: None;
     - tabela que o sync não copia mais (exclusões de `alvo.py`): None;
     - tabela de coleta: a regra do config com `days` = retenção de coleta;
     - tabela de produto do futebol: corte por fixture, `days` para trás e `days_ahead` à frente;
     - o resto: o que o `config.py` já tem (as regras por temporada) ou None.
     """
-    if (env or "").lower() != "dev":
-        return None
+    env = (env or "").lower()
     sport = (sport or "nba").lower()
     if table_name in SYNC_EXCLUSOES.get(sport, frozenset()):
+        return None
+    if env == "prd":
+        if sport == "futebol" and table_name == TABELA_ODDS and table_name in cache_serving:
+            return {
+                "kind": "cache_serving",
+                "column": "fixture_id",
+                "days": RETENCAO_PRODUTO_DIAS_ATRAS,
+                "market_column": "market_id",
+                "market_ids": MERCADOS_SERVIDOS,
+                "closing_column": "collection_window",
+                "closing_window": JANELA_FECHAMENTO,
+                "fixtures_table": "fact_fixtures",
+                "kickoff_column": "kickoff_utc",
+            }
+        return None
+    if env != "dev":
         return None
 
     if sport == "futebol":
@@ -92,23 +123,15 @@ def resolve_regra_retencao(sport: str, env: str, table_name: str) -> dict | None
             }
         if table_name in TABELAS_RETENCAO_COLETA_FUTEBOL:
             base = get_dev_retention_rule(sport, env, table_name)
-            return {
+            regra = {
                 **base,
                 "days": RETENCAO_COLETA_DIAS,
                 **TABELAS_RETENCAO_COLETA_FUTEBOL[table_name],
             }
+            if table_name == TABELA_ODDS:
+                # Mercados servidos também em DEV (DE#109, história 37): lê o que o app lê.
+                regra["market_column"] = "market_id"
+                regra["market_ids"] = MERCADOS_SERVIDOS
+            return regra
 
     return get_dev_retention_rule(sport, env, table_name)
-
-
-# Mercados servidos (DE#112/#109, ADR 0006): os `market_id` de `fact_odds_snapshot` que o app lê
-# ou que o dono do app decidiu manter. UMA constante, fácil de mudar. A lista abaixo é a decisão
-# do Victor de 30/09/2026 (prop-play-predictor#542): tirar 10, 7, 57, 58 e 77; escanteios 45 e 56
-# saem do Postgres de PRD; MANTER o 6 (Gols mais/menos no 1º tempo), por plano e não por uso. Ele
-# pede o volume do 6 e reconsidera se for caro: medido em 01/10, o mercado 6 tem 329.756 linhas
-# (7,70% da tabela), +24% sobre os cinco mercados 1, 4, 5, 8 e 12.
-#
-# ESTA FATIA (DE#106) NÃO APLICA O FILTRO DE MERCADOS. Ela só define a constante, para a #109 (que
-# muda PRD nas odds e leva o filtro de mercados também ao DEV) importá-la daqui em vez de
-# redigitar a lista. O que a DE#106 faz com as odds é a retenção de coleta de 7 dias.
-MERCADOS_SERVIDOS = (1, 4, 5, 6, 8, 12)

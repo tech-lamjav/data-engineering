@@ -1,11 +1,15 @@
-"""Smoke de IAM do sync de DEV: a conta de runtime consegue ler o BigQuery como o sync lê?
+"""Smoke de IAM do sync (DEV e o cache de serving de PRD): a conta de runtime lê o BigQuery como o sync lê?
+
+O nome do arquivo ficou da DE#106 (só DEV). Desde a DE#109 ele também prova a leitura filtrada
+das odds em PRD (os dois query jobs do cache de serving) e é o passo 3 do runbook de PRD.
 
 SOMENTE DRY-RUN (grátis, não lê linha, não escreve em Postgres). Sem argparse (regra
 .cursorrules): configuração por variável de ambiente.
 
 QUANDO RODAR
-  Antes de deployar a imagem do sync (DE#106), depois de conceder `roles/bigquery.jobUser` e a
-  leitura dos datasets à conta de runtime. Sem o smoke verde, não siga com o deploy.
+  Antes de deployar a imagem do sync (DE#106, DE#109), depois de conceder `roles/bigquery.jobUser` e
+  a leitura dos datasets à conta de runtime DEDICADA ao sync (`sync-bq-postgres@`, história 51 da
+  #112: a conta compartilhada pelos 29 serviços não ganha privilégio). Sem o smoke verde, não siga com o deploy.
       SMOKE_SERVICE_ACCOUNT=sync-bq-postgres@smartbetting-dados.iam.gserviceaccount.com \\
           .venv/bin/python3 scripts/smoke_iam_sync_dev.py
 
@@ -53,8 +57,9 @@ def main():
             print(f"FALHA {falha}")
         codigo = codigo_de_saida(conferidas, falhas)
         print(
-            f"{'VERDE' if codigo == 0 else 'VERMELHO'}: {conferidas} tabela(s) de DEV com "
-            f"regra conferida(s) em dry-run, {len(falhas)} falha(s) "
+            f"{'VERDE' if codigo == 0 else 'VERMELHO'}: {conferidas} leitura(s) filtrada(s) "
+            f"conferida(s) em dry-run (tabelas de DEV com regra e o cache de serving de PRD), "
+            f"{len(falhas)} falha(s) "
             f"(conta: {conta or 'ADC de quem executa'})"
         )
         return codigo

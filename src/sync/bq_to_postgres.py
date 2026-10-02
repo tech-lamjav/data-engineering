@@ -2,9 +2,12 @@
 
 Decisões de design (ver PLANO_OTIMIZACAO_BQ_SUPABASE.md fase 2):
 - Usa `bq.list_rows()` (API tabledata.list, gratuita) em vez de `bq.query()` para
-  evitar custo de scan recorrente. ÚNICA exceção (DE#106): em DEV, a tabela com regra de
+  evitar custo de scan recorrente. ÚNICAS exceções: (DE#106) em DEV, a tabela com regra de
   retenção é lida por query job filtrado (`filtro_bq`), para o corte rodar no BigQuery em vez
-  de em Python depois de ler tudo; isso exige `bigquery.jobs.create` na SA de runtime.
+  de em Python depois de ler tudo; (DE#109) em PRD, `fact_odds_snapshot` com o cache de serving
+  ligado pelo workflow (`odds_serving`: mercados servidos, fixtures dos últimos 30 dias e
+  futuras com todas as janelas, o resto só com o fechamento T-15m). Isso exige
+  `bigquery.jobs.create` na SA de runtime do sync (conta dedicada, não a dos 29 serviços).
 - Usa `bq.get_table().schema` para parity check (API tables.get, gratuita) em vez
   de query em INFORMATION_SCHEMA.
 - Sync serial table-by-table, dim -> fact -> derived (ver *_TABLES_ORDERED em
@@ -56,6 +59,7 @@ from src.config import (
 )
 from src.sync.alvo import resolve_alvo_sync
 from src.sync.filtro_bq import FiltroBQ, le_tabela_filtrada
+from src.sync import odds_serving
 from src.sync import troca as troca_mod
 from src.sync.retencao import resolve_regra_retencao
 from src.sync.tamanho_dev import medir_tamanho_dev_mb
@@ -354,10 +358,23 @@ def _filtro_da_regra(rule: dict, campos, agora: datetime, eligible_fixture_ids) 
       instante deixaria entrar) para o job não ler dias inteiros que a retenção descarta.
     - season: coluna == temporada corrente configurada.
     - fixture_window: coluna IN (fixtures elegíveis, lidas do Postgres de destino).
+    - cache_serving (PRD, DE#109): mercados servidos E (fixture elegível, lida do BigQuery, OU a
+      janela de fechamento). Ver `odds_serving`.
+
+    Uma regra com `market_ids` (as odds, em DEV e em PRD) soma `market_id IN mercados` ao filtro.
     """
     kind = rule["kind"]
     coluna = rule["column"]
     tipo = _tipo_da_coluna(campos, coluna)
+    filtro = _filtro_base_da_regra(rule, kind, coluna, tipo, campos, agora, eligible_fixture_ids)
+    if rule.get("market_ids") is not None and kind != "cache_serving":
+        # O cache de serving já compõe os mercados dentro do próprio filtro.
+        _tipo_da_coluna(campos, rule["market_column"])
+        filtro = filtro.e(odds_serving.filtro_mercados(rule))
+    return filtro
+
+
+def _filtro_base_da_regra(rule, kind, coluna, tipo, campos, agora, eligible_fixture_ids) -> FiltroBQ:
     if kind == "timestamp_days":
         corte = agora - timedelta(days=rule["days"])
         if tipo == "DATE":
@@ -380,6 +397,10 @@ def _filtro_da_regra(rule: dict, campos, agora: datetime, eligible_fixture_ids) 
         return FiltroBQ.igual(coluna, rule["season"], "temporada")
     if kind == "fixture_window":
         return FiltroBQ.em_lista(coluna, eligible_fixture_ids or (), "ids")
+    if kind == "cache_serving":
+        _tipo_da_coluna(campos, rule["market_column"])
+        _tipo_da_coluna(campos, rule["closing_column"])
+        return odds_serving.filtro_cache_serving(rule, eligible_fixture_ids or ())
     raise ValueError(f"kind de regra de retenção desconhecido: {kind!r}")
 
 
@@ -397,10 +418,11 @@ def _verifica_query_job(bq: bigquery.Client) -> None:
         bq.query("SELECT 1", job_config=bigquery.QueryJobConfig(dry_run=True))
     except Exception as e:
         logger.error(
-            f"Sync de DEV abortado ANTES de qualquer TRUNCATE: a conta de runtime não consegue "
-            f"criar query jobs no BigQuery ({type(e).__name__}: {e}). A retenção de DEV (DE#106) "
-            f"lê por query job e exige `bigquery.jobs.create` (ex.: roles/bigquery.jobUser) na "
-            f"conta de runtime do sync."
+            f"Sync abortado ANTES de qualquer TRUNCATE: a conta de runtime não consegue criar "
+            f"query jobs no BigQuery ({type(e).__name__}: {e}). A retenção de DEV (DE#106) e o "
+            f"cache de serving de PRD (DE#109) leem por query job e exigem "
+            f"`bigquery.jobs.create` (ex.: roles/bigquery.jobUser) na conta de runtime do sync "
+            f"(a conta dedicada `sync-bq-postgres@`, não a compartilhada pelos 29 serviços)."
         )
         raise
 
@@ -453,7 +475,8 @@ def _ensure_sync_state_table(pg_conn, schema: str) -> None:
             CREATE TABLE IF NOT EXISTS {_sync_state_table(schema)} (
                 table_name text PRIMARY KEY,
                 last_synced_bq_modified_time timestamptz NOT NULL,
-                last_synced_at timestamptz NOT NULL DEFAULT now()
+                last_synced_at timestamptz NOT NULL DEFAULT now(),
+                regra_versao text
             )
             """
         )
@@ -466,6 +489,32 @@ def _read_last_synced(pg_conn, table_name: str, schema: str):
         cur.execute(
             f"SELECT last_synced_bq_modified_time FROM {_sync_state_table(schema)} "
             f"WHERE table_name = %s",
+            (table_name,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+_SEM_COLUNA_DE_VERSAO = object()
+
+
+def _tem_coluna_regra_versao(pg_conn, schema: str) -> bool:
+    """A coluna `regra_versao` existe no estado de sincronização? (SQL administrativo da DE#109,
+    `scripts/sql/sync_state_regra_versao.sql`; o sync NÃO faz DDL no estado.)"""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = %s "
+            "AND table_name = '_sync_state' AND column_name = 'regra_versao'",
+            (schema,),
+        )
+        return cur.fetchone() is not None
+
+
+def _read_regra_versao(pg_conn, table_name: str, schema: str):
+    """Versão da regra gravada junto do estado da tabela, ou None (nunca carimbada)."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            f"SELECT regra_versao FROM {_sync_state_table(schema)} WHERE table_name = %s",
             (table_name,),
         )
         row = cur.fetchone()
@@ -485,9 +534,28 @@ def _copia_linhas(pg_conn, cur, alvo: str, column_list: str, columns: list, dado
     return row_count
 
 
-def _grava_estado(cur, schema: str, table_name: str, bq_modified) -> None:
+def _grava_estado(
+    cur, schema: str, table_name: str, bq_modified, regra_versao=_SEM_COLUNA_DE_VERSAO
+) -> None:
     """Avança o estado de sincronização. Na troca e no staged roda DENTRO da transação da
-    troca: se a troca não acontece, o estado não avança e o detector de atraso enxerga."""
+    troca: se a troca não acontece, o estado não avança e o detector de atraso enxerga.
+
+    `regra_versao` (DE#109): só as odds a passam (None = sem regra, que também é gravado, para o
+    rollback do cache ser detectável). Sem ela o SQL é o de sempre, byte a byte."""
+    if regra_versao is not _SEM_COLUNA_DE_VERSAO:
+        cur.execute(
+            f"""
+            INSERT INTO {_sync_state_table(schema)}
+                (table_name, last_synced_bq_modified_time, last_synced_at, regra_versao)
+            VALUES (%s, %s, now(), %s)
+            ON CONFLICT (table_name) DO UPDATE
+                SET last_synced_bq_modified_time = EXCLUDED.last_synced_bq_modified_time,
+                    last_synced_at = EXCLUDED.last_synced_at,
+                    regra_versao = EXCLUDED.regra_versao
+            """,
+            (table_name, bq_modified, regra_versao),
+        )
+        return
     cur.execute(
         f"""
         INSERT INTO {_sync_state_table(schema)}
@@ -515,8 +583,13 @@ def _sync_one_table(
     env: str = "prd",
     sport: str = "nba",
     ctx_troca: "troca_mod.ContextoTroca | None" = None,
+    cache_serving: frozenset = frozenset(),
 ) -> dict:
     """Sincroniza uma mart: por padrão TRUNCATE + COPY dentro de uma única transação.
+
+    `cache_serving` (DE#109): tabelas que o workflow ligou no cache de serving de PRD (hoje só
+    `fact_odds_snapshot`). Ligada, a tabela é lida por query job filtrado (mercados servidos,
+    fixtures dos últimos 30 dias e futuras com todas as janelas, o resto só com o fechamento).
 
     `ctx_troca` (DE#108): None = tudo como antes (carga no lugar). Com contexto, a tabela pode
     usar a carga por troca, o caminho staged ou cair na carga no lugar com aviso, conforme
@@ -561,8 +634,31 @@ def _sync_one_table(
     # umas consultas de catálogo por tabela habilitada, sem lock em tabela de usuário.
     modo, fallback_motivo = troca_mod.escolhe_modo(pg_conn, schema, table_name, ctx_troca)
 
+    # Regra de retenção desta tabela e, só nas odds, a versão dela (DE#109, história 36): o
+    # skip-if-unchanged também exige que a versão gravada seja a de agora, senão mudar a lista de
+    # mercados ou o corte de 30 dias (ou desligar o cache em PRD) não recarregaria nada.
+    rule = resolve_regra_retencao(sport, env, table_name, cache_serving)
+    versionada = (sport or "").lower() == "futebol" and table_name == odds_serving.TABELA_ODDS
+    versao_esperada = odds_serving.regra_versao(rule) if versionada else None
+    tem_coluna_versao = _tem_coluna_regra_versao(pg_conn, schema) if versionada else False
+    if versao_esperada is not None and not tem_coluna_versao:
+        raise RuntimeError(
+            f"{table_name}: a regra de retenção das odds é versionada (coluna `regra_versao` do "
+            f"estado de sincronização) e a coluna não existe em {schema}._sync_state. Aplique "
+            f"scripts/sql/sync_state_regra_versao.sql por psycopg (SQL administrativo) ANTES da "
+            f"imagem. Nada foi tocado."
+        )
+    versao_gravada = (
+        _read_regra_versao(pg_conn, table_name, schema) if versionada and tem_coluna_versao else None
+    )
+
     last_synced = _read_last_synced(pg_conn, table_name, schema)
-    if not force and last_synced is not None and bq_modified <= last_synced:
+    if (
+        not force
+        and last_synced is not None
+        and bq_modified <= last_synced
+        and versao_gravada == versao_esperada
+    ):
         logger.info(
             f"Skip {table_name}: BQ não mudou (modified={bq_modified.isoformat()}, "
             f"last_synced={last_synced.isoformat()}, modo={modo})"
@@ -588,19 +684,26 @@ def _sync_one_table(
         )
     column_list = ", ".join(f'"{c}"' for c in columns)
 
-    rule = resolve_regra_retencao(sport, env, table_name)
     if rule is None:
-        # PRD e tabela sem regra: a tabela inteira, por tabledata.list (gratuito, sem job).
+        # PRD sem cache de serving e tabela sem regra: a tabela inteira, por tabledata.list
+        # (gratuito, sem job).
         dados = rows_iter
     else:
+        agora = datetime.now(timezone.utc)
         eligible_fixture_ids = None
         if rule["kind"] == "fixture_window":
             eligible_fixture_ids = _load_eligible_fixture_ids(
                 pg_conn, schema, rule["requires"], rule["days"], rule.get("days_ahead")
             )
-        filtro = _filtro_da_regra(
-            rule, all_fields, datetime.now(timezone.utc), eligible_fixture_ids
-        )
+        elif rule["kind"] == "cache_serving":
+            # Primeiro job (barato): as fixtures elegíveis, do BigQuery, não do Postgres de PRD
+            # (o kickoff é o de `fact_fixtures`, e a lista não depende de a tabela ter trocado
+            # nesta execução). Lista vazia aborta antes do TRUNCATE.
+            eligible_fixture_ids = odds_serving.le_fixtures_elegiveis(
+                bq, f"{BIGQUERY_PROJECT_ID}.{dataset}.{rule['fixtures_table']}", rule, agora,
+                maximo_bytes_faturados=_teto_de_bytes_faturados(None),
+            )
+        filtro = _filtro_da_regra(rule, all_fields, agora, eligible_fixture_ids)
         # Submete e espera o job AGORA, antes do TRUNCATE: 403 de IAM ou teto de bytes
         # estourado levantam com a tabela de destino intacta.
         dados = le_tabela_filtrada(
@@ -614,7 +717,10 @@ def _sync_one_table(
         return _copia_linhas(pg_conn, cur, alvo, column_list, columns, dados)
 
     def atualiza_estado(cur):
-        _grava_estado(cur, schema, table_name, bq_modified)
+        if tem_coluna_versao and versionada:
+            _grava_estado(cur, schema, table_name, bq_modified, versao_esperada)
+        else:
+            _grava_estado(cur, schema, table_name, bq_modified)
 
     inicio = time.monotonic()
     extra: dict = {}
@@ -695,6 +801,7 @@ def run_sync(
     sport: str = "nba",
     troca: str | Iterable[str] | None = None,
     staged: str | Iterable[str] | None = None,
+    cache_serving: str | Iterable[str] | None = None,
 ) -> dict:
     """Executa o sync. Roda pre-flight de schema parity antes de qualquer TRUNCATE.
 
@@ -708,8 +815,14 @@ def run_sync(
                allowlist (menos as exclusões) via alvo.resolve_alvo_sync().
         troca: tabelas (CSV ou lista) habilitadas na CARGA POR TROCA (DE#108). Vazio/None
                (default) = nenhuma: carga no lugar, como antes. Só futebol; nunca
-               `fact_odds_snapshot` (até a DE#109). Quem escolhe é o workflow, por ambiente.
+               `fact_odds_snapshot` em PRD sem o cache de serving (DE#109). Quem escolhe é o
+               workflow, por ambiente.
         staged: tabelas habilitadas no caminho STAGED (as com dependente, ex. premissas).
+        cache_serving: tabelas (CSV ou lista) que o workflow liga no CACHE DE SERVING de PRD
+               (DE#109, ADR 0006): hoje só `fact_odds_snapshot`, que passa a carregar só os
+               mercados servidos, as fixtures dos últimos 30 dias e futuras com todas as janelas
+               e o resto só com o fechamento (T-15m). Vazio (default) = o PRD completo, como
+               antes. Só PRD e só futebol; em DEV o filtro de mercados já vale sempre.
 
     Returns:
         {status, sport, env, synced: [...], drift: [...], summary, dev_size_mb}
@@ -735,6 +848,10 @@ def run_sync(
     selecao_troca = troca_mod.parse_lista(troca)
     selecao_staged = troca_mod.parse_lista(staged)
     troca_mod.valida_selecao(sport, selecao_troca, selecao_staged, resolved)
+    selecao_cache = troca_mod.parse_lista(cache_serving)
+    odds_serving.valida_cache_serving(
+        sport, env, selecao_cache, selecao_troca, selecao_staged, resolved
+    )
     # None = nenhuma tabela habilitada: o caminho de carga é byte-idêntico ao anterior.
     ctx_troca = (
         troca_mod.novo_contexto(selecao_troca, selecao_staged)
@@ -801,9 +918,12 @@ def run_sync(
                 "synced": [],
             }
 
-        # Retenção de DEV lê por query job: provar a permissão agora, antes de qualquer carga.
-        # Só em DEV e só se alguma tabela da execução tem regra (PRD e NBA nunca precisam).
-        if any(resolve_regra_retencao(sport, env, t) is not None for t in resolved):
+        # A retenção de DEV e o cache de serving de PRD leem por query job: provar a permissão
+        # agora, antes de qualquer carga. Só se alguma tabela da execução tem regra (PRD sem o
+        # cache ligado e NBA nunca precisam).
+        if any(
+            resolve_regra_retencao(sport, env, t, selecao_cache) is not None for t in resolved
+        ):
             _verifica_query_job(bq)
 
         _ensure_sync_state_table(pg_conn, schema)
@@ -815,6 +935,7 @@ def run_sync(
                 result = _sync_one_table(
                     bq, pg_conn, table, dataset, schema, tables_ordered,
                     force=force, env=env, sport=sport, ctx_troca=ctx_troca,
+                    cache_serving=selecao_cache,
                 )
             except troca_mod.TrocaFalhou as e:
                 # Uma tabela que não trocou NÃO derruba as seguintes: a vigente está intacta e o

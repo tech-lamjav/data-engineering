@@ -32,8 +32,10 @@ perderia o dependente em silêncio: hoje são as cinco `int_futebol_premissas_*`
 curta, TRUNCATE + INSERT...SELECT, com o mesmo teto de espera) quando habilitado, ou na carga
 no lugar com WARNING.
 
-PROTEÇÕES. `fact_odds_snapshot` NÃO entra até a DE#109 (ADR 0006): ela não é append-only, e a
-sombra completa custaria ~+920 MB. NBA nunca usa a troca. O módulo só cria e remove sombra com a
+PROTEÇÕES. `fact_odds_snapshot` só entra DEPOIS do filtro do cache de serving da DE#109 (ADR 0006;
+`odds_serving.valida_cache_serving` recusa em PRD sem ele): a sombra completa custaria ~+920 MB,
+e com o filtro ~+180 MB. Ela não é append-only (a janela daily é recapturada), o que não atrapalha:
+a sombra é carregada INTEIRA a cada vez. NBA nunca usa a troca. O módulo só cria e remove sombra com a
 trava de sync (DE#107) já em mãos: quem chama é `bq_to_postgres.run_sync`.
 
 Sem dependência de nuvem; só psycopg (os testes de integração usam um Postgres 17 descartável).
@@ -77,8 +79,10 @@ MODO_STAGED = "staged"
 MODO_NO_LUGAR = "no_lugar"
 MODO_FALLBACK = "no_lugar_fallback"  # habilitada na troca, mas tem dependente: carga no lugar
 
-# `fact_odds_snapshot` só entra na troca depois da DE#109 (ADR 0006).
-TABELAS_FORA_DA_TROCA = frozenset({"fact_odds_snapshot"})
+# Vazio desde a DE#109: `fact_odds_snapshot` entra na troca DEPOIS do filtro do cache de serving
+# (a sombra completa custaria ~+920 MB). Quem recusa a odds em PRD sem filtro é
+# `odds_serving.valida_cache_serving`, que enxerga o ambiente; esta lista não o enxerga.
+TABELAS_FORA_DA_TROCA: frozenset = frozenset()
 
 MOTIVO_LOCK_TIMEOUT = "lock_timeout"
 MOTIVO_ORCAMENTO_ESGOTADO = "orcamento_esgotado"
@@ -182,8 +186,7 @@ def valida_selecao(sport: str, troca: frozenset, staged: frozenset, resolved: li
     proibidas = sorted(pedidas & TABELAS_FORA_DA_TROCA)
     if proibidas:
         raise ValueError(
-            f"{proibidas} não entram na carga por troca até a DE#109 (ADR 0006): a tabela não é "
-            f"append-only e a sombra completa custaria ~+920 MB"
+            f"{proibidas} não entram na carga por troca (lista TABELAS_FORA_DA_TROCA)"
         )
     fora = sorted(pedidas - set(resolved))
     if fora:

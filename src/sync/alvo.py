@@ -39,6 +39,32 @@ SYNC_EXCLUSOES: dict[str, frozenset[str]] = {
 }
 
 
+# Mercados servidos (DE#112/#109, ADR 0006): os `market_id` de `fact_odds_snapshot` que o app lê
+# ou que o dono do app decidiu manter. UMA constante, fácil de mudar: acrescentar ou tirar um
+# mercado é editar UMA linha do dicionário abaixo (id -> `market_name` do dbt). Quem precisa da
+# lista a importa daqui: o sync (filtro no BigQuery, em PRD e em DEV), o contrato de serving
+# (a checagem "RPC viva x lista", que enxerga o `market_name`, não o id) e o resolvedor acima
+# moram no mesmo módulo para o detector e os demais não terem cópia própria.
+#
+# Decisão do Victor de 30/09/2026 (prop-play-predictor#542): tirar 10, 7, 57, 58 e 77; escanteios
+# 45 e 56 saem do Postgres de PRD (a #448 roda no BigQuery; o app não lê escanteio); MANTER o 6
+# (Gols mais/menos no 1º tempo), por plano e não por uso. Ele pede o volume do 6 e reconsidera se
+# for caro: medido em 01/10, o mercado 6 tem 329.756 linhas (7,70% da tabela), +24% sobre os cinco
+# mercados 1, 4, 5, 8 e 12. Os nomes foram lidos de `futebol.fact_odds_snapshot` do PRD em 02/10.
+#
+# Mudar a lista ou o corte de 30 dias força nova carga da tabela (versão da regra, `odds_serving`):
+# não é preciso expor `force` no serviço.
+MERCADOS_SERVIDOS_NOMES: dict[int, str] = {
+    1: "Match Winner",
+    4: "Asian Handicap",
+    5: "Goals Over/Under",
+    6: "Goals Over/Under First Half",
+    8: "Both Teams Score",
+    12: "Double Chance",
+}
+MERCADOS_SERVIDOS: tuple[int, ...] = tuple(sorted(MERCADOS_SERVIDOS_NOMES))
+
+
 def resolve_alvo_sync(sport: str = "nba") -> tuple:
     """(dataset BQ, schema Postgres, tabelas ordenadas) do que o sync copia de fato.
 

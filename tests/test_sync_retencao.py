@@ -135,9 +135,10 @@ def test_mercados_servidos_e_uma_constante_so_e_inclui_o_6_por_decisao_do_victor
         assert removido not in retencao.MERCADOS_SERVIDOS
 
 
-def test_a_retencao_de_dev_desta_fatia_nao_aplica_filtro_de_mercado():
-    """O filtro de mercados é da #109. Aplicá-lo aqui mudaria o que o staging mostra de odds
-    sem a pergunta do Victor ter sido toda respondida (o volume do 6 ainda está com ele)."""
+def test_a_retencao_de_dev_aplica_o_filtro_de_mercados_desde_a_de109():
+    """A DE#106 só definia a constante; a DE#109 aplica o filtro de mercados também em DEV
+    (história 37): o corte de coleta continua sendo o de 7 dias."""
     regra = retencao.resolve_regra_retencao("futebol", "dev", "fact_odds_snapshot")
 
-    assert not any("market" in str(chave) for chave in regra)
+    assert regra["market_ids"] == retencao.MERCADOS_SERVIDOS
+    assert regra["days"] == 7

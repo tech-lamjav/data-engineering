@@ -6,6 +6,7 @@ Para testar localmente:
     SYNC_ENV=prd python scripts/sync_bq_to_postgres.py
     # subset: SYNC_TABLES=fact_value_opportunities,fact_fixtures
     # carga por troca (DE#108), só futebol: SYNC_TROCA=fact_fixtures  SYNC_STAGED=int_futebol_premissas_1x2
+    # cache de serving das odds em PRD (DE#109), só futebol: SYNC_CACHE_SERVING=fact_odds_snapshot
 """
 import os
 import sys
@@ -27,8 +28,12 @@ def main():
     tables = os.getenv("SYNC_TABLES", "all")
     troca = os.getenv("SYNC_TROCA", "")
     staged = os.getenv("SYNC_STAGED", "")
+    cache_serving = os.getenv("SYNC_CACHE_SERVING", "")
     try:
-        result = run_sync(tables=tables, env=env, sport=sport, troca=troca, staged=staged)
+        result = run_sync(
+            tables=tables, env=env, sport=sport, troca=troca, staged=staged,
+            cache_serving=cache_serving,
+        )
         if result["status"] == "aborted_schema_drift":
             logger.error(f"Sync abortado por schema drift: {result['drift']}")
             return 2

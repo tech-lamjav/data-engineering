@@ -21,6 +21,8 @@ _TIPOS = {
     "collection_timestamp": "TIMESTAMP",
     "collection_date": "DATE",
     "fixture_id": "INTEGER",
+    "market_id": "INTEGER",
+    "kickoff_utc": "TIMESTAMP",
 }
 
 
@@ -37,7 +39,11 @@ class _Job:
 class _Tabela:
     def __init__(self, nome):
         regra = resolve_regra_retencao("futebol", "dev", nome)
-        colunas = {regra["column"], regra.get("partition_column"), "payload"} - {None}
+        colunas = {
+            regra["column"], regra.get("partition_column"), regra.get("market_column"), "payload",
+        } - {None}
+        if nome == "fact_odds_snapshot":
+            colunas |= {"collection_window", "fixture_id"}  # a regra de PRD (cache de serving) as lê
         self.schema = [
             bigquery.SchemaField(c, _TIPOS.get(c, "STRING")) for c in sorted(colunas)
         ]
@@ -74,10 +80,12 @@ def test_tudo_liberado_so_faz_dry_run_e_cobre_toda_tabela_com_regra():
 
     assert falhas == []
     esperadas = _tabelas_com_regra()
-    assert conferidas == len(esperadas) == 11
-    assert sorted(bq.tabelas_lidas) == sorted(esperadas)
-    # pré-voo (SELECT 1) + uma leitura filtrada por tabela com regra
-    assert len(bq.queries) == 1 + len(esperadas)
+    # 11 tabelas de DEV com regra + as odds de PRD com o cache de serving ligado
+    assert conferidas == len(esperadas) + 1 == 12
+    assert sorted(bq.tabelas_lidas) == sorted(esperadas + ["fact_odds_snapshot"])
+    # pré-voo (SELECT 1) + uma leitura filtrada por tabela de DEV com regra + os DOIS jobs do
+    # cache de serving de PRD (as fixtures elegíveis e as odds)
+    assert len(bq.queries) == 1 + len(esperadas) + 2
     # nada pode ler de verdade: todo job é dry-run
     assert all(cfg.dry_run is True for _, cfg in bq.queries)
 
@@ -88,10 +96,33 @@ def test_a_leitura_filtrada_do_smoke_e_a_mesma_que_o_sync_faz():
     executa_smoke(bq)
 
     sqls = [sql for sql, _ in bq.queries if "fact_odds_snapshot" in sql]
-    assert len(sqls) == 1
-    assert "`collection_timestamp` >= @corte" in sqls[0]
-    assert "`collection_date` >= @corte_particao" in sqls[0]
-    assert "`smartbetting-dados.futebol.fact_odds_snapshot`" in sqls[0]
+    assert len(sqls) == 2  # DEV (coleta + mercados) e PRD (cache de serving)
+    dev = next(q for q in sqls if "@corte" in q)
+    prd = next(q for q in sqls if "@janela_fechamento" in q)
+    assert "`collection_timestamp` >= @corte" in dev
+    assert "`collection_date` >= @corte_particao" in dev
+    assert "`market_id` IN UNNEST(@mercados)" in dev
+    assert "`smartbetting-dados.futebol.fact_odds_snapshot`" in dev
+    assert "`market_id` IN UNNEST(@mercados)" in prd
+    assert "`fixture_id` IN UNNEST(@ids_elegiveis)" in prd
+    assert "`collection_window` = @janela_fechamento" in prd
+    # o primeiro job do cache de serving: as fixtures elegíveis, no mesmo filtro do sync
+    fixtures = [sql for sql, _ in bq.queries if "fact_fixtures" in sql]
+    assert len(fixtures) == 1 and "`kickoff_utc` >= @corte_kickoff" in fixtures[0]
+
+
+def test_o_smoke_prova_a_conta_nos_dois_jobs_do_cache_de_prd_que_o_sync_faz():
+    """Se a conta dedicada não conseguisse ler `fact_fixtures` (primeiro job), o sync de PRD
+    abortaria na primeira odds: o smoke tem de apontar isso antes do deploy."""
+    bq = _BQ()
+
+    executa_smoke(bq)
+
+    ordem = [("fact_fixtures" in sql, "fact_odds_snapshot" in sql and "@janela_fechamento" in sql)
+             for sql, _ in bq.queries]
+    i_fixtures = next(i for i, (f, _) in enumerate(ordem) if f)
+    i_odds_prd = next(i for i, (_, o) in enumerate(ordem) if o)
+    assert i_fixtures < i_odds_prd
 
 
 def test_sem_jobuser_falha_no_pre_voo_e_nao_segue():
@@ -113,7 +144,7 @@ def test_sem_leitura_do_dataset_aponta_a_tabela_e_continua_nas_outras():
     assert len(falhas) == 1
     assert "fact_insumos_medidos" in falhas[0]
     assert "Forbidden" in falhas[0]
-    assert conferidas == 10  # as outras dez passaram
+    assert conferidas == 11  # as outras onze (dez de DEV e as odds de PRD) passaram
 
 
 def test_erro_de_credencial_nao_vira_falha_de_permissao():
@@ -124,7 +155,7 @@ def test_erro_de_credencial_nao_vira_falha_de_permissao():
 
 
 def test_codigo_de_saida_0_verde_1_permissao():
-    assert codigo_de_saida(11, []) == 0
-    assert codigo_de_saida(10, ["fact_insumos_medidos: Forbidden"]) == 1
+    assert codigo_de_saida(12, []) == 0
+    assert codigo_de_saida(11, ["fact_insumos_medidos: Forbidden"]) == 1
     # nada conferido não é verde
     assert codigo_de_saida(0, []) == 1

@@ -20,6 +20,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.sync import odds_serving
+from src.sync.retencao import resolve_regra_retencao
+
 try:
     from src.sync import bq_to_postgres as mod
 except Exception as e:  # pragma: no cover
@@ -131,6 +134,12 @@ class _FakeCursor:
             self._conn.fixture_lookup_calls.append((sql, params))
 
     def fetchone(self):
+        # DE#109: as odds têm versão de regra no estado (coluna `regra_versao`); o catálogo
+        # responde que a coluna existe e a leitura devolve a versão que o teste gravou.
+        if self._last_sql and "information_schema.columns" in self._last_sql:
+            return (1,)
+        if self._last_sql and "regra_versao" in self._last_sql and self._last_sql.lstrip().startswith("SELECT"):
+            return (self._conn.versao_gravada,) if self._conn.last_synced is not None else None
         last = self._conn.last_synced
         return (last,) if last is not None else None
 
@@ -150,8 +159,9 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, copy_obj, last_synced=None, fixtures=None):
+    def __init__(self, copy_obj, last_synced=None, fixtures=None, versao_gravada=None):
         self.copy_obj = copy_obj
+        self.versao_gravada = versao_gravada
         self.last_synced = last_synced
         self.fixtures = fixtures or []
         self.executed: list = []
@@ -168,8 +178,10 @@ class _FakeConn:
         return any("TRUNCATE" in sql for sql, _ in self.executed)
 
 
-_COLUNAS_ODDS = ["fixture_id", "collection_timestamp", "collection_date"]
-_TIPOS_ODDS = {"collection_timestamp": "TIMESTAMP", "collection_date": "DATE"}
+_COLUNAS_ODDS = ["fixture_id", "market_id", "collection_timestamp", "collection_date"]
+_TIPOS_ODDS = {
+    "market_id": "INTEGER", "collection_timestamp": "TIMESTAMP", "collection_date": "DATE",
+}
 
 
 def _sync(bq, conn, tabela, env="dev", sport="futebol"):
@@ -183,11 +195,11 @@ def _sync(bq, conn, tabela, env="dev", sport="futebol"):
 # ------------------------------------------------------------------
 def test_dev_odds_so_grava_o_que_o_bigquery_devolveu_e_nao_refiltra_em_python():
     do_job = [
-        {"fixture_id": 1, "collection_timestamp": _NOW - timedelta(days=2),
+        {"fixture_id": 1, "market_id": 1, "collection_timestamp": _NOW - timedelta(days=2),
          "collection_date": (_NOW - timedelta(days=2)).date()},
         # Velha demais para a retenção, mas o BigQuery a entregou: o caminho de carga
         # grava o que chega. O corte é do BigQuery, não de um segundo filtro em Python.
-        {"fixture_id": 2, "collection_timestamp": _NOW - timedelta(days=30),
+        {"fixture_id": 2, "market_id": 1, "collection_timestamp": _NOW - timedelta(days=30),
          "collection_date": (_NOW - timedelta(days=30)).date()},
     ]
     bq = _make_bq([], _COLUNAS_ODDS, query_rows=do_job, field_types=_TIPOS_ODDS)
@@ -380,7 +392,7 @@ def test_dev_tabela_sem_regra_le_por_list_rows_e_nunca_abre_query_job():
 def test_dev_com_regra_nao_le_a_tabela_inteira_por_list_rows():
     """O ganho da DE#106: o DEV deixa de ler as linhas que vai descartar."""
     rows = [
-        {"fixture_id": i, "collection_timestamp": _NOW, "collection_date": _NOW.date()}
+        {"fixture_id": i, "market_id": 1, "collection_timestamp": _NOW, "collection_date": _NOW.date()}
         for i in range(1000)
     ]
     bq = _make_bq(rows, _COLUNAS_ODDS, query_rows=rows[:3], field_types=_TIPOS_ODDS)
@@ -399,7 +411,13 @@ def test_dev_skip_if_unchanged_interrompe_antes_do_query_job():
     bq = _make_bq([], ["fixture_id", "collection_timestamp"], modified=modified)
     copia = _FakeCopy()
 
-    result = _sync(bq, _FakeConn(copia, last_synced=modified), "fact_odds_snapshot")
+    versao = odds_serving.regra_versao(
+        resolve_regra_retencao("futebol", "dev", "fact_odds_snapshot")
+    )
+
+    result = _sync(
+        bq, _FakeConn(copia, last_synced=modified, versao_gravada=versao), "fact_odds_snapshot"
+    )
 
     assert result["skipped"] is True
     assert bq.query.call_count == 0

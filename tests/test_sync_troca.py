@@ -38,12 +38,13 @@ def test_nba_nunca_usa_a_troca():
         troca.valida_selecao("nba", frozenset({"x"}), frozenset(), ["x"])
 
 
-@pytest.mark.parametrize("campo", ["troca", "staged"])
-def test_odds_nao_entram_na_troca_nem_no_staged_ate_a_de109(campo):
-    sel = frozenset({"fact_odds_snapshot"})
-    args = (sel, frozenset()) if campo == "troca" else (frozenset(), sel)
-    with pytest.raises(ValueError, match="DE#109"):
-        troca.valida_selecao("futebol", *args, ["fact_odds_snapshot", "fact_fixtures"])
+def test_odds_podem_ser_selecionadas_na_troca_desde_a_de109():
+    """A DE#109 tirou `fact_odds_snapshot` da lista de proibidas: o que a impede em PRD é a
+    falta do filtro do cache de serving (`odds_serving.valida_cache_serving`, que enxerga o
+    ambiente), provado em tests/test_sync_odds_serving.py."""
+    troca.valida_selecao(
+        "futebol", frozenset({"fact_odds_snapshot"}), frozenset(), ["fact_odds_snapshot", "fact_fixtures"]
+    )
 
 
 def test_tabela_fora_da_execucao_e_recusada():
@@ -59,10 +60,11 @@ def test_selecao_valida_passa():
 
 
 def test_run_sync_recusa_a_selecao_proibida_antes_de_conectar(monkeypatch):
+    """Odds na troca de PRD sem o filtro do cache de serving: recusado antes de conectar."""
     conectou = []
     monkeypatch.setattr(sync, "get_pg_url", lambda env: "postgresql://fake:5432/db")
     monkeypatch.setattr(sync.psycopg, "connect", lambda *a, **kw: conectou.append(1))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="filtro"):
         sync.run_sync(tables="all", env="prd", sport="futebol", troca="fact_odds_snapshot")
     assert conectou == []
 

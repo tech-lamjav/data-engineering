@@ -28,11 +28,18 @@ def sync_bq_to_postgres(request):
         tables: 'all' (default) ou CSV de nomes, ex:
                 ?sport=futebol&tables=fact_value_opportunities,fact_fixtures
         troca:  CSV de tabelas habilitadas na CARGA POR TROCA (DE#108, ADR 0005). Vazio ou
-                ausente (default) = nenhuma: carga no lugar, como antes. Só futebol; nunca
-                `fact_odds_snapshot` (até a DE#109). É o workflow quem liga, tabela a tabela
-                e por ambiente; desligar = reverter o workflow, sem build de imagem.
+                ausente (default) = nenhuma: carga no lugar, como antes. Só futebol;
+                `fact_odds_snapshot` só entra em PRD com o `cache_serving` ligado (DE#109). É o
+                workflow quem liga, tabela a tabela e por ambiente; desligar = reverter o
+                workflow, sem build de imagem.
         staged: CSV de tabelas habilitadas no caminho STAGED (tabelas com dependente, como as
                 `int_futebol_premissas_*`).
+        cache_serving: CSV de tabelas ligadas no CACHE DE SERVING de PRD (DE#109, ADR 0006): hoje
+                só `fact_odds_snapshot`, que passa a carregar só os mercados servidos, as
+                fixtures dos últimos 30 dias e futuras com todas as janelas e o resto só com o
+                fechamento (T-15m). Vazio ou ausente (default) = a tabela completa, como antes.
+                Só PRD e só futebol (em DEV o filtro de mercados já vale sempre); o workflow
+                liga, e desligar = reverter o workflow.
 
     Respostas: 200 sucesso; 409 já há sync do mesmo (sport, env) em andamento (trava de
     sessão no Postgres, DE#107); 500 schema drift, erro ou TROCA FALHA (alguma tabela
@@ -45,8 +52,12 @@ def sync_bq_to_postgres(request):
     tables = request.args.get("tables", default="all")
     troca = request.args.get("troca", default="")
     staged = request.args.get("staged", default="")
+    cache_serving = request.args.get("cache_serving", default="")
     try:
-        result = run_sync(tables=tables, env=env, sport=sport, troca=troca, staged=staged)
+        result = run_sync(
+            tables=tables, env=env, sport=sport, troca=troca, staged=staged,
+            cache_serving=cache_serving,
+        )
         if result["status"] == STATUS_OCUPADO:
             # Trava por (sport, env) com outro sync (DE#107): 409, não 5xx. O workflow
             # trata 409 como "em andamento" (WARNING, fora de failed_services) e o retry

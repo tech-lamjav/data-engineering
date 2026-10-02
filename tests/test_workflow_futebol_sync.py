@@ -319,3 +319,39 @@ def test_o_log_de_conclusao_emite_o_resumo_dos_dois_ambientes():
 
 def test_o_passe_prd_continua_sem_tocar_no_tamanho_do_dev():
     assert "dev_size_mb" not in " ".join(_achata(dict(_blocos())["prd"]))
+
+
+# ------------------------------------------------------------------
+# DE#109: cache de serving das odds em PRD, ligado pelo workflow (lançamento escuro)
+# ------------------------------------------------------------------
+def test_o_cache_de_serving_nasce_como_variavel_do_init_so_para_prd():
+    atrib = _init()
+    assert "cache_serving_prd" in atrib
+    assert "cache_serving_dev" not in atrib  # em DEV o filtro de mercados já vale sempre
+
+
+def test_prd_passa_o_cache_de_serving_ao_servico_e_dev_nao():
+    blocos = dict(_blocos())
+    prd = _chamada(blocos["prd"])["try"]["args"]["query"]
+    dev = _chamada(blocos["dev"])["try"]["args"]["query"]
+    assert prd["cache_serving"] == "${cache_serving_prd}"
+    assert "cache_serving" not in dev  # o serviço recusa o parâmetro em DEV
+
+
+def test_neste_commit_o_cache_de_serving_esta_desligado():
+    """A imagem entra com o cache DESLIGADO (lançamento escuro): ligar é o último passo do
+    runbook, depois de IAM, smoke, snapshot congelado e deploy. Este teste muda junto com o PR
+    que ligar."""
+    assert _init()["cache_serving_prd"] == ""
+
+
+def test_as_odds_na_troca_de_prd_exigem_o_cache_de_serving_ligado_no_mesmo_yaml():
+    """Guarda que sobrevive ao liga: o serviço recusa (ValueError) odds na troca de PRD sem o
+    filtro, e uma recusa só apareceria no primeiro run. Aqui ela aparece no CI."""
+    from src.sync.odds_serving import TABELA_ODDS
+    from src.sync.troca import parse_lista
+
+    atrib = _init()
+    na_troca = parse_lista(atrib["troca_prd"]) | parse_lista(atrib["staged_prd"])
+    if TABELA_ODDS in na_troca:
+        assert TABELA_ODDS in parse_lista(atrib["cache_serving_prd"])
