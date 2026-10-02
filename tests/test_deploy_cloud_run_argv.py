@@ -141,7 +141,7 @@ def _manifest_paths():
     return paths
 
 
-def _build_fake_repo(root: Path, api_football_key: bool):
+def _build_fake_repo(root: Path, api_football_key: bool, extra_env: dict | None = None):
     """Árvore mínima com a mesma forma que o `deploy_service()` valida.
 
     Precisa ser um repo git de verdade (DE #50/#51): `procedencia_servicos.sh` só toca
@@ -190,6 +190,7 @@ def _build_fake_repo(root: Path, api_football_key: bool):
     env = dict(FAKE_ENV)
     if api_football_key:
         env["API_FOOTBALL_KEY"] = "fake-api-football-key"
+    env.update(extra_env or {})
     (root / ".env").write_text(
         "".join(f"{k}={v}\n" for k, v in env.items()), encoding="utf-8"
     )
@@ -197,11 +198,12 @@ def _build_fake_repo(root: Path, api_football_key: bool):
     subprocess.run(["git", "init", "-q"], cwd=str(root), check=True)
 
 
-def capture_deploy_argv(tmp_path: Path, api_football_key: bool):
+def capture_deploy_argv(tmp_path: Path, api_football_key: bool, extra_env: dict | None = None,
+                        nome: str | None = None):
     """Roda o deploy dos 29 serviços contra o stub e devolve {serviço: argv}."""
-    root = tmp_path / ("com-chave" if api_football_key else "sem-chave")
+    root = tmp_path / (nome or ("com-chave" if api_football_key else "sem-chave"))
     root.mkdir()
-    _build_fake_repo(root, api_football_key)
+    _build_fake_repo(root, api_football_key, extra_env)
 
     stub_dir = root / "_stubs"
     stub_dir.mkdir()
@@ -272,3 +274,48 @@ if __name__ == "__main__":
             encoding="utf-8",
         )
     print(f"golden regravado: {GOLDEN}")
+
+
+# ------------------------------------------------------------------
+# DE#109 (história 51 da #112): conta de runtime DEDICADA ao sync
+# ------------------------------------------------------------------
+def _flag(argv, nome):
+    return argv[argv.index(nome) + 1]
+
+
+@pytest.fixture(scope="module")
+def argv_com_conta_dedicada(tmp_path_factory):
+    return capture_deploy_argv(
+        tmp_path_factory.mktemp("deploy-sa"), True,
+        extra_env={"SYNC_SERVICE_ACCOUNT": "sync-bq-postgres"}, nome="sa-dedicada",
+    )
+
+
+def test_sync_service_account_prende_so_o_sync_na_conta_dedicada(argv_com_conta_dedicada):
+    """`SYNC_SERVICE_ACCOUNT` completa o domínio como `SERVICE_ACCOUNT` e vale SÓ para o
+    `sync-bq-to-postgres`: a conta compartilhada pelos 29 serviços não ganha `bigquery.jobUser`."""
+    argv = argv_com_conta_dedicada
+    assert _flag(argv["sync-bq-to-postgres"], "--service-account") == (
+        "sync-bq-postgres@fake-project.iam.gserviceaccount.com"
+    )
+    outros = {s: _flag(a, "--service-account") for s, a in argv.items() if s != "sync-bq-to-postgres"}
+    assert len(outros) == 28
+    assert set(outros.values()) == {"FakeSA@fake-project.iam.gserviceaccount.com"}
+
+
+def test_a_conta_dedicada_so_muda_o_service_account_do_sync_o_resto_do_argv_e_igual(
+    argv_com_conta_dedicada,
+):
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))["com_api_football_key"]
+    for servico, esperado in golden.items():
+        obtido = list(argv_com_conta_dedicada[servico])
+        if servico == "sync-bq-to-postgres":
+            i = obtido.index("--service-account") + 1
+            assert obtido[i] == "sync-bq-postgres@fake-project.iam.gserviceaccount.com"
+            obtido[i] = esperado[esperado.index("--service-account") + 1]
+        assert obtido == esperado, servico
+
+
+def test_sem_a_variavel_o_sync_continua_na_conta_compartilhada(argv_snapshot):
+    argv = argv_snapshot["com_api_football_key"]["sync-bq-to-postgres"]
+    assert _flag(argv, "--service-account") == "FakeSA@fake-project.iam.gserviceaccount.com"
