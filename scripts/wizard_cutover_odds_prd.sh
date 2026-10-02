@@ -452,8 +452,8 @@ so_se_confirmar "Deployar o workflow-futebol-sync com o cache LIGADO?" \
 # ── 14. Conferir pelo dado ───────────────────────────────────────────────
 stage "Conferir pelo DADO (não pelo exit code) depois da primeira carga de PRD com o cache"
 say "Critérios de pronto da #109 (spec #112), medidos depois da primeira carga de PRD:"
-step "Contagem de linhas de fact_odds_snapshot em PRD entre 0,6 e 1,0 milhão (medido antes: ~1,007 mi;"
-step "  vai ficar na beira de cima por causa do mercado 6 e do crescimento; reporte o número exato)."
+step "Contagem de linhas de fact_odds_snapshot em PRD até 1,1 milhão (critério subido de 1,0 para 1,1 mi por decisão do usuário"
+step "  em 02/10, com o mercado 6 mantido; medido antes: ~1,007 mi, crescendo com a coleta; reporte o número exato)."
 step "Duração da carga das odds em PRD <= 150 s (campo duracao_s da resposta/log do sync)."
 step "A RPC get_futebol_fixture_quotes devolve o MESMO, antes e depois, para a amostra gravada no estágio 12"
 step "  (diff por fixture e linha, abaixo); fixtures antigas mostram o fechamento (T-15m)."
