@@ -1,0 +1,25 @@
+[
+  {
+    "name": "keep-live",
+    "action": {"type": "Keep"},
+    "condition": {
+      "tagState": "tagged",
+      "tagPrefixes": ["live"]
+    }
+  },
+  {
+    "name": "keep-12-recentes",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {
+      "keepCount": 12
+    }
+  },
+  {
+    "name": "delete-mais-de-30d",
+    "action": {"type": "Delete"},
+    "condition": {
+      "tagState": "any",
+      "olderThan": "30d"
+    }
+  }
+]

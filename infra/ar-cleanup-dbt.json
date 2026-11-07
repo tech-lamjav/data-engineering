@@ -1,0 +1,25 @@
+[
+  {
+    "name": "keep-live-e-latest",
+    "action": {"type": "Keep"},
+    "condition": {
+      "tagState": "tagged",
+      "tagPrefixes": ["live", "latest"]
+    }
+  },
+  {
+    "name": "keep-9-recentes",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {
+      "keepCount": 9
+    }
+  },
+  {
+    "name": "delete-mais-de-30d",
+    "action": {"type": "Delete"},
+    "condition": {
+      "tagState": "any",
+      "olderThan": "30d"
+    }
+  }
+]

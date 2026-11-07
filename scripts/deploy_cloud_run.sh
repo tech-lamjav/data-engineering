@@ -367,6 +367,150 @@ build_secrets() {
     echo "$SECRETS"
 }
 
+# Lê o JSON inteiro de `gcloud run services describe` de um serviço, com o stderr à parte
+# (um aviso do gcloud no caminho de sucesso não pode contaminar o JSON). Imprime o JSON em
+# stdout; em falha imprime o erro em stderr e devolve 1. Uma leitura só serve à tag `live`
+# e à conferência do carimbo, que são as duas leituras pós-deploy.
+ler_servico_json() {
+    local service_name=$1
+    local tmp_err out rc=0
+    tmp_err=$(mktemp)
+    out=$(gcloud run services describe "$service_name" \
+        --region "$REGION" \
+        --project "$GCP_PROJECT_ID" \
+        --format=json 2>"$tmp_err") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        cat "$tmp_err" >&2
+        rm -f "$tmp_err"
+        return 1
+    fi
+    rm -f "$tmp_err"
+    printf '%s' "$out"
+}
+
+# Tag `live` no Artifact Registry (ver infra/README.md e ADR 0007).
+#
+# A cleanup policy do repo `cloud-run-source-deploy` só pode apagar imagem velha se o
+# digest que o serviço SERVE estiver protegido. Os 29 serviços escalam a zero, então o
+# cold start puxa a imagem do registry de novo: digest vivo apagado = serviço que não
+# sobe. A tag `latest` não serve de proteção: o `gcloud run deploy --source` move a
+# `latest` no push, ANTES de a revisão ficar pronta, e 5 pushes medidos em 07/11/2026
+# nunca viraram revisão. Por isso a fonte da verdade aqui é o tráfego do serviço
+# (`status.traffic`, revisões com percent > 0) e o `status.imageDigest` de cada revisão,
+# e não o que acabou de ser empurrado.
+#
+# Nomes de tag FIXOS: `live` na revisão com mais tráfego e `live-prev` na segunda (traffic
+# split ou rollback parcial). A policy mantém tudo com prefixo `live`, então um nome por
+# revisão (`live-<rev>`) viraria um Keep permanente que ninguém remove, e a cleanup
+# deixaria de limpar. Mais de duas revisões com tráfego é estado que este script não sabe
+# proteger com dois nomes: falha alto em vez de escolher.
+#
+# Fail-closed: erro de leitura do tráfego ou da revisão, tráfego vazio ou digest fora do
+# formato `<host>-docker.pkg.dev/...@sha256:<64 hex>` devolvem 1 sem aplicar tag nenhuma.
+#
+# $2: o JSON de `services describe` já lido pelo chamador (uma leitura serve às duas
+# conferências pós-deploy).
+marcar_live() {
+    local service_name=$1
+    local svc_json=$2
+    local revisoes parse_rc=0
+
+    revisoes=$(printf '%s' "$svc_json" | python3 -c '
+import json, sys
+
+doc = json.load(sys.stdin)
+status = doc.get("status") or {}
+soma = {}
+for entrada in status.get("traffic") or []:
+    pct = entrada.get("percent") or 0
+    if pct <= 0:
+        continue
+    rev = entrada.get("revisionName")
+    if not rev and entrada.get("latestRevision"):
+        rev = status.get("latestReadyRevisionName")
+    if not rev:
+        sys.exit("entrada de status.traffic com percent > 0 e sem revisionName")
+    soma[rev] = soma.get(rev, 0) + pct
+if not soma:
+    sys.exit("status.traffic sem nenhuma revisao com percent > 0")
+if len(soma) > 2:
+    sys.exit("%d revisoes com trafego (%s): so ha dois nomes de tag (live, live-prev)"
+             % (len(soma), ", ".join(sorted(soma))))
+# Mais tráfego primeiro; empate (50/50) desempata pela revisão mais nova (o nome
+# termina em -NNNNN-xxx, crescente). Dois sorts estáveis: nome desc, depois percent desc.
+ordem = sorted(soma.items(), key=lambda kv: kv[0], reverse=True)
+for rev, _ in sorted(ordem, key=lambda kv: -kv[1]):
+    print(rev)
+' 2>&1) || parse_rc=$?
+    if [ "$parse_rc" -ne 0 ]; then
+        print_error "✗ Erro de LEITURA do tráfego de $service_name; tag live NÃO aplicada:"
+        echo "$revisoes" | sed 's/^/     /' >&2
+        return 1
+    fi
+
+    local nomes_tag=("live" "live-prev")
+    local i=0 rev rev_json digest pacote="" pacote_rev tmp_err rc
+    local digests=()
+    while IFS= read -r rev; do
+        [ -z "$rev" ] && continue
+        tmp_err=$(mktemp)
+        rc=0
+        rev_json=$(gcloud run revisions describe "$rev" \
+            --region "$REGION" \
+            --project "$GCP_PROJECT_ID" \
+            --format=json 2>"$tmp_err") || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            print_error "✗ Erro de LEITURA da revisão $rev de $service_name; tag live NÃO aplicada:"
+            sed 's/^/     /' "$tmp_err" >&2
+            rm -f "$tmp_err"
+            return 1
+        fi
+        rm -f "$tmp_err"
+        rc=0
+        digest=$(printf '%s' "$rev_json" | python3 -c '
+import json, re, sys
+
+d = (json.load(sys.stdin).get("status") or {}).get("imageDigest") or ""
+if not re.fullmatch(r"[a-z0-9-]+-docker\.pkg\.dev/[^@\s]+@sha256:[0-9a-f]{64}", d):
+    sys.exit("status.imageDigest ausente ou fora do formato: %r" % d)
+print(d)
+' 2>&1) || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            print_error "✗ Erro de LEITURA do digest da revisão $rev de $service_name; tag live NÃO aplicada:"
+            echo "$digest" | sed 's/^/     /' >&2
+            return 1
+        fi
+        pacote_rev="${digest%@*}"
+        if [ -n "$pacote" ] && [ "$pacote_rev" != "$pacote" ]; then
+            print_error "✗ Revisões de $service_name em pacotes diferentes ($pacote, $pacote_rev); tag live NÃO aplicada"
+            return 1
+        fi
+        pacote="$pacote_rev"
+        digests+=("$digest")
+    done <<< "$revisoes"
+
+    # Duas leituras primeiro, escrita depois: nenhuma tag sai se uma das revisões falhar.
+    for digest in "${digests[@]}"; do
+        if [ "$i" -eq 1 ] && [ "$digest" = "${digests[0]}" ]; then
+            break  # as duas revisões servem o mesmo digest; `live` já o protege
+        fi
+        if [ "${LIVE_SO_LISTAR:-0}" -eq 1 ]; then
+            # `--lista-vivos`: mesma leitura, nenhuma escrita. Digest completo, para o
+            # scripts/simula_cleanup_ar.py conferir que a policy não apaga nada vivo.
+            echo "vivo ${service_name} ${nomes_tag[$i]} ${digest}"
+            i=$((i + 1))
+            continue
+        fi
+        if ! gcloud artifacts docker tags add "$digest" "${pacote}:${nomes_tag[$i]}" --quiet >/dev/null; then
+            print_error "✗ Falha ao aplicar a tag ${nomes_tag[$i]} em $digest"
+            return 1
+        fi
+        print_info "✓ Tag ${nomes_tag[$i]} → ${digest##*/}"
+        i=$((i + 1))
+    done
+    return 0
+}
+
 # Faz deploy de um serviço
 deploy_service() {
     local SERVICE_NAME=$1
@@ -596,28 +740,36 @@ deploy_service() {
             print_warning "Não foi possível obter a URL do serviço, mas o deploy pode ter sido bem-sucedido"
         fi
 
+        # Uma leitura só do serviço, para as duas conferências pós-deploy abaixo (tag
+        # `live` e carimbo). Erro de LEITURA (API/IAM/parse) é estado diferente de
+        # "carimbo ausente" — mesma distinção do checa_deriva_servicos.sh. Sem isto, uma
+        # falha transitória do `describe` logo após um deploy bom seria relatada como
+        # "carimbo não voltou", que é a notícia errada.
+        local CARIMBO_JSON
+        if ! CARIMBO_JSON=$(ler_servico_json "$SERVICE_NAME" 2>&1); then
+            print_error "✗ Erro de LEITURA ao reler $SERVICE_NAME (tag live e carimbo NÃO conferidos; não é deriva):"
+            echo "$CARIMBO_JSON" | sed 's/^/     /' >&2
+            print_error "  Depois de resolver: ./scripts/deploy_cloud_run.sh --so-tag-live $SERVICE_NAME"
+            rm -rf "$TEMP_DIR"
+            return 1
+        fi
+
+        # Tag `live` ANTES da conferência do carimbo, e independente dela: o deploy já
+        # subiu e o tráfego já está no digest novo. Se a tag viesse depois do `return 1`
+        # do carimbo, um carimbo que não confere deixaria a tag num digest MORTO e o vivo
+        # desprotegido da cleanup policy do Artifact Registry.
+        local TAG_FALHOU=0
+        if ! marcar_live "$SERVICE_NAME" "$CARIMBO_JSON"; then
+            TAG_FALHOU=1
+            print_error "  A cleanup policy do Artifact Registry pode apagar o digest vivo de $SERVICE_NAME."
+            print_error "  Depois de resolver: ./scripts/deploy_cloud_run.sh --so-tag-live $SERVICE_NAME"
+        fi
+
         # Leitura de conferência do carimbo (DE #50): carimbo que o próprio deploy não
         # confirma é carimbo que some na primeira refatoração — foi exatamente o
         # "segundo comando manual" que deixou o fix do de-vig 2 dias fora de produção
         # (decisão 6 do ADR 0001). Só roda para serviço já coberto pelo manifesto.
         if [ -n "$PROCEDENCIA_ESPERADA" ]; then
-            # Erro de LEITURA (API/IAM/parse) é estado diferente de "carimbo ausente" —
-            # mesma distinção do checa_deriva_servicos.sh. Sem isto, uma falha
-            # transitória do `describe` logo após um deploy bom seria relatada como
-            # "carimbo não voltou", que é a notícia errada.
-            local CARIMBO_JSON DESC_RC=0
-            CARIMBO_JSON=$(gcloud run services describe "$SERVICE_NAME" \
-                --region "$REGION" \
-                --project "$GCP_PROJECT_ID" \
-                --format=json 2>&1) || DESC_RC=$?
-
-            if [ "$DESC_RC" -ne 0 ]; then
-                print_error "✗ Erro de LEITURA ao reler $SERVICE_NAME para conferir o carimbo (não é deriva):"
-                echo "$CARIMBO_JSON" | sed 's/^/     /' >&2
-                rm -rf "$TEMP_DIR"
-                return 1
-            fi
-
             local CARIMBO_LIDO PARSE_RC=0
             CARIMBO_LIDO=$(echo "$CARIMBO_JSON" | python3 -c '
 import json, sys
@@ -644,6 +796,11 @@ for var in spec["containers"][0].get("env") or []:
             fi
             print_info "✓ Carimbo de procedência conferido: $PROCEDENCIA_ESPERADA"
         fi
+
+        if [ "$TAG_FALHOU" -ne 0 ]; then
+            rm -rf "$TEMP_DIR"
+            return 1
+        fi
     else
         print_error "✗ Falha no deploy de $SERVICE_NAME"
         print_error "Código de saída: $DEPLOY_EXIT_CODE"
@@ -658,6 +815,16 @@ for var in spec["containers"][0].get("env") or []:
                 --format="value(status.url)" 2>/dev/null)
             if [ -n "$SERVICE_URL" ]; then
                 print_info "URL do serviço: $SERVICE_URL"
+            fi
+            # Se o deploy subiu apesar do exit code, há um digest novo servindo tráfego
+            # sem a tag `live`. Marca do mesmo jeito (o deploy continua reportado como
+            # falha). Falha aqui só imprime: o retorno já é 1.
+            local FALHA_JSON
+            if FALHA_JSON=$(ler_servico_json "$SERVICE_NAME" 2>&1); then
+                marcar_live "$SERVICE_NAME" "$FALHA_JSON" || \
+                    print_error "  Tag live não aplicada; depois de resolver: ./scripts/deploy_cloud_run.sh --so-tag-live $SERVICE_NAME"
+            else
+                print_error "  Não consegui reler $SERVICE_NAME para a tag live: ./scripts/deploy_cloud_run.sh --so-tag-live $SERVICE_NAME"
             fi
         else
             print_error "O serviço não foi criado. Verifique os logs no console do GCP:"
@@ -723,6 +890,105 @@ checar_manifesto() {
     return 0
 }
 
+# Modo `--derivados`: reduz SERVICES_TO_DEPLOY (variável local do main(), visível aqui
+# por escopo dinâmico) aos serviços cujo hash do disco diverge do PROCEDENCIA_HASH gravado
+# no serviço. Quem decide o estado é o detector de deriva (`checa_deriva_servicos.sh
+# --estados`), não uma segunda cópia da comparação aqui dentro.
+#
+# Cada deploy `--source` sobe ~4 versões no Artifact Registry (~127 MB de runtime Python
+# por build). Deployar os 29 porque um mudou é o que encheu o repo `cloud-run-source-deploy`
+# (61,9 GiB em 07/11/2026). Este modo existe para o deploy de rotina não fazer isso.
+#
+#   em-dia                         pula
+#   deriva-nucleo/-svc/-ambos      deploya
+#   sem-carimbo                    deploya (nunca passou pelo deploy carimbado)
+#   erro (leitura ou hash local)   ABORTA antes do primeiro deploy
+#   qualquer outra coisa           ABORTA (estado que este script não conhece)
+#
+# Nenhum estado duvidoso PULA: pular é a única escolha que deixa produção defasada sem
+# ninguém ver. Serviço que ainda não existe no Cloud Run cai em "erro" (o describe falha);
+# o remédio é deployá-lo por nome.
+filtrar_derivados() {
+    local nomes=() entry
+    for entry in "${SERVICES_TO_DEPLOY[@]}"; do
+        nomes+=("${entry%%:*}")
+    done
+
+    print_info "Consultando o detector de deriva para ${#nomes[@]} serviço(s)..."
+    local estados rc=0
+    estados=$(GCP_PROJECT_ID="$GCP_PROJECT_ID" GCP_REGION="$REGION" \
+        "$SCRIPT_DIR/checa_deriva_servicos.sh" --estados "${nomes[@]}") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        print_error "checa_deriva_servicos.sh --estados falhou (exit $rc); nada foi deployado."
+        return 1
+    fi
+
+    local derivados=() problemas=() nome estado n
+    for entry in "${SERVICES_TO_DEPLOY[@]}"; do
+        nome="${entry%%:*}"
+        n=$(printf '%s\n' "$estados" | awk -F'\t' -v s="$nome" '$1 == s' | wc -l | tr -d ' ')
+        if [ "$n" -ne 1 ]; then
+            problemas+=("$nome: o detector devolveu $n linha(s) de estado")
+            continue
+        fi
+        estado=$(printf '%s\n' "$estados" | awk -F'\t' -v s="$nome" '$1 == s { print $2 }')
+        case "$estado" in
+            em-dia)
+                echo "  em dia (pulado): $nome"
+                ;;
+            deriva-nucleo|deriva-svc|deriva-ambos|sem-carimbo)
+                echo "  ${estado} → deploy: $nome"
+                derivados+=("$entry")
+                ;;
+            erro)
+                problemas+=("$nome: erro de leitura (detalhe acima)")
+                ;;
+            *)
+                problemas+=("$nome: estado desconhecido '$estado'")
+                ;;
+        esac
+    done
+
+    if [ "${#problemas[@]}" -gt 0 ]; then
+        print_error "--derivados abortado ANTES de qualquer deploy; estado incerto em:"
+        local p
+        for p in "${problemas[@]}"; do
+            print_error "  $p"
+        done
+        print_error "Serviço novo (ainda não existe no Cloud Run)? Deploye-o por nome: $0 <servico>"
+        return 1
+    fi
+
+    # `"${arr[@]}"` de array vazio é "unbound variable" no bash 3.2 com `set -u`.
+    SERVICES_TO_DEPLOY=(${derivados[@]+"${derivados[@]}"})
+    return 0
+}
+
+# Modo `--so-tag-live`: (re)aplica a tag `live` sem deployar. Backfill antes da cleanup
+# policy do Artifact Registry e remédio de um deploy cuja tag falhou.
+aplicar_so_tag_live() {
+    local ok=0 falhas=0 service nome svc_json
+    for service in "${SERVICES_TO_DEPLOY[@]}"; do
+        nome="${service%%:*}"
+        print_info "Tag live: $nome"
+        if svc_json=$(ler_servico_json "$nome") && marcar_live "$nome" "$svc_json"; then
+            ok=$((ok + 1))
+        else
+            print_error "✗ $nome: tag live NÃO aplicada"
+            falhas=$((falhas + 1))
+        fi
+    done
+    echo ""
+    if [ "${LIVE_SO_LISTAR:-0}" -eq 1 ]; then
+        print_info "=== Digests vivos: $ok ok, $falhas falha(s) de leitura ==="
+    else
+        print_info "=== Tag live: $ok ok, $falhas falha(s) ==="
+    fi
+    if [ "$falhas" -gt 0 ]; then
+        exit 1
+    fi
+}
+
 # Lista serviços deployados
 list_services() {
     print_info "Serviços deployados:"
@@ -778,11 +1044,37 @@ main() {
     #   ./deploy_cloud_run.sh <sport>                      -> todos do esporte (nba|futebol)
     #   ./deploy_cloud_run.sh <service>                    -> back-compat (1 serviço)
     #   ./deploy_cloud_run.sh <sport> <service>            -> 1 serviço, valida que pertence ao esporte
+    #   ./deploy_cloud_run.sh --derivados [sport]          -> só os que derivaram do disco
+    #   ./deploy_cloud_run.sh --so-tag-live [alvo]         -> não deploya; só (re)aplica a tag live
+    #   ./deploy_cloud_run.sh --lista-vivos [alvo]         -> só lista os digests que serviriam de live
+    #
+    # `--so-tag-live` aceita os mesmos alvos do deploy (nada, sport, service, sport service).
+    # É o backfill da tag `live` antes de aplicar a cleanup policy do Artifact Registry, e o
+    # remédio quando um deploy subiu mas a tag falhou.
     local SERVICES_TO_DEPLOY=()
+    local MODO="deploy"
+
+    if [ "${1:-}" = "--so-tag-live" ]; then
+        MODO="tag"
+        shift
+    elif [ "${1:-}" = "--lista-vivos" ]; then
+        MODO="tag"
+        LIVE_SO_LISTAR=1
+        shift
+    elif [ "${1:-}" = "--derivados" ]; then
+        MODO="derivados"
+        shift
+        # Só esporte (ou nada). `--derivados extract-games` não tem sentido: pedir UM
+        # serviço é pedir o deploy dele, derivado ou não.
+        if [ $# -gt 1 ] || { [ $# -eq 1 ] && ! is_supported_sport "$1"; }; then
+            print_error "Uso: $0 --derivados [sport]   (sport: ${SUPPORTED_SPORTS[*]})"
+            exit 1
+        fi
+    fi
 
     if [ $# -eq 0 ]; then
         SERVICES_TO_DEPLOY=("${SERVICES[@]}")
-        print_info "Fazendo deploy de TODOS os serviços (${#SERVICES_TO_DEPLOY[@]} no total)..."
+        print_info "Alvo: TODOS os serviços (${#SERVICES_TO_DEPLOY[@]} no total) — modo ${MODO}"
 
     elif [ $# -eq 1 ]; then
         if is_supported_sport "$1"; then
@@ -791,7 +1083,7 @@ main() {
             SERVICES_TO_DEPLOY=("${!arr_name}")
             local sport_upper
             sport_upper=$(echo "$sport" | tr '[:lower:]' '[:upper:]')
-            print_info "Fazendo deploy de TODOS os serviços de ${sport_upper} (${#SERVICES_TO_DEPLOY[@]})..."
+            print_info "Alvo: TODOS os serviços de ${sport_upper} (${#SERVICES_TO_DEPLOY[@]}) — modo ${MODO}"
         else
             local SERVICE_NAME=$1
             local SERVICE_DIR
@@ -830,7 +1122,7 @@ main() {
         local SERVICE_DIR
         SERVICE_DIR=$(get_service_dir "$SERVICE_NAME")
         SERVICES_TO_DEPLOY=("$SERVICE_NAME:$SERVICE_DIR")
-        print_info "Fazendo deploy de $(echo "$sport" | tr '[:lower:]' '[:upper:]')/$SERVICE_NAME..."
+        print_info "Alvo: $(echo "$sport" | tr '[:lower:]' '[:upper:]')/$SERVICE_NAME — modo ${MODO}"
 
     else
         print_error "Argumentos inválidos. Uso:"
@@ -838,7 +1130,26 @@ main() {
         echo "  $0 <sport>              # todos do esporte (nba|futebol)"
         echo "  $0 <service>            # 1 serviço (back-compat)"
         echo "  $0 <sport> <service>    # 1 serviço, validado pelo esporte"
+        echo "  $0 --derivados [sport]  # só os serviços cujo disco diverge do carimbo"
+        echo "  $0 --so-tag-live [alvo] # só a tag live, sem deploy"
+        echo "  $0 --lista-vivos [alvo] # lista os digests vivos (entrada do simula_cleanup_ar.py)"
         exit 1
+    fi
+
+    if [ "$MODO" = "tag" ]; then
+        aplicar_so_tag_live
+        return
+    fi
+
+    if [ "$MODO" = "derivados" ]; then
+        if ! filtrar_derivados; then
+            exit 1
+        fi
+        if [ "${#SERVICES_TO_DEPLOY[@]}" -eq 0 ]; then
+            print_info "Nenhum serviço derivado: nada a deployar."
+            return
+        fi
+        print_info "Deploy de ${#SERVICES_TO_DEPLOY[@]} serviço(s) derivado(s)..."
     fi
 
     echo ""
