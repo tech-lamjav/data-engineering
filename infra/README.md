@@ -43,13 +43,35 @@ Pré-voo: `gcloud config get-value account` = `tecnologia@smartbetting.app`, e o
 ./scripts/deploy_cloud_run.sh --so-tag-live
 ```
 
+Jobs dbt: antes deste PR o spec do job guarda a TAG (`...:latest`), sem digest resolvido em
+lugar nenhum do job. A próxima execução roda o que o spec aponta (hoje, o `latest`); a última
+execução mostra o digest que rodou da última vez, que pode ser outro (o `dbt-nba` está dormente
+desde 25/05: rodou um digest de 17/05, e o `latest` é de 17/08). Os dois são protegidos:
+`live` no que o spec resolve agora, `live-prev` no da última execução.
+
 ```bash
-# 2 jobs dbt: o digest que o job roda aparece resolvido na execução mais recente
-for job in dbt-futebol dbt-nba; do
-  IMG=$(gcloud run jobs executions list --job="$job" --region=us-east1 --limit=1 \
-        --format='value(spec.template.spec.containers[0].image)')
-  case "$IMG" in *@sha256:*) ;; *) echo "PARE: $job sem digest legível: '$IMG'"; continue ;; esac
-  gcloud artifacts docker tags add "$IMG" "${IMG%@*}:live"
+# 2 jobs dbt. A função vivos_dbt é reusada no passo 2.
+vivos_dbt() {  # imprime "<job> <atual> <ultima_execucao>"
+  local job spec pkg atual exec_img
+  for job in dbt-futebol dbt-nba; do
+    spec=$(gcloud run jobs describe "$job" --region=us-east1 \
+           --format='value(spec.template.spec.template.spec.containers[0].image)')
+    pkg=${spec%@*}; pkg=${pkg%:*}
+    case "$spec" in
+      *@sha256:*) atual="$spec" ;;
+      *) atual="$pkg@$(gcloud artifacts docker images describe "$spec" --format='value(image_summary.digest)')" ;;
+    esac
+    exec_img=$(gcloud run jobs executions list --job="$job" --region=us-east1 --limit=1 \
+               --format='value(spec.template.spec.containers[0].image)')
+    echo "$job $atual $exec_img"
+  done
+}
+vivos_dbt | while read -r job atual exec_img; do
+  pkg=${atual%@*}
+  case "$atual" in *@sha256:????????????????????????????????????????????????????????????????) ;;
+    *) echo "PARE: $job sem digest legível: '$atual'"; continue ;; esac
+  gcloud artifacts docker tags add "$atual" "$pkg:live"
+  case "$exec_img" in "$atual"|"") ;; *@sha256:*) gcloud artifacts docker tags add "$exec_img" "$pkg:live-prev" ;; esac
 done
 ```
 
@@ -73,10 +95,7 @@ for repo in dbt-futebol-repo dbt-nba-repo; do
   gcloud artifacts docker images list "us-east1-docker.pkg.dev/smartbetting-dados/$repo" \
     --include-tags --format=json > "/tmp/ar-$repo.json"
 done
-for job in dbt-futebol dbt-nba; do
-  gcloud run jobs executions list --job="$job" --region=us-east1 --limit=1 \
-    --format='value(spec.template.spec.containers[0].image)'
-done > /tmp/vivos-dbt.txt
+vivos_dbt > /tmp/vivos-dbt.txt   # função do passo 1
 python3 scripts/simula_cleanup_ar.py infra/ar-cleanup-dbt.json /tmp/ar-dbt-futebol-repo.json /tmp/vivos-dbt.txt
 python3 scripts/simula_cleanup_ar.py infra/ar-cleanup-dbt.json /tmp/ar-dbt-nba-repo.json /tmp/vivos-dbt.txt
 ```
@@ -84,13 +103,18 @@ python3 scripts/simula_cleanup_ar.py infra/ar-cleanup-dbt.json /tmp/ar-dbt-nba-r
 **Só siga se cada simulação terminar com `✓ Nenhum digest vivo seria apagado` (exit 0).**
 Exit 1 com `seria APAGADO` = falta a `live` naquele digest: volte ao passo 1.
 
+A simulação é **conservadora**: não modela a regra do AR de não apagar imagem referenciada por
+um índice mantido (os repos dbt têm índices de attestation, ver o aviso `é um ÍNDICE`). O
+conjunto que ela apaga é um superconjunto do real; as contagens e os GiB são teto. Para a
+pergunta de segurança (algum vivo cai?), isso só produz falso alarme, nunca falso verde.
+
 Referência (07/11/2026, antes do backfill):
 
 | Repo | Versões | Apaga | Mantém | Digest vivo em risco sem backfill? |
 |---|---:|---:|---:|---|
 | `cloud-run-source-deploy` | 2.034 | 1.683 | 351 | não (os 29 estão nas 12 mais novas) |
 | `dbt-futebol-repo` | 283 | 274 | 9 | não |
-| `dbt-nba-repo` | 56 | 47 | 9 | **sim**: o NBA está dormente e o digest da última execução do `dbt-nba` já não está entre as 9 mais novas. Aplicar a policy sem o passo 1 apagaria a imagem do job. |
+| `dbt-nba-repo` | 56 | 47 | 9 | **sim, o da última execução**: o `dbt-nba` está dormente e rodou pela última vez (25/05) um digest de 17/05 que já não está entre as 9 mais novas. O que o spec aponta hoje (`latest`, 17/08) está protegido. Sem o `live-prev` do passo 1, a imagem da última execução boa some (rollback e forense do NBA). |
 
 ### 3. Aplicar as policies
 

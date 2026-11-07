@@ -28,6 +28,11 @@ Semântica reproduzida (docs.cloud.google.com/artifact-registry/docs/repositorie
 - `tagPrefixes` só casa versão com tag (`tagState: tagged`).
 Campo de policy que este script não conhece é ERRO, não é ignorado: ignorar em silêncio
 faria a simulação divergir da policy real sem ninguém ver.
+
+CONSERVADORA: o AR não apaga imagem referenciada por um índice (manifest list) que fica, e esta
+simulação não modela isso. O que ela marca para apagar é superconjunto do real (contagens e GiB
+são teto). Para a pergunta de segurança, "algum digest vivo cai?", isso só gera falso alarme,
+nunca falso verde.
 """
 import json
 import re

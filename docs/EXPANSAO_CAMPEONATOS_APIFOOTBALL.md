@@ -76,7 +76,7 @@ Tudo confirmado no código:
 5. **(Opcional, recomendado) Recalibrar limiares das premissas** — ver §7.
 
 Lembrete operacional (memória do projeto): mudar modelos dbt_futebol exige
-`build-and-push.sh dbt_futebol` + `gcloud run jobs update`; mudar workflow exige
+`build-and-push.sh dbt_futebol` (que já faz o `jobs update` e move a tag `live`); mudar workflow exige
 `deploy_workflows.sh`. Editar só o YAML/local não muda o que roda em produção.
 
 ---
