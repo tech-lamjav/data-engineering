@@ -37,7 +37,7 @@ A policy só é segura **depois** que a `live` existe em todo digest vivo. Daí 
 
 | Passo | Estado |
 |---|---|
-| 1. Backfill da `live` | **feito**: `--so-tag-live` 29/29; jobs dbt tagueados à mão (`dbt-futebol` live = índice `d6a25b5b…`, live-prev = `935cac16…`; `dbt-nba` live = índice `200491f9…`, live-prev = `9a2a8cd9…`) |
+| 1. Backfill da `live` | **feito**: `--so-tag-live` 29/29; jobs dbt tagueados à mão (`dbt-futebol` live = índice `d6a25b5b…`, live-prev = `935cac16…`; `dbt-nba` live = índice `200491f9…`, live-prev = `9a2a8cd9…`). ⚠️ O `935cac16` é o **filho amd64 do próprio índice `d6a25b5b`**: mesma imagem, não é um N-1. O `dbt-futebol` só ganha um alvo de rollback de verdade no próximo `build-and-push.sh`, que rola o `live-prev` para a `live` de hoje. O `9a2a8cd9` do `dbt-nba` é de fato uma imagem anterior (filho de outro índice, `2230481319…`). |
 | 2. Simulação | **feita**, verde nos 3 repos |
 | 3. Policies | **aplicadas** sem dry-run e conferidas com o JSON. `keepCount` é por pacote; com no máximo 8 versões por pacote hoje, nada é apagado ainda |
 | 4. Lifecycle do bucket de sources | **pendente** |
@@ -75,8 +75,14 @@ O pipeline está pausado desde 06/10. Antes de religar:
      "$PKG@sha256:2230481319c8dd0482fd09d2041095d73591428ea83958a01232664b836b8680" "$PKG:live-prev-idx"
    ```
 
-   O nome casa com o Keep `live*` da policy. Ela fica fixa até o `dbt-nba` ser rebuildado:
-   o build sem attestation não gera mais índice, e aí a tag pode ser removida.
+   O nome casa com o Keep `live*` da policy, e a tag **não rola**: se ninguém a remover, vira
+   Keep eterno. Remova-a quando o `9a2a8cd9` deixar de ser o `live-prev` do `dbt-nba`, ou seja,
+   depois do 2º `build-and-push.sh dbt_nba` (o 1º rola o `live-prev` para o índice `200491f9`;
+   o 2º, para um build sem índice):
+
+   ```bash
+   gcloud artifacts docker tags delete "$PKG:live-prev-idx" --quiet
+   ```
 
 3. **Apagar o pacote órfão `extract-player-props`.** Ele tem 3 versões (~240 MB, de
    12/01/2026). O serviço não existe (`gcloud run services describe extract-player-props` →
@@ -111,9 +117,10 @@ para a `live` seguir o tráfego.
 
 ## Runbook
 
-Pré-voo: `gcloud config get-value account` = `tecnologia@smartbetting.app`. Rode cada bloco
-num shell com `set -euo pipefail`: um passo que falha não pode deixar o seguinte rodar sobre
-uma lista vazia.
+Pré-voo: `gcloud config get-value account` = `tecnologia@smartbetting.app`. Cada bloco roda
+num `bash -euo pipefail` próprio (heredoc): um passo que falha para o bloco em vez de deixar o
+seguinte rodar sobre uma lista vazia, e sem fechar o seu terminal (um `set -e` colado direto
+num zsh interativo fecharia a sessão no primeiro erro, junto com a mensagem).
 
 ### 1. Backfill da tag `live`
 
@@ -123,25 +130,37 @@ uma lista vazia.
 ```
 
 Jobs dbt: `scripts/vivos_jobs_dbt.sh` imprime `vivo <job> live <digest>` (o que o spec aponta
-agora) e `vivo <job> live-prev <digest>` (a última execução, se diferente). O script falha em
-vez de imprimir pacote sem digest.
+agora) e `vivo <job> exec <digest>` (a última execução, se diferente). O script falha em vez
+de imprimir pacote sem digest. A linha `exec` só vira `live-prev` quando o pacote ainda não tem
+`live-prev`: com o spec num índice, a execução mostra o filho amd64 do mesmo índice, e taguear
+em cima moveria o `live-prev` rolante (o N-1 do `build-and-push.sh`) para a imagem viva. Assim
+o bloco pode ser repetido sem estragar o rollback.
 
 > ⚠️ **Nunca chame `gcloud` dentro de um `while read` sem `</dev/null`.** O gcloud consome o
 > stdin do loop, e o loop para depois da primeira volta. Em 07/11/2026, só o 1º job foi
 > tagueado por causa disso. Abaixo, o loop lê pelo descritor 3 e o gcloud recebe `/dev/null`.
 
 ```bash
-set -euo pipefail
+bash -euo pipefail <<'EOF'
 ./scripts/vivos_jobs_dbt.sh > /tmp/vivos-dbt.txt
-while read -r _ job tag digest <&3; do
-  gcloud artifacts docker tags add "$digest" "${digest%@*}:$tag" --quiet </dev/null
+tem_tag() {  # tem_tag <pacote> <tag>; captura antes do grep (pipefail + SIGPIPE dariam falso)
+  local t
+  t=$(gcloud artifacts docker tags list "$1" --format='value(tag)' </dev/null)
+  grep -qx "$2" <<<"$t"   # value(tag) imprime o nome curto (live), não o caminho
+}
+while read -r _ job tipo digest <&3; do
+  pkg=${digest%@*}
+  case "$tipo" in
+    live) gcloud artifacts docker tags add "$digest" "$pkg:live" --quiet </dev/null ;;
+    exec) tem_tag "$pkg" live-prev \
+            || gcloud artifacts docker tags add "$digest" "$pkg:live-prev" --quiet </dev/null ;;
+  esac
 done 3< /tmp/vivos-dbt.txt
-# Conferência: os 2 jobs com live
 for pkg in dbt-futebol-repo/dbt-futebol dbt-nba-repo/dbt-nba; do
-  gcloud artifacts docker tags list "us-east1-docker.pkg.dev/smartbetting-dados/$pkg" \
-    --format='value(tag)' </dev/null | grep -q '/tags/live$' || { echo "SEM live: $pkg"; exit 1; }
+  tem_tag "us-east1-docker.pkg.dev/smartbetting-dados/$pkg" live || { echo "SEM live: $pkg"; exit 1; }
 done
 echo "2/2 jobs com live"
+EOF
 ```
 
 ### 2. Simulação local (o dry-run do AR não serve aqui)
@@ -153,14 +172,15 @@ vivo cai; `2` = entrada insuficiente para responder. Uma lista de vivos vazia, c
 repo ou com contagem diferente de `--esperado` dá `2`, nunca verde.
 
 ```bash
-set -euo pipefail
+bash -euo pipefail <<'EOF'
 gcloud artifacts docker images list \
   us-east1-docker.pkg.dev/smartbetting-dados/cloud-run-source-deploy \
-  --include-tags --format=json > /tmp/ar-servicos.json
-./scripts/deploy_cloud_run.sh --lista-vivos > /tmp/vivos.txt
+  --include-tags --format=json > /tmp/ar-servicos.json </dev/null
+./scripts/deploy_cloud_run.sh --lista-vivos > /tmp/vivos.txt </dev/null
 # --esperado: 29, mais 1 por serviço com traffic split (o live-prev dele também é vivo)
 python3 scripts/simula_cleanup_ar.py infra/ar-cleanup-cloud-run-source-deploy.json \
   /tmp/ar-servicos.json /tmp/vivos.txt --esperado 29
+EOF
 ```
 
 Os repos dbt têm índices (attestation do buildx até 11/2026). O filho amd64 que o job roda não
@@ -169,16 +189,17 @@ de registry e monta o mapa pai → filho, e a simulação aplica a regra do AR c
 `--indices`, um listing com índice sai com `2`.
 
 ```bash
-set -euo pipefail
+bash -euo pipefail <<'EOF'
 ./scripts/vivos_jobs_dbt.sh > /tmp/vivos-dbt.txt
 for repo in dbt-futebol-repo dbt-nba-repo; do
   gcloud artifacts docker images list "us-east1-docker.pkg.dev/smartbetting-dados/$repo" \
     --include-tags --format=json > "/tmp/ar-$repo.json" </dev/null
   python3 scripts/indices_ar.py "/tmp/ar-$repo.json" > "/tmp/indices-$repo.txt"
-  # --esperado 2: live + live-prev de cada job (1 se a última execução = spec)
+  # --esperado 2: live + exec de cada job (1 se a última execução = spec)
   python3 scripts/simula_cleanup_ar.py infra/ar-cleanup-dbt.json "/tmp/ar-$repo.json" \
     /tmp/vivos-dbt.txt --esperado 2 --indices "/tmp/indices-$repo.txt"
 done
+EOF
 ```
 
 **Só siga se cada simulação terminar com exit 0.**

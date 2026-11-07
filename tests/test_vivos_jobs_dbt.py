@@ -45,13 +45,13 @@ def rodar(stub, *jobs, **env):
     )
 
 
-def test_spec_por_tag_e_resolvido_e_execucao_diferente_vira_live_prev(stub):
+def test_spec_por_tag_e_resolvido_e_execucao_diferente_vira_linha_exec(stub):
     fut = PKG.format(repo="dbt-futebol-repo", img="dbt-futebol")
     r = rodar(stub, "dbt-futebol", STUB_SPEC_dbt_futebol=f"{fut}:latest", STUB_LATEST=A,
               STUB_EXEC_dbt_futebol=f"{fut}@{B}")
     assert r.returncode == 0, r.stderr
     assert r.stdout.splitlines() == [f"vivo dbt-futebol live {fut}@{A}",
-                                     f"vivo dbt-futebol live-prev {fut}@{B}"]
+                                     f"vivo dbt-futebol exec {fut}@{B}"]
 
 
 def test_spec_por_digest_e_execucao_igual_da_uma_linha(stub):

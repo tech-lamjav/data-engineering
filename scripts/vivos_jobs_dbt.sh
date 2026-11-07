@@ -1,16 +1,22 @@
 #!/bin/bash
 # Digests VIVOS dos dois Cloud Run Jobs dbt (`dbt-futebol`, `dbt-nba`), uma linha cada:
 #
-#   vivo <job> live      <pacote>@sha256:<64 hex>   o que o spec do job aponta AGORA
-#   vivo <job> live-prev <pacote>@sha256:<64 hex>   o que a última execução rodou (se diferente)
+#   vivo <job> live <pacote>@sha256:<64 hex>   o que o spec do job aponta AGORA
+#   vivo <job> exec <pacote>@sha256:<64 hex>   o que a última execução rodou (se diferente)
 #
 # Entrada do `scripts/simula_cleanup_ar.py` (passo 2 do infra/README.md) e do backfill da tag
 # `live` dos jobs (passo 1). Só leitura.
 #
 # O spec do job pode guardar a TAG (`...:latest`, como até 11/2026) ou o digest (`...@sha256:`,
 # como o `build-and-push.sh` passou a gravar). Tag é resolvida no registry. A última execução
-# entra porque é a última imagem que comprovadamente rodou: é o alvo de rollback enquanto o
-# spec não é fixado por digest.
+# entra porque é a última imagem que comprovadamente rodou.
+#
+# `exec` NÃO é `live-prev`. Quando o spec aponta para um índice (multi-arch/attestation), a
+# execução mostra o FILHO amd64 desse mesmo índice: digest diferente, mesma imagem (é o caso
+# do dbt-futebol em 07/11/2026). Rotular isso de `live-prev` e taguear em cima moveria o
+# `live-prev` rolante (o N-1 que o build-and-push.sh mantém) para a própria imagem viva. O
+# backfill do infra/README.md só usa uma linha `exec` como `live-prev` quando o pacote ainda
+# não tem `live-prev`.
 #
 # FAIL-CLOSED: digest que não casa `sha256:[0-9a-f]{64}` aborta com 1. Sem isso, um describe
 # que voltasse vazio viraria a linha `<pacote>@` (sem digest), o simulador a ignoraria, e o
@@ -58,6 +64,6 @@ for job in "${JOBS[@]}"; do
         exit 1
     fi
     if [ "$exec_img" != "$atual" ]; then
-        echo "vivo $job live-prev $exec_img"
+        echo "vivo $job exec $exec_img"
     fi
 done
