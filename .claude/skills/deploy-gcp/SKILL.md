@@ -76,8 +76,11 @@ movida no push, antes da revisão existir).
 
 - Deploy saiu com `tag live NÃO aplicada`: o serviço subiu, a tag não. Resolva a leitura e
   rode `./scripts/deploy_cloud_run.sh --so-tag-live <servico>`.
-- Rollback manual (`gcloud run services update-traffic`): rode `--so-tag-live <servico>`
-  logo depois, para a `live` seguir o tráfego.
+- Rollback (`gcloud run services update-traffic`): **só o N-1 é alvo garantido**. Ele está na
+  tag `live-prev`, que o deploy move para o digest que tinha `live` antes de mover a `live`.
+  Do N-2 para trás, só o "12 mais novas" da policy protege, e pushes falhos esgotam essa folga.
+  Confira que o digest existe (`gcloud artifacts docker images describe <pacote>@sha256:…`)
+  antes do `update-traffic`, e rode `--so-tag-live <servico>` logo depois.
 - `--lista-vivos [alvo]` só lista os digests vivos (entrada do `scripts/simula_cleanup_ar.py`).
 
 Policies, simulação e runbook: `infra/README.md`.

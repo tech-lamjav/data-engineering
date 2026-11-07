@@ -399,14 +399,17 @@ ler_servico_json() {
 # (`status.traffic`, revisões com percent > 0) e o `status.imageDigest` de cada revisão,
 # e não o que acabou de ser empurrado.
 #
-# Nomes de tag FIXOS: `live` na revisão com mais tráfego e `live-prev` na segunda (traffic
-# split ou rollback parcial). A policy mantém tudo com prefixo `live`, então um nome por
-# revisão (`live-<rev>`) viraria um Keep permanente que ninguém remove, e a cleanup
-# deixaria de limpar. Mais de duas revisões com tráfego é estado que este script não sabe
-# proteger com dois nomes: falha alto em vez de escolher.
+# Nomes de tag FIXOS: `live` na revisão com mais tráfego e `live-prev` no alvo de rollback,
+# que é a segunda revisão com tráfego (split) ou, sem split, o digest que tinha `live` antes
+# deste deploy (lido de `artifacts docker tags list`). `live-prev` é ROLANTE: só existe UM
+# alvo de rollback protegido por tag, o N-1. A policy mantém tudo com prefixo `live`, então
+# um nome por revisão (`live-<rev>`) viraria um Keep permanente que ninguém remove, e a
+# cleanup deixaria de limpar. Mais de duas revisões com tráfego é estado que este script não
+# sabe proteger com dois nomes: falha alto em vez de escolher.
 #
-# Fail-closed: erro de leitura do tráfego ou da revisão, tráfego vazio ou digest fora do
-# formato `<host>-docker.pkg.dev/...@sha256:<64 hex>` devolvem 1 sem aplicar tag nenhuma.
+# Fail-closed: erro de leitura do tráfego, da revisão ou das tags do pacote, tráfego vazio
+# ou digest fora do formato `<host>-docker.pkg.dev/...@sha256:<64 hex>` devolvem 1 sem
+# aplicar tag nenhuma.
 #
 # $2: o JSON de `services describe` já lido pelo chamador (uma leitura serve às duas
 # conferências pós-deploy).
@@ -448,8 +451,7 @@ for rev, _ in sorted(ordem, key=lambda kv: -kv[1]):
         return 1
     fi
 
-    local nomes_tag=("live" "live-prev")
-    local i=0 rev rev_json digest pacote="" pacote_rev tmp_err rc
+    local rev rev_json digest pacote="" pacote_rev tmp_err rc
     local digests=()
     while IFS= read -r rev; do
         [ -z "$rev" ] && continue
@@ -489,25 +491,63 @@ print(d)
         digests+=("$digest")
     done <<< "$revisoes"
 
-    # Duas leituras primeiro, escrita depois: nenhuma tag sai se uma das revisões falhar.
-    for digest in "${digests[@]}"; do
-        if [ "$i" -eq 1 ] && [ "$digest" = "${digests[0]}" ]; then
-            break  # as duas revisões servem o mesmo digest; `live` já o protege
+    if [ "${LIVE_SO_LISTAR:-0}" -eq 1 ]; then
+        # `--lista-vivos`: mesma leitura, nenhuma escrita. Digest completo, para o
+        # scripts/simula_cleanup_ar.py conferir que a policy não apaga nada vivo.
+        echo "vivo ${service_name} live ${digests[0]}"
+        if [ "${#digests[@]}" -gt 1 ] && [ "${digests[1]}" != "${digests[0]}" ]; then
+            echo "vivo ${service_name} live-prev ${digests[1]}"
         fi
-        if [ "${LIVE_SO_LISTAR:-0}" -eq 1 ]; then
-            # `--lista-vivos`: mesma leitura, nenhuma escrita. Digest completo, para o
-            # scripts/simula_cleanup_ar.py conferir que a policy não apaga nada vivo.
-            echo "vivo ${service_name} ${nomes_tag[$i]} ${digest}"
-            i=$((i + 1))
-            continue
-        fi
-        if ! gcloud artifacts docker tags add "$digest" "${pacote}:${nomes_tag[$i]}" --quiet >/dev/null; then
-            print_error "✗ Falha ao aplicar a tag ${nomes_tag[$i]} em $digest"
+        return 0
+    fi
+
+    # `live-prev` ROLANTE: é o alvo de rollback. Com traffic split, é a segunda revisão com
+    # tráfego; sem split, é o digest que tinha `live` até agora, quando a `live` muda. Sem
+    # isto o N-1 só ficava protegido pelo "12 mais novas" da policy, que 2 ou 3 pushes
+    # falhos do `--source` esgotam. Um nome só, que se move: nunca vira Keep eterno.
+    local live_atual tags_json alvo_prev=""
+    tmp_err=$(mktemp)
+    rc=0
+    tags_json=$(gcloud artifacts docker tags list "$pacote" --format=json 2>"$tmp_err") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        print_error "✗ Erro de LEITURA das tags de $pacote; tag live NÃO aplicada:"
+        sed 's/^/     /' "$tmp_err" >&2
+        rm -f "$tmp_err"
+        return 1
+    fi
+    rm -f "$tmp_err"
+    rc=0
+    live_atual=$(printf '%s' "$tags_json" | python3 -c '
+import json, sys
+for t in json.load(sys.stdin) or []:
+    if (t.get("tag") or "").rsplit("/", 1)[-1] == "live":
+        print((t.get("version") or "").rsplit("/", 1)[-1])
+' 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        print_error "✗ Erro de LEITURA das tags de $pacote; tag live NÃO aplicada:"
+        echo "$live_atual" | sed 's/^/     /' >&2
+        return 1
+    fi
+
+    if [ "${#digests[@]}" -gt 1 ] && [ "${digests[1]}" != "${digests[0]}" ]; then
+        alvo_prev="${digests[1]}"
+    elif [ -n "$live_atual" ] && [ "${pacote}@${live_atual}" != "${digests[0]}" ]; then
+        alvo_prev="${pacote}@${live_atual}"
+    fi
+
+    # `live-prev` ANTES de mover a `live`: em nenhum instante o digest antigo fica sem tag.
+    if [ -n "$alvo_prev" ]; then
+        if ! gcloud artifacts docker tags add "$alvo_prev" "${pacote}:live-prev" --quiet >/dev/null; then
+            print_error "✗ Falha ao aplicar a tag live-prev em $alvo_prev; live NÃO movida"
             return 1
         fi
-        print_info "✓ Tag ${nomes_tag[$i]} → ${digest##*/}"
-        i=$((i + 1))
-    done
+        print_info "✓ Tag live-prev → ${alvo_prev##*/}"
+    fi
+    if ! gcloud artifacts docker tags add "${digests[0]}" "${pacote}:live" --quiet >/dev/null; then
+        print_error "✗ Falha ao aplicar a tag live em ${digests[0]}"
+        return 1
+    fi
+    print_info "✓ Tag live → ${digests[0]##*/}"
     return 0
 }
 
