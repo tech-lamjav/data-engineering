@@ -355,8 +355,10 @@ script.
 
 **`analytics-engineering/build-and-push.sh`** (fora deste repo, mas no caminho crítico) — builda e
 empurra a imagem Docker do dbt (`dbt_nba` ou `dbt_futebol`) para o Artifact Registry; é a imagem
-que os **Cloud Run Jobs de dbt** executam. ⚠️ Mudar modelos dbt exige `build-and-push.sh` +
-`gcloud run jobs update` — editar só o YAML do workflow falha silenciosamente.
+que os **Cloud Run Jobs de dbt** executam. ⚠️ Mudar modelos dbt exige `build-and-push.sh`, que
+já faz o `gcloud run jobs update` por digest e move a tag `live` (não rode o `jobs update` na mão:
+ele não move a `live`, que é o que a cleanup policy do Artifact Registry preserva; ver
+`infra/README.md`) — editar só o YAML do workflow falha silenciosamente.
 
 ### 5.4 Secret Manager
 
@@ -674,7 +676,8 @@ predictions **só** se `coverage=TRUE`) + 2 `CASE` no dbt. **Zero extrator novo.
 - **`array_keys`:** extrator novo com `{key:[...]}` não registrado → 1 linha gigante no BQ.
 - **Schema explícito:** arrays `{type,value}`/percentuais de futebol → autodetect vira FLOAT e nula
   os `"%"`. Usar STRING na external table e castar no dbt.
-- **Rebuild de imagem dbt:** mudar modelos `dbt_*` exige `build-and-push.sh` + `jobs update`.
+- **Rebuild de imagem dbt:** mudar modelos `dbt_*` exige `build-and-push.sh` (que já inclui o
+  `jobs update` por digest e a tag `live`; sem `jobs update` manual).
 - **Redeploy de workflow:** editar `workflow_*.yml` local não muda produção; rodar
   `deploy_workflows.sh`.
 - **SA certa:** Scheduler = `schedulerde@`; Workflow = `workflowsde@`. Trocar → 403 silencioso.

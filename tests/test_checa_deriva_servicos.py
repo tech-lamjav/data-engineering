@@ -319,3 +319,29 @@ def test_os_29_em_deriva_pelo_nucleo_cabem_numa_tela(sandbox):
 if __name__ == "__main__":
     import sys
     sys.exit(subprocess.run(["python3", "-m", "pytest", str(Path(__file__)), "-v"]).returncode)
+
+
+def test_modo_estados_imprime_uma_linha_por_alvo_para_maquina(sandbox):
+    """`--estados` é o contrato que o `deploy_cloud_run.sh --derivados` consome: uma
+    linha `servico<TAB>estado` por alvo, exit 0 mesmo com deriva (quem decide é o
+    chamador), detalhe de erro só no stderr."""
+    resultado = run(sandbox, "--estados", "em-dia", "deriva-nucleo", "deriva-svc",
+                    "deriva-ambos", "sem-carimbo", "inexistente")
+    assert resultado.returncode == 0, resultado.stderr
+    assert resultado.stdout.splitlines() == [
+        "em-dia\tem-dia",
+        "deriva-nucleo\tderiva-nucleo",
+        "deriva-svc\tderiva-svc",
+        "deriva-ambos\tderiva-ambos",
+        "sem-carimbo\tsem-carimbo",
+        "inexistente\terro",
+    ]
+    assert "NOT_FOUND" in resultado.stderr
+
+
+def test_modo_estados_sem_alvos_usa_a_lista_do_manifesto(sandbox):
+    resultado = run(sandbox, "--estados")
+    assert resultado.returncode == 0, resultado.stderr
+    assert [l.split("\t")[0] for l in resultado.stdout.splitlines()] == [
+        "em-dia", "deriva-nucleo", "deriva-svc", "deriva-ambos", "sem-carimbo", "inexistente",
+    ]

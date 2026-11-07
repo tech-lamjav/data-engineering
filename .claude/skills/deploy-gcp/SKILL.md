@@ -48,15 +48,39 @@ com `GCP_PROJECT_ID` (eles abortam se faltar).
 ## Deploy de serviço Cloud Run
 
 ```bash
-./scripts/deploy_cloud_run.sh                    # tudo (raramente o que você quer)
-./scripts/deploy_cloud_run.sh futebol            # todos os extractors de futebol
+./scripts/deploy_cloud_run.sh --derivados futebol    # SÓ os que derivaram do carimbo (rotina)
+./scripts/deploy_cloud_run.sh --derivados            # idem, os 29
 ./scripts/deploy_cloud_run.sh futebol extract-odds   # um só, validado pelo esporte
-./scripts/deploy_cloud_run.sh extract-odds       # um só (back-compat)
+./scripts/deploy_cloud_run.sh extract-odds           # um só (back-compat)
+./scripts/deploy_cloud_run.sh futebol                # todos de futebol, derivados ou não
+./scripts/deploy_cloud_run.sh                        # tudo (raramente o que você quer)
 ```
 
-Deploy é **from source** (`--source`), buildado pelo Cloud Build — não há imagem
-Docker gerenciada por você aqui (diferente do `dbt-futebol`, que é imagem; para dbt
-veja a skill `deploy-dbt-changes` no repo `analytics-engineering`).
+**Prefira `--derivados`.** Deploy é **from source** (`--source`), buildado pelo Cloud
+Build: cada serviço deployado sobe ~4 versões e ~127 MB de runtime Python no Artifact
+Registry, mesmo sem mudança nenhuma. Deployar os 29 porque um mudou foi o que encheu o
+repo `cloud-run-source-deploy` (61,9 GiB, 83% do custo GCP em 11/2026). O `--derivados`
+pergunta ao `checa_deriva_servicos.sh` e deploya só deriva e "sem carimbo"; qualquer erro de
+leitura **aborta antes do primeiro deploy** (serviço novo, que ainda não existe no Cloud
+Run, cai aqui: deploye-o por nome). Não há imagem Docker gerenciada por você aqui
+(diferente do `dbt-futebol`; para dbt veja a skill `deploy-dbt-changes` no repo
+`analytics-engineering`). A troca para imagem única está desenhada no ADR 0007.
+
+### Tag `live` (não pule, não contorne)
+
+Todo deploy pelo script aplica a tag `live` no digest que o serviço **serve**
+(`status.traffic` → `status.imageDigest`), antes e independente da conferência do carimbo. É
+ela que a cleanup policy do Artifact Registry (`infra/ar-cleanup-*.json`) mantém; os serviços
+escalam a zero, então digest vivo apagado = cold start quebrado. `latest` não protege (é
+movida no push, antes da revisão existir).
+
+- Deploy saiu com `tag live NÃO aplicada`: o serviço subiu, a tag não. Resolva a leitura e
+  rode `./scripts/deploy_cloud_run.sh --so-tag-live <servico>`.
+- Rollback manual (`gcloud run services update-traffic`): rode `--so-tag-live <servico>`
+  logo depois, para a `live` seguir o tráfego.
+- `--lista-vivos [alvo]` só lista os digests vivos (entrada do `scripts/simula_cleanup_ar.py`).
+
+Policies, simulação e runbook: `infra/README.md`.
 
 Defaults: `512Mi` / `1 CPU` / timeout `3600` / `--no-allow-unauthenticated`.
 
@@ -114,7 +138,8 @@ Depois de um deploy que mexe em coleta, confirme o arquivo no GCS:
 ## Checklist
 
 - [ ] `gcloud config get-value account` = `tecnologia@smartbetting.app`
-- [ ] Serviço mudou → `deploy_cloud_run.sh` (serviço novo: array atualizado antes)
+- [ ] Serviço mudou → `deploy_cloud_run.sh --derivados [sport]` (serviço novo: array atualizado antes, deploy por nome)
+- [ ] Saída do deploy sem `tag live NÃO aplicada` (se tiver: `--so-tag-live <servico>`)
 - [ ] YAML mudou → `deploy_workflows.sh <nome>` (**sempre**, sem exceção)
 - [ ] Scheduler novo → criado com `--oauth-service-account-email=schedulerde@…`
 - [ ] Verificado por **execução/dado**, não por exit code

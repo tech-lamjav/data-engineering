@@ -8,6 +8,12 @@
 # Uso:
 #   scripts/checa_deriva_servicos.sh                 # checa os alvos cobertos
 #   scripts/checa_deriva_servicos.sh extract-games   # checa um alvo específico
+#   scripts/checa_deriva_servicos.sh --estados [alvos...]
+#       saída para máquina: uma linha `servico<TAB>estado` por alvo (estado = em-dia,
+#       deriva-nucleo, deriva-svc, deriva-ambos, sem-carimbo ou erro), detalhe dos erros
+#       no stderr, exit 0 sempre que a coleta terminou. É o que o
+#       `deploy_cloud_run.sh --derivados` consome; o relatório humano abaixo não é
+#       contrato e pode mudar de texto à vontade.
 #
 # QUATRO ESTADOS (o quinto, "órfão" — serviço vivo fora do manifesto —, é a DE #53):
 #   em dia        hash combinado do serviço bate com o hash local
@@ -45,6 +51,12 @@ GCP_PROJECT_ID="${GCP_PROJECT_ID:-smartbetting-dados}"
 GCP_REGION="${GCP_REGION:-us-east1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+MODO_ESTADOS=0
+if [ "${1:-}" = "--estados" ]; then
+    MODO_ESTADOS=1
+    shift
+fi
 
 # Sem argumento, os alvos são os 29 do manifesto (`procedencia_servicos.sh
 # --list-servicos`) — fonte única, os dois scripts evoluem juntos (DE #51). Isto
@@ -176,6 +188,19 @@ print(env.get("PROCEDENCIA_HASH_SVC", ""))
         R_DETALHE+=("${ESPERADO}|${ENCONTRADO}")
     fi
 done
+
+if [ "$MODO_ESTADOS" -eq 1 ]; then
+    i=0
+    while [ "$i" -lt "${#R_SERVICO[@]}" ]; do
+        printf '%s\t%s\n' "${R_SERVICO[$i]}" "${R_ESTADO[$i]}"
+        if [ "${R_ESTADO[$i]}" = "erro" ]; then
+            echo "erro de leitura em ${R_SERVICO[$i]}:" >&2
+            echo "${R_DETALHE[$i]}" | sed 's/^/    /' >&2
+        fi
+        i=$((i + 1))
+    done
+    exit 0
+fi
 
 # Passe 2: agrupa por causa e imprime. Contagens primeiro (cabeçalho), texto depois.
 total=${#R_SERVICO[@]}

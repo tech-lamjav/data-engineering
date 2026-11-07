@@ -48,15 +48,49 @@ FAKE_ENV = {
 # `--set-env-vars` daquele deploy realmente mandou — sem isso o stub sempre devolveria
 # "sem carimbo" e a leitura de conferência da DE #50 falharia para extract-games em
 # TODO teste, mesmo quando o script está correto.
+#
+# Tag `live` (cleanup do Artifact Registry): o mesmo JSON traz `status.traffic` (uma
+# revisão `<svc>-00001-abc` com 100%), `run revisions describe` devolve um
+# `status.imageDigest` determinístico por revisão, e `artifacts docker tags ...` vira uma
+# linha em `$CAPTURE_DIR/tags.log` — fora do glob `*.argv` do golden de propósito.
+#
+# Botões (variáveis de ambiente, todas opcionais) para os testes fail-closed:
+#   STUB_ENV_VAZIO=1       describe devolve container sem env (carimbo não volta)
+#   STUB_TRAFFIC=<json>    substitui `status.traffic` (`null` = chave omitida)
+#   STUB_DIGEST_VAZIO=1    revisions describe sem `status.imageDigest`
+#   STUB_DEPLOY_FALHA=1    `run deploy` sai com 1 (depois de capturar o argv)
+#   STUB_CARIMBOS=<dir>    ANTES do deploy (sem argv capturado): `<dir>/<svc>` tem o
+#                          PROCEDENCIA_HASH gravado no serviço; `<dir>/<svc>.erro` faz o
+#                          describe falhar. Sem arquivo: serviço sem carimbo.
 GCLOUD_STUB = r"""#!/bin/bash
 if [ "$1" = "run" ] && [ "$2" = "deploy" ]; then
     for arg in "$@"; do printf '%s\n' "$arg"; done > "$CAPTURE_DIR/$3.argv"
+    [ -n "${STUB_DEPLOY_FALHA:-}" ] && exit 1
     exit 0
 fi
 case "$1 $2" in
     "auth list") echo "tester@example.com"; exit 0 ;;
     "projects describe") echo "123456789"; exit 0 ;;
 esac
+if [ "$1 $2 $3" = "artifacts docker tags" ]; then
+    shift 3
+    printf '%s\n' "$*" >> "$CAPTURE_DIR/tags.log"
+    exit 0
+fi
+if [ "$1 $2 $3" = "run revisions describe" ]; then
+    REV="$4" python3 -c '
+import hashlib, json, os, re
+rev = os.environ["REV"]
+svc = re.sub(r"-\d{5}-[a-z0-9]+$", "", rev)
+digest = hashlib.sha256(rev.encode()).hexdigest()
+status = {}
+if not os.environ.get("STUB_DIGEST_VAZIO"):
+    status["imageDigest"] = (
+        "us-east1-docker.pkg.dev/fake-project/cloud-run-source-deploy/%s@sha256:%s" % (svc, digest))
+print(json.dumps({"status": status}))
+'
+    exit 0
+fi
 if [ "$1" = "run" ] && [ "$2" = "services" ] && [ "$3" = "describe" ]; then
     for arg in "$@"; do
         case "$arg" in
@@ -65,22 +99,38 @@ if [ "$1" = "run" ] && [ "$2" = "services" ] && [ "$3" = "describe" ]; then
             --format=json)
                 # $3 é "describe" aqui, não o serviço — em `run services describe <x>`
                 # o nome é o 4º posicional, diferente de `run deploy <x>` (3º).
-                ARGV_FILE="$CAPTURE_DIR/$4.argv" python3 -c '
-import json, os
+                SVC="$4" ARGV_FILE="$CAPTURE_DIR/$4.argv" python3 -c '
+import json, os, sys
 
+svc = os.environ["SVC"]
 env_vars = []
-try:
+if os.path.exists(os.environ["ARGV_FILE"]):
     lines = open(os.environ["ARGV_FILE"]).read().splitlines()
-    idx = lines.index("--set-env-vars")
-    for pair in lines[idx + 1].split(","):
-        if "=" in pair:
-            k, v = pair.split("=", 1)
-            env_vars.append({"name": k, "value": v})
-except (FileNotFoundError, ValueError):
-    pass
-print(json.dumps({"spec": {"template": {"spec": {"containers": [{"env": env_vars}]}}}}))
+    if "--set-env-vars" in lines and not os.environ.get("STUB_ENV_VAZIO"):
+        for pair in lines[lines.index("--set-env-vars") + 1].split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                env_vars.append({"name": k, "value": v})
+elif os.environ.get("STUB_CARIMBOS"):
+    base = os.path.join(os.environ["STUB_CARIMBOS"], svc)
+    if os.path.exists(base + ".erro"):
+        sys.exit("ERROR: (gcloud.run.services.describe) PERMISSION_DENIED (stub)")
+    if os.path.exists(base):
+        env_vars.append({"name": "PROCEDENCIA_HASH", "value": open(base).read().strip()})
+
+status = {"url": "https://fake.run.app", "latestReadyRevisionName": svc + "-00001-abc"}
+if "STUB_TRAFFIC" in os.environ:
+    trafego = json.loads(os.environ["STUB_TRAFFIC"])
+    if trafego is not None:
+        status["traffic"] = trafego
+else:
+    status["traffic"] = [{"revisionName": svc + "-00001-abc", "percent": 100, "latestRevision": True}]
+print(json.dumps({
+    "spec": {"template": {"spec": {"containers": [{"env": env_vars}]}}},
+    "status": status,
+}))
 '
-                exit 0
+                exit $?
                 ;;
         esac
     done
@@ -117,6 +167,7 @@ def _service_dirs():
 
 
 PROCEDENCIA_SCRIPT = REPO_ROOT / "scripts" / "procedencia_servicos.sh"
+CHECA_SCRIPT = REPO_ROOT / "scripts" / "checa_deriva_servicos.sh"
 
 
 def _manifest_paths():
@@ -154,6 +205,7 @@ def _build_fake_repo(root: Path, api_football_key: bool, extra_env: dict | None 
     (root / "scripts").mkdir()
     shutil.copy2(DEPLOY_SCRIPT, root / "scripts" / "deploy_cloud_run.sh")
     shutil.copy2(PROCEDENCIA_SCRIPT, root / "scripts" / "procedencia_servicos.sh")
+    shutil.copy2(CHECA_SCRIPT, root / "scripts" / "checa_deriva_servicos.sh")
 
     for service_dir in _service_dirs():
         target = root / "cloud_run" / service_dir
