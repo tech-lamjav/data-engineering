@@ -51,7 +51,8 @@ FAKE_ENV = {
 #
 # Tag `live` (cleanup do Artifact Registry): o mesmo JSON traz `status.traffic` (uma
 # revisão `<svc>-00001-abc` com 100%), `run revisions describe` devolve um
-# `status.imageDigest` determinístico por revisão, e `artifacts docker tags ...` vira uma
+# `status.imageDigest` determinístico por revisão, `artifacts docker tags list` devolve a
+# `live` atual do pacote, e as ESCRITAS (`artifacts docker tags add/delete`) viram uma
 # linha em `$CAPTURE_DIR/tags.log` — fora do glob `*.argv` do golden de propósito.
 #
 # Botões (variáveis de ambiente, todas opcionais) para os testes fail-closed:
@@ -59,6 +60,9 @@ FAKE_ENV = {
 #   STUB_TRAFFIC=<json>    substitui `status.traffic` (`null` = chave omitida)
 #   STUB_DIGEST_VAZIO=1    revisions describe sem `status.imageDigest`
 #   STUB_DEPLOY_FALHA=1    `run deploy` sai com 1 (depois de capturar o argv)
+#   STUB_LIVE_ATUAL=<sha256:...>  `artifacts docker tags list` diz que a `live` do pacote
+#                          está neste digest (sem a variável: pacote sem `live`)
+#   STUB_TAGS_FALHA=1      `artifacts docker tags list` sai com 1
 #   STUB_CARIMBOS=<dir>    ANTES do deploy (sem argv capturado): `<dir>/<svc>` tem o
 #                          PROCEDENCIA_HASH gravado no serviço; `<dir>/<svc>.erro` faz o
 #                          describe falhar. Sem arquivo: serviço sem carimbo.
@@ -72,6 +76,20 @@ case "$1 $2" in
     "auth list") echo "tester@example.com"; exit 0 ;;
     "projects describe") echo "123456789"; exit 0 ;;
 esac
+if [ "$1 $2 $3 $4" = "artifacts docker tags list" ]; then
+    [ -n "${STUB_TAGS_FALHA:-}" ] && { echo "ERROR: (gcloud.artifacts.docker.tags.list) PERMISSION_DENIED (stub)" >&2; exit 1; }
+    PKG="$5" python3 -c '
+import json, os
+pkg = os.environ["PKG"]
+caminho = "projects/fake-project/locations/us-east1/repositories/cloud-run-source-deploy/packages/" + pkg.rsplit("/", 1)[-1]
+saida = []
+atual = os.environ.get("STUB_LIVE_ATUAL")
+if atual:
+    saida.append({"image": pkg, "tag": caminho + "/tags/live", "version": caminho + "/versions/" + atual})
+print(json.dumps(saida))
+'
+    exit 0
+fi
 if [ "$1 $2 $3" = "artifacts docker tags" ]; then
     shift 3
     printf '%s\n' "$*" >> "$CAPTURE_DIR/tags.log"

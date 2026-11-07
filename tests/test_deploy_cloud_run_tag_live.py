@@ -89,9 +89,10 @@ def test_traffic_split_marca_live_na_maior_e_live_prev_na_segunda(repo_falso, tm
                                STUB_TRAFFIC=json.dumps(trafego))
 
     assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    # live-prev ANTES da live: o digest antigo nunca fica um instante sem tag.
     assert tags == [
-        _tag("extract-games-00006-old", "live"),
         _tag("extract-games-00007-new", "live-prev"),
+        _tag("extract-games-00006-old", "live"),
     ]
 
 
@@ -104,7 +105,7 @@ def test_empate_de_trafego_da_live_para_a_revisao_mais_nova(repo_falso, tmp_path
                                STUB_TRAFFIC=json.dumps(trafego))
 
     assert resultado.returncode == 0, resultado.stdout + resultado.stderr
-    assert tags[0] == _tag("extract-games-00007-new", "live")
+    assert tags[-1] == _tag("extract-games-00007-new", "live")
 
 
 def test_revisao_com_percent_zero_nao_e_marcada(repo_falso, tmp_path):
@@ -128,6 +129,61 @@ def test_latest_revision_sem_nome_usa_latest_ready(repo_falso, tmp_path):
 
     assert resultado.returncode == 0, resultado.stdout + resultado.stderr
     assert tags == [_tag("extract-games-00001-abc", "live")]
+
+
+# ---------------------------------------------------------------- live-prev rolante
+
+
+def _sha(rev):
+    return _digest(rev).split("@", 1)[1]
+
+
+def test_deploy_novo_move_live_prev_para_o_digest_que_tinha_live(repo_falso, tmp_path):
+    """Sem split, o alvo de rollback é o N-1: o digest que tinha `live` antes do deploy.
+    Sem isto ele dependia só do "12 mais novas" da policy, que pushes falhos esgotam."""
+    resultado, tags, _ = rodar(repo_falso, tmp_path, "extract-games",
+                               STUB_LIVE_ATUAL=_sha("extract-games-00000-old"))
+
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    pacote = PACOTE.format(svc="extract-games")
+    assert tags == [
+        f"add {_digest('extract-games-00000-old')} {pacote}:live-prev --quiet",
+        _tag("extract-games-00001-abc", "live"),
+    ]
+
+
+def test_live_que_nao_mudou_nao_mexe_na_live_prev(repo_falso, tmp_path):
+    """Redeploy sem mudar o digest (ou --so-tag-live repetido): a live-prev continua no N-1
+    que já estava; movê-la para o próprio live apagaria o alvo de rollback."""
+    resultado, tags, _ = rodar(repo_falso, tmp_path, "extract-games",
+                               STUB_LIVE_ATUAL=_sha("extract-games-00001-abc"))
+
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert tags == [_tag("extract-games-00001-abc", "live")]
+
+
+def test_split_tem_prioridade_sobre_a_live_antiga(repo_falso, tmp_path):
+    trafego = [
+        {"revisionName": "extract-games-00007-new", "percent": 90},
+        {"revisionName": "extract-games-00006-old", "percent": 10},
+    ]
+    resultado, tags, _ = rodar(repo_falso, tmp_path, "extract-games",
+                               STUB_TRAFFIC=json.dumps(trafego),
+                               STUB_LIVE_ATUAL=_sha("extract-games-00002-velha"))
+
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert tags == [
+        _tag("extract-games-00006-old", "live-prev"),
+        _tag("extract-games-00007-new", "live"),
+    ]
+
+
+def test_erro_ao_ler_as_tags_do_pacote_falha_sem_aplicar_tag(repo_falso, tmp_path):
+    resultado, tags, _ = rodar(repo_falso, tmp_path, "extract-games", STUB_TAGS_FALHA="1")
+
+    assert resultado.returncode != 0
+    assert tags == []
+    assert "Erro de LEITURA das tags" in resultado.stdout
 
 
 @pytest.mark.parametrize("trafego", [

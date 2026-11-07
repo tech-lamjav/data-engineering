@@ -8,18 +8,23 @@ apagado, por pacote.
 
 Uso (ver infra/README.md para o passo a passo):
 
-    gcloud artifacts docker images list \\
-        us-east1-docker.pkg.dev/smartbetting-dados/cloud-run-source-deploy \\
-        --include-tags --format=json > /tmp/imagens.json
-    ./scripts/deploy_cloud_run.sh --lista-vivos > /tmp/vivos.txt
-    python3 scripts/simula_cleanup_ar.py infra/ar-cleanup-cloud-run-source-deploy.json \\
-        /tmp/imagens.json /tmp/vivos.txt
+    python3 scripts/simula_cleanup_ar.py <policy.json> <listing.json> <vivos.txt> \
+        [--esperado N] [--indices indices.txt]
 
-O terceiro argumento (opcional) é qualquer texto com os digests VIVOS no formato
-`<host>-docker.pkg.dev/<projeto>/<repo>/<pacote>@sha256:<64 hex>`; o script extrai todos os
-que achar. Sai com 1 se algum vivo do repositório listado seria apagado (ou não está no
-listing): é o sinal de que a tag `live` ainda não foi aplicada (backfill) e a policy NÃO pode
-ser aplicada.
+- `listing.json`: `gcloud artifacts docker images list <repo> --include-tags --format=json`.
+- `vivos.txt`: qualquer texto com os digests VIVOS no formato
+  `<host>-docker.pkg.dev/<projeto>/<repo>/<pacote>@sha256:<64 hex>` (ex.: a saída inteira do
+  `deploy_cloud_run.sh --lista-vivos` ou do `scripts/vivos_jobs_dbt.sh`). OBRIGATÓRIO: sem vivo
+  nenhum DESTE repositório a simulação sai com 2, não com verde (uma lista vazia, cortada ou
+  de outro repo daria "nenhum vivo seria apagado" sem ter conferido nada).
+- `--esperado N`: quantos digests vivos distintos deste repositório a lista tem de ter.
+  Diferente de N = exit 2 (lista parcial: um serviço que falhou na leitura some calado).
+- `--indices FILE`: linhas `indice <pai@sha256> <filho@sha256>` de `scripts/indices_ar.py`.
+  Obrigatório se o listing tiver índice (manifest list/OCI index): sem ele a simulação não
+  sabe quem é filho de quem e sai com 2.
+
+Saídas: 0 = nenhum vivo cai; 1 = algum vivo cai (ou não está no listing, ou depende de um pai
+que seria apagado); 2 = entrada insuficiente para responder.
 
 Semântica reproduzida (docs.cloud.google.com/artifact-registry/docs/repositories/cleanup-policy):
 - versão é apagada se casa com ALGUMA policy Delete e com NENHUMA Keep (Keep vence);
@@ -29,10 +34,12 @@ Semântica reproduzida (docs.cloud.google.com/artifact-registry/docs/repositorie
 Campo de policy que este script não conhece é ERRO, não é ignorado: ignorar em silêncio
 faria a simulação divergir da policy real sem ninguém ver.
 
-CONSERVADORA: o AR não apaga imagem referenciada por um índice (manifest list) que fica, e esta
-simulação não modela isso. O que ela marca para apagar é superconjunto do real (contagens e GiB
-são teto). Para a pergunta de segurança, "algum digest vivo cai?", isso só gera falso alarme,
-nunca falso verde.
+ÍNDICES: o AR não apaga imagem referenciada por um índice que fica ("Cleanup policies for
+Docker images don't delete images referenced by a parent manifest"); com `--indices` a
+simulação aplica essa regra. O caminho inverso a doc deixa ambíguo ("If the parent manifest
+is deleted, then any related images are deleted when the cleanup policy is next run"): um
+filho mantido pela própria tag cujo pai seria apagado pode cair junto. Para um digest VIVO
+isso é tratado como risco (exit 1, "tagueie o pai"), nunca como seguro.
 """
 import json
 import re
@@ -162,8 +169,29 @@ def _casa_condicao(v, cond, agora):
     return True
 
 
-def simular(policies, versoes, agora):
-    """Devolve {(pacote, versao): (decisao, motivo)} com decisao em {"apaga", "mantem"}."""
+def ler_indices(texto):
+    """Linhas `indice <pai> <filho>` → {(pacote, versao_filho): {(pacote, versao_pai), ...}}."""
+    pais = {}
+    for linha in texto.splitlines():
+        partes = linha.split()
+        if not partes or partes[0] != "indice":
+            continue
+        if len(partes) != 3 or not all(DIGEST_VIVO.fullmatch(x) for x in partes[1:]):
+            raise ValueError(f"linha de índice malformada: {linha!r}")
+        pai, filho = (tuple(x.split("@", 1)) for x in partes[1:])
+        pais.setdefault(filho, set()).add(pai)
+    return pais
+
+
+def _eh_indice(v):
+    return "index" in v["media_type"] or "manifest.list" in v["media_type"]
+
+
+def simular(policies, versoes, agora, pais=None):
+    """Devolve {(pacote, versao): (decisao, motivo)} com decisao em {"apaga", "mantem"}.
+
+    `pais` ({filho: {pai, ...}}, de `ler_indices`) aplica a regra do AR: filho referenciado
+    por um índice que fica não é apagado."""
     validar_policies(policies)
     recentes = {}  # policy name -> set((pacote, versao)) mantidas por mostRecentVersions
     for p in policies:
@@ -199,12 +227,25 @@ def simular(policies, versoes, agora):
             resultado[chave] = ("mantem", ",".join(keeps))
         else:
             resultado[chave] = ("mantem", "nenhuma policy casa")
+
+    # Ponto fixo: índice aninhado (índice cujo filho é índice) propaga em mais de um passo.
+    mudou = True
+    while mudou and pais:
+        mudou = False
+        for filho, seus_pais in pais.items():
+            if resultado.get(filho, ("",))[0] != "apaga":
+                continue
+            mantido = [p for p in seus_pais if resultado.get(p, ("",))[0] == "mantem"]
+            if mantido:
+                resultado[filho] = ("mantem", "filho de índice mantido " + mantido[0][1][:19])
+                mudou = True
     return resultado
 
 
-def checar_vivos(vivos, versoes, resultado):
+def checar_vivos(vivos, versoes, resultado, pais=None):
     """Para cada digest vivo do(s) repositório(s) listado(s): está no listing? seria apagado?
-    Devolve lista de (digest, problema) — vazia = seguro."""
+    depende de um pai que seria apagado? Devolve lista de (digest, problema) — vazia = seguro."""
+    pais = pais or {}
     repos = {v["repo"] for v in versoes}
     indice = {(v["pacote"], v["versao"]): v for v in versoes}
     problemas = []
@@ -216,7 +257,18 @@ def checar_vivos(vivos, versoes, resultado):
             problemas.append((vivo, "NÃO está no listing (já apagado? listing incompleto?)"))
         elif resultado[(pacote, versao)][0] == "apaga":
             problemas.append((vivo, "seria APAGADO (falta a tag live?)"))
+        elif pais.get((pacote, versao)) and all(
+            resultado.get(p, ("apaga",))[0] == "apaga" for p in pais[(pacote, versao)]
+        ):
+            nomes = ", ".join(sorted(p[1][:19] for p in pais[(pacote, versao)]))
+            problemas.append((vivo, f"é filho de índice que seria APAGADO ({nomes}); a cascata "
+                                    f"é ambígua na doc do AR: tagueie o pai (ex.: live-prev-idx)"))
     return problemas
+
+
+def vivos_do_repo(vivos, versoes):
+    repos = {v["repo"] for v in versoes}
+    return sorted({d for d in vivos if "/".join(d.split("@", 1)[0].split("/")[:3]) in repos})
 
 
 def relatorio(versoes, resultado, problemas, vivos):
@@ -248,9 +300,9 @@ def relatorio(versoes, resultado, problemas, vivos):
             v = indice[d]
             # Índice multi-arch/attestation tem filhos SEM tag; a policy não apaga filho
             # referenciado por um pai vivo, mas vale saber que eles existem.
-            if "index" in v["media_type"] or "manifest.list" in v["media_type"]:
-                linhas.append(f"  ⚠ {d.split('/')[-1]} é um ÍNDICE ({v['media_type']}): "
-                              f"filhos sem tag no listing")
+            if _eh_indice(v):
+                linhas.append(f"  · {d.split('/')[-1]} é um ÍNDICE: os filhos dele ficam "
+                              f"enquanto ele ficar (--indices)")
     vivos_tag = {d for d, v in indice.items() if any(t.startswith("live") for t in v["tags"])}
     sobras = sorted(vivos_tag - set(vivos_aqui)) if vivos else []
     if sobras:
@@ -263,34 +315,68 @@ def relatorio(versoes, resultado, problemas, vivos):
         linhas.append(f"✗ INSEGURO: {len(problemas)} digest(s) vivo(s) em risco. NÃO aplique a policy.")
         for d, msg in problemas:
             linhas.append(f"  - {d}: {msg}")
-    elif vivos:
-        linhas.append("✓ Nenhum digest vivo seria apagado.")
     else:
-        linhas.append("⚠ Sem lista de vivos: a simulação não conferiu o que está em produção.")
+        linhas.append("✓ Nenhum digest vivo seria apagado.")
     return "\n".join(linhas)
 
 
+def _erro(msg):
+    print(f"ERRO: {msg}", file=sys.stderr)
+    return 2
+
+
 def main(argv):
-    if len(argv) not in (3, 4):
+    args = list(argv[1:])
+    esperado = None
+    indices_path = None
+    try:
+        while "--esperado" in args:
+            i = args.index("--esperado")
+            esperado = int(args[i + 1])
+            del args[i:i + 2]
+        while "--indices" in args:
+            i = args.index("--indices")
+            indices_path = args[i + 1]
+            del args[i:i + 2]
+    except (IndexError, ValueError):
+        return _erro("--esperado exige um inteiro e --indices exige um arquivo")
+    if len(args) != 3:
         print(__doc__, file=sys.stderr)
         return 2
-    with open(argv[1], encoding="utf-8") as f:
+
+    with open(args[0], encoding="utf-8") as f:
         policies = json.load(f)
-    with open(argv[2], encoding="utf-8") as f:
+    with open(args[1], encoding="utf-8") as f:
         versoes = normalizar_versoes(json.load(f))
-    vivos = []
-    if len(argv) == 4:
-        with open(argv[3], encoding="utf-8") as f:
-            vivos = DIGEST_VIVO.findall(f.read())
-        if not vivos:
-            print(f"ERRO: nenhum digest vivo reconhecido em {argv[3]}", file=sys.stderr)
-            return 2
+    with open(args[2], encoding="utf-8") as f:
+        vivos = DIGEST_VIVO.findall(f.read())
+
+    aqui = vivos_do_repo(vivos, versoes)
+    if not aqui:
+        return _erro(f"nenhum digest vivo DESTE repositório em {args[2]}: sem isso a "
+                     f"simulação não confere nada (lista vazia, cortada ou de outro repo?)")
+    if esperado is not None and len(aqui) != esperado:
+        return _erro(f"{len(aqui)} digest(s) vivo(s) deste repositório em {args[2]}, "
+                     f"esperado {esperado}: lista parcial? (um serviço que falhou na leitura "
+                     f"some da lista sem aviso)")
+
+    pais = {}
+    if indices_path:
+        try:
+            with open(indices_path, encoding="utf-8") as f:
+                pais = ler_indices(f.read())
+        except ValueError as e:
+            return _erro(str(e))
+    elif any(_eh_indice(v) for v in versoes):
+        return _erro("o listing tem índices (manifest list/OCI index) e faltou --indices: "
+                     "sem saber quem é filho de quem a simulação não responde. Rode "
+                     "scripts/indices_ar.py sobre o mesmo listing.")
+
     try:
-        resultado = simular(policies, versoes, datetime.now(timezone.utc))
+        resultado = simular(policies, versoes, datetime.now(timezone.utc), pais)
     except PolicyInvalida as e:
-        print(f"ERRO: policy inválida: {e}", file=sys.stderr)
-        return 2
-    problemas = checar_vivos(vivos, versoes, resultado)
+        return _erro(f"policy inválida: {e}")
+    problemas = checar_vivos(vivos, versoes, resultado, pais)
     print(relatorio(versoes, resultado, problemas, vivos))
     return 1 if problemas else 0
 
